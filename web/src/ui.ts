@@ -915,8 +915,8 @@ export class UiController {
     this.activeModalSelection = sys.primaryIndex;
     getEl('systemModal').style.display = 'flex';
     getEl('sysModalTitle').textContent = `🌌 System #${sys.planetId} (${sys.bodies.length} bodies)`;
-    getEl('sysStarMeta').textContent =
-      `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M☉ • ${sys.star.luminositySolar.toFixed(2)} L☉`;
+    getEl('sysStarMeta').innerHTML =
+      `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub> • ${sys.star.luminositySolar.toFixed(2)} L<sub class="astro-sub">☉</sub>`;
 
     const strip = getEl('sysOrbitStrip');
     strip.innerHTML = '';
@@ -992,9 +992,9 @@ export class UiController {
       statsEl.innerHTML = `
         <div class="insp-stat"><span>Spectral Class</span><b>${sys.star.spectralClass}</b></div>
         <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(sys.star.tempK)} K</b></div>
-        <div class="insp-stat"><span>Mass</span><b>${sys.star.massSolar.toFixed(2)} M☉</b></div>
-        <div class="insp-stat"><span>Radius</span><b>${sys.star.radiusSolar.toFixed(2)} R☉</b></div>
-        <div class="insp-stat"><span>Luminosity</span><b>${sys.star.luminositySolar.toFixed(3)} L☉</b></div>
+        <div class="insp-stat"><span>Mass</span><b>${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub></b></div>
+        <div class="insp-stat"><span>Radius</span><b>${sys.star.radiusSolar.toFixed(2)} R<sub class="astro-sub">☉</sub></b></div>
+        <div class="insp-stat"><span>Luminosity</span><b>${sys.star.luminositySolar.toFixed(3)} L<sub class="astro-sub">☉</sub></b></div>
         <div class="insp-stat"><span>System Bodies</span><b>${sys.bodies.length} planets</b></div>
       `;
       return;
@@ -1019,7 +1019,7 @@ export class UiController {
     statsEl.innerHTML = `
       <div class="insp-stat"><span>Classification</span><b>${body.bodyType}</b></div>
       <div class="insp-stat"><span>Orbit Distance</span><b>${body.orbitAu.toFixed(2)} AU</b></div>
-      <div class="insp-stat"><span>Radius</span><b>${body.radiusEarth.toFixed(2)} R⊕</b></div>
+      <div class="insp-stat"><span>Radius</span><b>${body.radiusEarth.toFixed(2)} R<sub class="astro-sub">⊕</sub></b></div>
       <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(body.tempK)} K (${Math.round(body.tempK - 273.15)}°C)</b></div>
       <div class="insp-stat"><span>Hydrosphere / Ice</span><b>${Math.round(body.waterPct * 100)}% water · ${Math.round(body.icePct * 100)}% ice</b></div>
       <div class="insp-stat"><span>Atmo / Clouds</span><b>${Math.round(body.atmoDensity * 100)}% atmo · ${Math.round(body.cloudPct * 100)}% clouds</b></div>
