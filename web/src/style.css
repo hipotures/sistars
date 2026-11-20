@@ -54,7 +54,6 @@ header.hud-top {
   padding: 0 12px;
   gap: 8px;
   z-index: 20;
-  backdrop-filter: blur(6px);
 }
 
 .brand {
@@ -194,7 +193,6 @@ header.hud-top {
   align-items: center;
   gap: 8px;
   z-index: 18;
-  backdrop-filter: blur(8px);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
 }
 
@@ -241,7 +239,6 @@ header.hud-top {
   display: none;
   gap: 10px;
   z-index: 16;
-  backdrop-filter: blur(6px);
   font-family: monospace;
   font-variant-numeric: tabular-nums;
   font-size: 0.68rem;
@@ -270,7 +267,6 @@ header.hud-top {
   border-left: 3px solid var(--accent);
   padding: 12px;
   z-index: 15;
-  backdrop-filter: blur(8px);
   display: none;
   flex-direction: column;
   gap: 8px;
@@ -365,7 +361,6 @@ header.hud-top {
   padding: 5px 9px;
   font-size: 0.69rem;
   color: #cbd5e1;
-  backdrop-filter: blur(4px);
 }
 
 .map-legend {
@@ -373,7 +368,7 @@ header.hud-top {
   bottom: 14px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(10, 15, 25, 0.8);
+  background: rgba(10, 15, 25, 0.9);
   border: 1px solid var(--border);
   padding: 4px 12px;
   display: flex;
@@ -381,7 +376,6 @@ header.hud-top {
   font-size: 0.67rem;
   color: var(--muted);
   z-index: 10;
-  backdrop-filter: blur(4px);
   pointer-events: none;
 }
 
@@ -396,7 +390,6 @@ header.hud-top {
   background: var(--panel);
   border-left: 1px solid var(--border);
   z-index: 25;
-  backdrop-filter: blur(10px);
   padding: 14px;
   display: none;
   flex-direction: column;

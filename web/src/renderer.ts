@@ -33,6 +33,7 @@ export class GalaxyRenderer {
   private worldW: number;
   private worldH: number;
   private readonly bgStars: BgStar[];
+  private readonly glowSpriteCache = new Map<string, HTMLCanvasElement>();
   private combatFx: CombatFxView[] = [];
   private jumpFx: JumpFxView[] = [];
   private zoom = 1.0;
@@ -172,6 +173,26 @@ export class GalaxyRenderer {
     return closest;
   }
 
+  private getGlowSprite(rgb: string): HTMLCanvasElement {
+    let sprite = this.glowSpriteCache.get(rgb);
+    if (sprite) return sprite;
+    const size = 64;
+    sprite = document.createElement('canvas');
+    sprite.width = size;
+    sprite.height = size;
+    const sctx = sprite.getContext('2d');
+    if (sctx) {
+      const half = size * 0.5;
+      const grad = sctx.createRadialGradient(half, half, 1, half, half, half);
+      grad.addColorStop(0, `rgba(${rgb}, 0.16)`);
+      grad.addColorStop(1, `rgba(${rgb}, 0)`);
+      sctx.fillStyle = grad;
+      sctx.fillRect(0, 0, size, size);
+    }
+    this.glowSpriteCache.set(rgb, sprite);
+    return sprite;
+  }
+
   public draw(
     frame: RenderFrame,
     crustRichness: number,
@@ -193,10 +214,11 @@ export class GalaxyRenderer {
     const sx = (x: number) => offX + x * scale;
     const sy = (y: number) => offY + y * scale;
     const rgbCache = hud.empires.map((emp) => hexToRgbTuple(emp.color));
+    const glowSprites = rgbCache.map((rgb) => this.getGlowSprite(rgb));
     const empColors = hud.empires.map((emp) => emp.color);
     const planetCount = Math.floor(planetsBuf.length / PLANET_STRIDE);
 
-    // Empire territory glows
+    // Empire territory glows (pre-rendered offscreen sprite blits — zero per-frame createRadialGradient!)
     for (let i = 0; i < planetCount; i++) {
       const off = i * PLANET_STRIDE;
       const owner = planetsBuf[off + 2];
@@ -204,15 +226,10 @@ export class GalaxyRenderer {
       const px = sx(planetsBuf[off]);
       const py = sy(planetsBuf[off + 1]);
       if (px < -60 || px > W + 60 || py < -60 || py > H + 60) continue;
-      const rgb = rgbCache[owner - 1] ?? '56,189,248';
+      const sprite = glowSprites[owner - 1];
+      if (!sprite) continue;
       const rad = (24 + Math.sqrt(planetsBuf[off + 3]) * 2.2) * scale;
-      const grad = ctx.createRadialGradient(px, py, 2, px, py, rad);
-      grad.addColorStop(0, `rgba(${rgb}, 0.14)`);
-      grad.addColorStop(1, `rgba(${rgb}, 0)`);
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(px, py, rad, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.drawImage(sprite, px - rad, py - rad, rad * 2, rad * 2);
     }
 
     // Wormholes
