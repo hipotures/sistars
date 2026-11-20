@@ -255,7 +255,6 @@ export interface HudSnapshot {
   wormholes: WormholeView[];
   newCombatFx: CombatFxView[];
   newJumpFx: JumpFxView[];
-  powerHistory: number[][];
   events: SimEventView[];
   planetCount: number;
   fleetCount: number;

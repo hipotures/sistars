@@ -140,6 +140,11 @@ impl WasmEngine {
         serde_wasm_bindgen::to_value(&rep).unwrap_or(JsValue::NULL)
     }
 
+    /// On-demand power history (only called when Charts & AI drawer is open).
+    pub fn get_power_history(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.sim.power_history).unwrap_or(JsValue::NULL)
+    }
+
     pub fn take_snapshot(&mut self) -> JsValue {
         let snap = self.sim.take_snapshot();
         serde_wasm_bindgen::to_value(&snap).unwrap_or(JsValue::NULL)

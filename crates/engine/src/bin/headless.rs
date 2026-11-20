@@ -10,34 +10,41 @@ fn main() {
     let store = tech_store();
     let races = classic_races();
 
-    // 1. Huge galaxy (1000 planets, 6 races, 2000 ticks) single-game stress benchmark
+    // 1. Huge galaxy (1000 planets, 6 races, 6000 ticks) stability & late-game Stargate benchmark
     let mut huge_cfg = SimConfig::default();
     huge_cfg.galaxy_size = GalaxySize::Huge;
-    huge_cfg.galaxy_shape = GalaxyShape::Spiral;
+    huge_cfg.galaxy_shape = GalaxyShape::Random;
     let mut huge_sim = Simulation::new(huge_cfg, races.clone());
-    huge_sim.init(80000, true);
-    let huge_ticks = 2000u32;
-    let t0 = Instant::now();
-    let mut max_fleets = 0usize;
-    for _ in 0..huge_ticks {
-        huge_sim.step_tick(true);
-        if huge_sim.fleets.len() > max_fleets {
-            max_fleets = huge_sim.fleets.len();
+    huge_sim.init(592144, true);
+
+    println!("Huge Stability Benchmark (1000 planets | Random | 6 empires | 6000 ticks = 300 yrs):");
+    let total_start = Instant::now();
+    for chunk in 0..6 {
+        let c_start = Instant::now();
+        for _ in 0..1000 {
+            huge_sim.step_tick(true);
         }
+        let c_ms = c_start.elapsed().as_secs_f64() * 1000.0;
+        let owned: u32 = huge_sim.empires.iter().map(|e| e.last_stats.planets).sum();
+        let gates: u32 = huge_sim.empires.iter().map(|e| e.last_stats.gates).sum();
+        println!(
+            "  ticks {:4}..{:4} (yr {:6.1}): {:6.1} ms ({:.3} ms/tick) | owned={:4} gates={:3} fleets={:4}",
+            chunk * 1000,
+            (chunk + 1) * 1000,
+            huge_sim.year,
+            c_ms,
+            c_ms / 1000.0,
+            owned,
+            gates,
+            huge_sim.fleets.len()
+        );
     }
-    let huge_elapsed = t0.elapsed();
-    let owned_planets: u32 = huge_sim.empires.iter().map(|e| e.last_stats.planets).sum();
+    let total_s = total_start.elapsed().as_secs_f64();
     println!(
-        "Huge Benchmark (1000 planets | 6 empires | {huge_ticks} ticks): {:.3}s ({:.0} ticks/sec | {:.3} ms/tick)",
-        huge_elapsed.as_secs_f64(),
-        huge_ticks as f64 / huge_elapsed.as_secs_f64(),
-        (huge_elapsed.as_secs_f64() * 1000.0) / huge_ticks as f64
-    );
-    println!(
-        "  Owned: {owned_planets}/1000 | Active fleets: {} (peak {max_fleets}) | Battles: {} | Invasions: {}",
-        huge_sim.fleets.len(),
-        huge_sim.space_battles_count,
-        huge_sim.invasions_count
+        "  TOTAL 6000 ticks: {:.3}s ({:.0} ticks/sec | {:.3} ms/tick)",
+        total_s,
+        6000.0 / total_s,
+        (total_s * 1000.0) / 6000.0
     );
 
     // 2. Small galaxy tournament (30 games x 1200 ticks)
