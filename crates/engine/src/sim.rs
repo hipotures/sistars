@@ -1,10 +1,9 @@
-use std::f32::consts::TAU;
-
 use crate::config::{
     points_for_tech_level, tech_level_from_points, FleetClass, SimConfig, BREAKTHROUGHS,
     BP_ALCHEMY2, DT, MAX_DEBRIS_FIELDS, MAX_EMPIRES, MAX_EVENT_LOG, MAX_POWER_HISTORY,
-    NUM_TECH_FIELDS, SHIP_COST_SCALE, WORLD_H, WORLD_W,
+    NUM_TECH_FIELDS, SHIP_COST_SCALE,
 };
+use crate::galaxy::{generate_galaxy, GalaxyShape, GalaxySize};
 use crate::tech::{
     classic_races, starting_tech_for_traits, EmpireTechCache, HullSpec, LRT_ARM, LRT_BET, LRT_CE,
     LRT_GR, LRT_IFE, LRT_ISB, LRT_LSP, LRT_MA, LRT_OBRM, LRT_RS, LRT_TT, LRT_UR,
@@ -103,6 +102,8 @@ pub struct Simulation {
     pub ticks: u64,
     pub current_map_seed: u32,
     pub rng_seed: u32,
+    pub world_w: f32,
+    pub world_h: f32,
 
     // SoA planet buffers
     pub pos_x: Vec<f32>,
@@ -158,6 +159,7 @@ impl Simulation {
             .map(|r| EmpireState::from_race(r, cfg.ignore_racial_traits))
             .collect();
 
+        let (_, world_w, world_h) = cfg.galaxy_size.specs();
         Self {
             cfg,
             empires,
@@ -166,6 +168,8 @@ impl Simulation {
             ticks: 0,
             current_map_seed: 1,
             rng_seed: 12345,
+            world_w,
+            world_h,
             pos_x: Vec::new(),
             pos_y: Vec::new(),
             pop: Vec::new(),
@@ -241,25 +245,52 @@ impl Simulation {
         }
     }
 
+    pub fn set_galaxy_options(&mut self, size: &str, shape: &str) -> bool {
+        let mut changed = false;
+        if let Some(sz) = GalaxySize::from_str_code(size) {
+            self.cfg.galaxy_size = sz;
+            let (planets, _, _) = sz.specs();
+            self.cfg.planets = planets;
+            changed = true;
+        }
+        if let Some(sh) = GalaxyShape::from_str_code(shape) {
+            self.cfg.galaxy_shape = sh;
+            changed = true;
+        }
+        changed
+    }
+
     pub fn init(&mut self, seed: u32, silent: bool) {
         self.current_map_seed = seed;
         self.rng_seed = seed;
         let num_emp = self.empires.len();
-        let n = self.cfg.planets.max(num_emp + 10);
 
-        self.pos_x.resize(n, 0.0);
-        self.pos_y.resize(n, 0.0);
+        let generated = generate_galaxy(
+            self.cfg.galaxy_size,
+            self.cfg.galaxy_shape,
+            num_emp,
+            self.cfg.crust_richness,
+            self.cfg.wormhole_pairs,
+            &mut self.rng_seed,
+        );
+        let n = generated.pos_x.len();
+        self.cfg.planets = n;
+        self.world_w = generated.world_w;
+        self.world_h = generated.world_h;
+        self.pos_x = generated.pos_x;
+        self.pos_y = generated.pos_y;
+        self.hab = generated.hab;
+        self.min_crust = generated.min_crust;
+        self.wormholes = generated.wormholes;
+
         self.pop.clear();
         self.pop.resize(n, 0.0);
-        self.hab.resize(n, 0.0);
         self.mines.clear();
         self.mines.resize(n, 0.0);
         self.factories.clear();
         self.factories.resize(n, 0.0);
         self.min_surf.clear();
         self.min_surf.resize(n * 3, 0.0);
-        self.min_crust.clear();
-        self.min_crust.resize(n * 3, 0.0);
         self.ship_prod_buf.clear();
         self.ship_prod_buf.resize(n, 0.0);
         self.defense.clear();
@@ -275,29 +306,8 @@ impl Simulation {
         self.claim_mask.clear();
         self.claim_mask.resize(n, 0);
 
-        for i in 0..n {
-            self.pos_x[i] = 55.0 + self.next_rand() * (WORLD_W - 110.0);
-            self.pos_y[i] = 55.0 + self.next_rand() * (WORLD_H - 110.0);
-            self.hab[i] = (0.25 + self.next_rand().powf(1.3) * 0.75).clamp(0.25, 1.0);
-            for m in 0..3 {
-                self.min_crust[i * 3 + m] =
-                    self.cfg.crust_richness * (0.2 + self.next_rand().powf(1.4) * 1.5);
-                self.min_surf[i * 3 + m] = 0.0;
-            }
-            self.defense[i] = 0.0;
-        }
-
-        let base_angle = self.next_rand() * TAU;
-        let cx = WORLD_W * 0.5;
-        let cy = WORLD_H * 0.5;
-        let rx = 350.0;
-        let ry = 195.0;
         let ignore = self.cfg.ignore_racial_traits;
-
         for e in 0..num_emp {
-            let ang = base_angle + (e as f32) * (TAU / num_emp as f32);
-            self.pos_x[e] = cx + ang.cos() * rx;
-            self.pos_y[e] = cy + ang.sin() * ry;
             self.hab[e] = 1.0;
 
             let lrt_mask = self.empires[e].race.lrt_mask;
@@ -334,15 +344,6 @@ impl Simulation {
             };
         }
 
-        self.wormholes.clear();
-        for _ in 0..self.cfg.wormhole_pairs {
-            let x1 = 90.0 + self.next_rand() * 340.0;
-            let y1 = 80.0 + self.next_rand() * (WORLD_H - 160.0);
-            let x2 = 570.0 + self.next_rand() * 340.0;
-            let y2 = 80.0 + self.next_rand() * (WORLD_H - 160.0);
-            self.wormholes.push(Wormhole { x1, y1, x2, y2 });
-        }
-
         self.fleets.clear();
         self.debris_fields.clear();
         self.pending_combat_fx.clear();
@@ -360,9 +361,13 @@ impl Simulation {
             self.events.clear();
             self.push_event(
                 format!(
-                    "New galaxy #{} ({} systems, {} empires).",
+                    "New {:?} {:?} galaxy #{} ({} systems, {:.0}×{:.0}ly, {} empires).",
+                    self.cfg.galaxy_size,
+                    self.cfg.galaxy_shape,
                     seed % 1000,
                     n,
+                    self.world_w,
+                    self.world_h,
                     num_emp
                 ),
                 "#38bdf8",
@@ -1478,6 +1483,8 @@ impl Simulation {
             year: self.year,
             ticks: self.ticks,
             map_seed: self.current_map_seed,
+            world_w: self.world_w,
+            world_h: self.world_h,
             dna_generation: self.dna_generation,
             empires,
             planets,

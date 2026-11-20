@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::galaxy::{GalaxyShape, GalaxySize};
+
 pub const WORLD_W: f32 = 1000.0;
 pub const WORLD_H: f32 = 560.0;
 pub const DT: f32 = 0.05;
@@ -195,6 +197,8 @@ impl FleetClass {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimConfig {
+    pub galaxy_size: GalaxySize,
+    pub galaxy_shape: GalaxyShape,
     pub planets: usize,
     pub wormhole_pairs: usize,
     pub crust_richness: f32,
@@ -216,8 +220,12 @@ pub struct SimConfig {
 
 impl Default for SimConfig {
     fn default() -> Self {
+        let size = GalaxySize::Small;
+        let (planets, _, _) = size.specs();
         Self {
-            planets: 90,
+            galaxy_size: size,
+            galaxy_shape: GalaxyShape::Spiral,
+            planets,
             wormhole_pairs: 2,
             crust_richness: 800.0,
             gate_cost: 45.0,

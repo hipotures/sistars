@@ -207,6 +207,8 @@ pub struct SimSnapshot {
     pub year: f32,
     pub ticks: u64,
     pub map_seed: u32,
+    pub world_w: f32,
+    pub world_h: f32,
     pub dna_generation: u32,
     pub empires: Vec<EmpireSummaryView>,
     pub planets: Vec<PlanetView>,

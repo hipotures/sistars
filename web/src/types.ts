@@ -97,7 +97,12 @@ export interface TechCatalogView {
   classicRaces: RaceDef[];
 }
 
+export type GalaxySize = 'small' | 'medium' | 'large' | 'huge';
+export type GalaxyShape = 'spiral' | 'random' | 'ring' | 'clusters' | 'elliptical';
+
 export interface SimConfig {
+  galaxySize: GalaxySize;
+  galaxyShape: GalaxyShape;
   planets: number;
   wormholePairs: number;
   crustRichness: number;
@@ -243,6 +248,8 @@ export interface SimSnapshot {
   year: number;
   ticks: number;
   mapSeed: number;
+  worldW: number;
+  worldH: number;
   dnaGeneration: number;
   empires: EmpireSummaryView[];
   planets: PlanetView[];

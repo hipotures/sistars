@@ -18,6 +18,7 @@ export interface UiCallbacks {
   onStepTick: () => void;
   onReset: () => void;
   onParamChange: (key: string, value: number) => void;
+  onGalaxyChange: (size: string, shape: string) => void;
   onLabAction: (action: LabAction) => void;
   onSelectPlanet: (index: number) => void;
   onLaunchRaces: (races: RaceDef[]) => void;
@@ -133,6 +134,8 @@ export class UiController {
   public setConfig(cfg: SimConfig): void {
     this.lastConfig = cfg;
     getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = cfg.ignoreRacialTraits;
+    getEl<HTMLSelectElement>('p_galaxySize').value = cfg.galaxySize;
+    getEl<HTMLSelectElement>('p_galaxyShape').value = cfg.galaxyShape;
   }
 
   public setSelectedPlanet(index: number): void {
@@ -464,7 +467,15 @@ export class UiController {
       });
     });
 
-    // Settings sliders & sandbox checkbox
+    // Settings sliders, galaxy generator & sandbox checkbox
+    const onGalaxySelect = () => {
+      const size = getEl<HTMLSelectElement>('p_galaxySize').value;
+      const shape = getEl<HTMLSelectElement>('p_galaxyShape').value;
+      this.callbacks.onGalaxyChange(size, shape);
+    };
+    getEl('p_galaxySize').addEventListener('change', onGalaxySelect);
+    getEl('p_galaxyShape').addEventListener('change', onGalaxySelect);
+
     getEl<HTMLInputElement>('p_ignoreRacialTraits').addEventListener('change', (e) => {
       const checked = (e.target as HTMLInputElement).checked;
       this.callbacks.onParamChange('ignoreRacialTraits', checked ? 1 : 0);

@@ -34,6 +34,7 @@ async function bootstrap(): Promise<void> {
   let tickAccum = 0;
   let hoveredPlanet = -1;
   let lastSnap = engine.take_snapshot() as SimSnapshot;
+  renderer.setWorldSize(lastSnap.worldW, lastSnap.worldH);
 
   // Debug History Scrubber state
   let debugHistoryEnabled = false;
@@ -81,6 +82,7 @@ async function bootstrap(): Promise<void> {
   const refreshSnapshot = (clearVisualFx = false, resetHist = false): void => {
     if (clearVisualFx) renderer.clearFx();
     lastSnap = engine.take_snapshot() as SimSnapshot;
+    renderer.setWorldSize(lastSnap.worldW, lastSnap.worldH);
     renderer.ingestFx(lastSnap);
     if (resetHist) {
       resetHistory();
@@ -128,6 +130,15 @@ async function bootstrap(): Promise<void> {
         refreshSnapshot(true, true);
       } else {
         refreshSnapshot(false, false);
+      }
+    },
+    onGalaxyChange: (size, shape) => {
+      const ok = engine.set_galaxy_options(size, shape, randomSeed());
+      if (ok) {
+        config = engine.get_config() as SimConfig;
+        ui.setConfig(config);
+        ui.setSelectedPlanet(-1);
+        refreshSnapshot(true, true);
       }
     },
     onSelectPlanet: (index) => {

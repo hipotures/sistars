@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod config;
+pub mod galaxy;
 pub mod sim;
 pub mod tech;
 pub mod types;
