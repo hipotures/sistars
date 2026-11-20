@@ -31,6 +31,9 @@ export class GalaxyRenderer {
   private readonly bgStars: BgStar[];
   private combatFx: CombatFxView[] = [];
   private jumpFx: JumpFxView[] = [];
+  private zoom = 1.0;
+  private panX = 0;
+  private panY = 0;
 
   constructor(canvas: HTMLCanvasElement, worldW: number, worldH: number) {
     this.canvas = canvas;
@@ -78,7 +81,34 @@ export class GalaxyRenderer {
     }
   }
 
-  private getTransform(): ViewportTransform {
+  public resetCamera(): void {
+    this.zoom = 1.0;
+    this.panX = 0;
+    this.panY = 0;
+  }
+
+  public panBy(dx: number, dy: number): void {
+    this.panX += dx;
+    this.panY += dy;
+  }
+
+  public zoomAt(clientX: number, clientY: number, factor: number): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    const before = this.getTransform();
+    const wx = (mx - before.offX) / before.scale;
+    const wy = (my - before.offY) / before.scale;
+
+    this.zoom = Math.max(0.6, Math.min(6.0, this.zoom * factor));
+
+    const base = this.getBaseTransform();
+    const newScale = base.scale * this.zoom;
+    this.panX = mx - wx * newScale - base.offX;
+    this.panY = my - wy * newScale - base.offY;
+  }
+
+  private getBaseTransform(): ViewportTransform {
     const padTop = 64;
     const padBot = 34;
     const padX = 24;
@@ -92,19 +122,30 @@ export class GalaxyRenderer {
     };
   }
 
+  private getTransform(): ViewportTransform {
+    const base = this.getBaseTransform();
+    const scale = base.scale * this.zoom;
+    return {
+      scale,
+      offX: base.offX + this.panX,
+      offY: base.offY + this.panY,
+    };
+  }
+
   public findPlanetAt(
     clientX: number,
     clientY: number,
     planets: PlanetView[],
-    maxDist: number,
+    maxDistPx: number,
   ): number {
     const rect = this.canvas.getBoundingClientRect();
     const { scale, offX, offY } = this.getTransform();
     const wx = (clientX - rect.left - offX) / scale;
     const wy = (clientY - rect.top - offY) / scale;
+    const maxWorldDist = maxDistPx / scale;
 
     let closest = -1;
-    let minDist = maxDist;
+    let minDist = maxWorldDist;
     for (let i = 0; i < planets.length; i++) {
       const d = Math.hypot(planets[i].x - wx, planets[i].y - wy);
       if (d < minDist) {
@@ -218,6 +259,12 @@ export class GalaxyRenderer {
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.lineWidth = 1.0;
+      }
+
+      if (this.zoom >= 1.65) {
+        ctx.font = '10px monospace';
+        ctx.fillStyle = 'rgba(203, 213, 225, 0.72)';
+        ctx.fillText(`#${pl.id}`, px + r + 4, py + 3);
       }
 
       if (i === selectedPlanet || i === hoveredPlanet) {
@@ -338,6 +385,55 @@ export class GalaxyRenderer {
       fx.ttl--;
       if (fx.ttl <= 0) this.combatFx.splice(i, 1);
     }
+
+    this.drawScaleBar(scale);
+  }
+
+  private drawScaleBar(scale: number): void {
+    const ctx = this.ctx;
+    const candidates = [10, 20, 25, 50, 100, 150, 200, 250, 500];
+    let ly = 100;
+    for (const c of candidates) {
+      const px = c * scale;
+      if (px >= 75 && px <= 175) {
+        ly = c;
+        break;
+      }
+    }
+    const barW = Math.round(ly * scale);
+    const x = 16;
+    const y = 68;
+    const boxW = Math.max(barW + 24, 130);
+    const boxH = 34;
+
+    ctx.fillStyle = 'rgba(10, 15, 25, 0.82)';
+    ctx.strokeStyle = '#233148';
+    ctx.lineWidth = 1;
+    ctx.fillRect(x, y, boxW, boxH);
+    ctx.strokeRect(x, y, boxW, boxH);
+
+    const bx = x + 12;
+    const by = y + 22;
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(bx, by - 5);
+    ctx.lineTo(bx, by);
+    ctx.lineTo(bx + barW, by);
+    ctx.lineTo(bx + barW, by - 5);
+    // Midpoint tick
+    ctx.moveTo(bx + barW * 0.5, by - 3);
+    ctx.lineTo(bx + barW * 0.5, by);
+    ctx.stroke();
+
+    ctx.font = '600 10px monospace';
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillText('0', bx - 2, y + 12);
+    ctx.fillText(`${ly} ly`, bx + barW - 26, y + 12);
+
+    ctx.fillStyle = '#7c8ea8';
+    ctx.fillText(`${this.zoom.toFixed(1)}x`, x + boxW - 30, y + 31);
+    ctx.lineWidth = 1.0;
   }
 }
 
