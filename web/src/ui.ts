@@ -164,7 +164,6 @@ export class UiController {
   // Procedural 3D globe (Inspector) & Star System View modal state
   private readonly inspGlobeRenderer: ProceduralBodyRenderer;
   private readonly sysPreviewRenderer: ProceduralBodyRenderer;
-  private activeInspSystem: StarSystemView | null = null;
   private activeModalSystem: StarSystemView | null = null;
   private activeModalSelection: 'star' | { bodyIdx: number; moonIdx: number | null } = {
     bodyIdx: 0,
@@ -252,7 +251,6 @@ export class UiController {
       getEl('planetInspector').style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       this.inspGlobeRenderer.stop();
-      this.activeInspSystem = null;
     } else if (this.lastHud) {
       void this.updateInspector(this.lastHud);
     }
@@ -918,10 +916,7 @@ export class UiController {
 
   public async openSystemView(planetIdx: number): Promise<void> {
     const seq = ++this.modalReqSeq;
-    const sys =
-      this.activeInspSystem && this.activeInspSystem.planetId === planetIdx + 1
-        ? this.activeInspSystem
-        : await this.callbacks.getStarSystem(planetIdx);
+    const sys = await this.callbacks.getStarSystem(planetIdx);
     if (seq !== this.modalReqSeq || !sys) return;
 
     this.activeModalSystem = sys;
@@ -1125,7 +1120,6 @@ export class UiController {
       insp.style.display = 'flex';
       minWrap.style.display = 'flex';
       if (sys) {
-        this.activeInspSystem = sys;
         const primary = sys.bodies[sys.primaryIndex];
         getEl('inspGlobeWrap').style.display = 'block';
         getEl('inspStarBadge').textContent = `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)}K`;

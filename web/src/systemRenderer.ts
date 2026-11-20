@@ -789,6 +789,9 @@ export class ProceduralBodyRenderer {
     }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (this.fixedSize) {
+      gl.flush();
+    }
   }
 }
 
@@ -810,12 +813,17 @@ export function renderProceduralThumbnailTo2d(
     sharedThumbRenderer = new ProceduralBodyRenderer(sharedThumbCanvas, true);
   }
   if (!sharedThumbRenderer) return;
+  if (sharedThumbCanvas.width !== 128 || sharedThumbCanvas.height !== 128) {
+    sharedThumbCanvas.width = 128;
+    sharedThumbCanvas.height = 128;
+  }
   sharedThumbRenderer.setTarget(target, false);
   sharedThumbRenderer.renderOnce(1.2);
   const ctx = destCanvas.getContext('2d');
   if (ctx) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, destCanvas.width, destCanvas.height);
-    ctx.drawImage(sharedThumbCanvas, 0, 0, destCanvas.width, destCanvas.height);
+    ctx.drawImage(sharedThumbCanvas, 0, 0, 128, 128, 0, 0, destCanvas.width, destCanvas.height);
   }
 }
 
