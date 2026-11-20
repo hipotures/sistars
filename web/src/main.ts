@@ -21,6 +21,46 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 900000 + 100000);
 }
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to legacy execCommand fallback
+    }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.top = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+function downloadJsonFile(filename: string, text: string): void {
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function bootstrap(): Promise<void> {
   const wasmExports = await initWasm();
 
@@ -306,8 +346,15 @@ async function bootstrap(): Promise<void> {
         },
         samples: telemetrySamples,
       };
-      void navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      ui.setStatus(`✓ Copied ${telemetrySamples.length} yearly telemetry samples to clipboard!`);
+      const text = JSON.stringify(payload, null, 2);
+      void copyTextToClipboard(text).then((ok) => {
+        if (ok) {
+          ui.setStatus(`✓ Copied ${telemetrySamples.length} yearly telemetry samples to clipboard!`);
+        } else {
+          downloadJsonFile(`sistars-telemetry-${lastHud.mapSeed}.json`, text);
+          ui.setStatus(`⬇ Clipboard blocked on HTTP — downloaded telemetry JSON (${telemetrySamples.length} yrs)!`);
+        }
+      });
     },
     onClearTelemetry: () => {
       resetTelemetry();
@@ -346,8 +393,14 @@ async function bootstrap(): Promise<void> {
     onLabAction: (action) => {
       if (action === 'copyjson') {
         const json = engine.export_state_json();
-        void navigator.clipboard.writeText(json);
-        ui.setStatus('✓ Copied state JSON to clipboard!');
+        void copyTextToClipboard(json).then((ok) => {
+          if (ok) {
+            ui.setStatus('✓ Copied state JSON to clipboard!');
+          } else {
+            downloadJsonFile(`sistars-state-${lastHud.mapSeed}.json`, json);
+            ui.setStatus('⬇ Clipboard blocked on HTTP — downloaded state JSON!');
+          }
+        });
         return;
       }
 
