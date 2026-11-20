@@ -330,6 +330,15 @@
     <input type="checkbox" id="p_debugHistory" />
     <span>History Scrubber (record &amp; rewind up to 600 snapshots)</span>
   </label>
+  <label class="checkbox-row">
+    <input type="checkbox" id="p_debugTelemetry" />
+    <span>Yearly Telemetry Log (1 sample / game year)</span>
+  </label>
+  <div style="display:flex; gap:6px; align-items:center;">
+    <button class="hud-btn" id="btnCopyTelemetry" style="flex:1;">📋 Copy Telemetry JSON</button>
+    <button class="hud-btn" id="btnClearTelemetry" title="Clear recorded telemetry">🗑</button>
+  </div>
+  <div id="telemetryInfo" style="font-size:0.68rem; font-family:monospace; color:var(--muted);">Recorded: 0 years</div>
 </div>
 
 <script type="module" src="/src/main.ts"></script>

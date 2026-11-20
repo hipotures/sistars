@@ -53,13 +53,41 @@ async function bootstrap(): Promise<void> {
   let liveViews = buildZeroCopyViews();
   renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
 
-  // Debug Performance HUD & History Scrubber state
+  // Debug Performance HUD, Yearly Telemetry & History Scrubber state
   let debugPerfEnabled = false;
   let perfFrames = 0;
   let perfTicks = 0;
   let perfWasmSum = 0;
   let perfDrawSum = 0;
   let perfWindowStart = performance.now();
+  let latestPerf = { fps: 0, tps: 0, wasmMs: 0, drawMs: 0 };
+
+  interface YearlyTelemetrySample {
+    year: number;
+    ticks: number;
+    fps: number;
+    tps: number;
+    wasmMs: number;
+    drawMs: number;
+    fleets: number;
+    battles: number;
+    invasions: number;
+    salvaged: number;
+    gateJumps: number;
+    empires: {
+      planets: number;
+      res: number;
+      factories: number;
+      gates: number;
+      kills: number;
+      unlockedTechs: number;
+      avgTechLv: number;
+    }[];
+  }
+
+  let debugTelemetryEnabled = false;
+  let telemetrySamples: YearlyTelemetrySample[] = [];
+  let lastTelemetryYear = -1;
 
   let debugHistoryEnabled = false;
   let historyBuffer: RenderFrame[] = [];
@@ -98,6 +126,49 @@ async function bootstrap(): Promise<void> {
     }
   };
 
+  const recordYearlyTelemetry = (hud: HudSnapshot, force = false): void => {
+    if (!debugTelemetryEnabled) return;
+    const yr = Math.floor(hud.year);
+    if (!force && yr <= lastTelemetryYear) return;
+    lastTelemetryYear = yr;
+    telemetrySamples.push({
+      year: yr,
+      ticks: hud.ticks,
+      fps: Number(latestPerf.fps.toFixed(1)),
+      tps: Number(latestPerf.tps.toFixed(1)),
+      wasmMs: Number(latestPerf.wasmMs.toFixed(2)),
+      drawMs: Number(latestPerf.drawMs.toFixed(2)),
+      fleets: hud.fleetCount,
+      battles: hud.spaceBattlesCount,
+      invasions: hud.invasionsCount,
+      salvaged: hud.totalSalvaged,
+      gateJumps: hud.gateJumpsCount,
+      empires: hud.empires.map((emp) => {
+        const avgLv = emp.techLv.reduce((a, b) => a + b, 0) / Math.max(1, emp.techLv.length);
+        return {
+          planets: emp.stats.planets,
+          res: Math.round(emp.stats.res),
+          factories: Math.round(emp.stats.factories),
+          gates: emp.stats.gates,
+          kills: emp.doctrine.kills,
+          unlockedTechs: emp.loadout.unlockedCount,
+          avgTechLv: Number(avgLv.toFixed(2)),
+        };
+      }),
+    });
+    ui.updateTelemetryInfo(telemetrySamples.length, yr);
+  };
+
+  const resetTelemetry = (): void => {
+    telemetrySamples = [];
+    lastTelemetryYear = -1;
+    if (debugTelemetryEnabled) {
+      recordYearlyTelemetry(lastHud, true);
+    } else {
+      ui.updateTelemetryInfo(0, null);
+    }
+  };
+
   const resetHistory = (): void => {
     historyBuffer = [];
     historyViewIndex = null;
@@ -116,8 +187,10 @@ async function bootstrap(): Promise<void> {
     renderer.ingestFx(lastHud);
     if (resetHist) {
       resetHistory();
+      resetTelemetry();
     } else if (historyViewIndex === null) {
       recordHistoryFrame(lastHud);
+      recordYearlyTelemetry(lastHud);
       syncHistoryBar();
     }
     ui.update(activeFrame().hud, true);
@@ -205,6 +278,40 @@ async function bootstrap(): Promise<void> {
         ui.update(lastHud, true);
       }
       syncHistoryBar();
+    },
+    onDebugTelemetryToggle: (enabled) => {
+      debugTelemetryEnabled = enabled;
+      if (enabled) {
+        telemetrySamples = [];
+        lastTelemetryYear = -1;
+        recordYearlyTelemetry(lastHud, true);
+      }
+    },
+    onCopyTelemetry: () => {
+      const payload = {
+        meta: {
+          galaxySize: config.galaxySize,
+          galaxyShape: config.galaxyShape,
+          mapSeed: lastHud.mapSeed,
+          worldW: lastHud.worldW,
+          worldH: lastHud.worldH,
+          planets: lastHud.planetCount,
+          empires: lastHud.empires.map((e) => ({
+            id: e.id,
+            name: e.name,
+            prt: e.prt,
+            lrtMask: e.lrtMask,
+            color: e.color,
+          })),
+        },
+        samples: telemetrySamples,
+      };
+      void navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      ui.setStatus(`✓ Copied ${telemetrySamples.length} yearly telemetry samples to clipboard!`);
+    },
+    onClearTelemetry: () => {
+      resetTelemetry();
+      ui.setStatus('Cleared telemetry log.');
     },
     onHistoryScrub: (index) => {
       if (historyBuffer.length === 0) return;
@@ -357,6 +464,7 @@ async function bootstrap(): Promise<void> {
   ui.update(lastHud, true);
 
   const frame = (): void => {
+    const measurePerf = debugPerfEnabled || debugTelemetryEnabled;
     let stepsDone = 0;
     let wasmMs = 0;
 
@@ -365,24 +473,25 @@ async function bootstrap(): Promise<void> {
       const steps = Math.floor(tickAccum);
       if (steps > 0) {
         tickAccum -= steps;
-        const t0 = debugPerfEnabled ? performance.now() : 0;
+        const t0 = measurePerf ? performance.now() : 0;
         engine.step(steps);
         lastHud = engine.take_hud_snapshot() as HudSnapshot;
         liveViews = buildZeroCopyViews();
-        if (debugPerfEnabled) wasmMs = performance.now() - t0;
+        if (measurePerf) wasmMs = performance.now() - t0;
         stepsDone = steps;
         renderer.ingestFx(lastHud);
         recordHistoryFrame(lastHud);
+        recordYearlyTelemetry(lastHud);
         ui.update(lastHud, false);
         if (debugHistoryEnabled) syncHistoryBar();
       }
     }
 
     const cur = activeFrame();
-    const d0 = debugPerfEnabled ? performance.now() : 0;
+    const d0 = measurePerf ? performance.now() : 0;
     renderer.draw(cur, config.crustRichness, ui.getSelectedPlanet(), hoveredPlanet);
 
-    if (debugPerfEnabled) {
+    if (measurePerf) {
       const drawMs = performance.now() - d0;
       perfFrames += 1;
       perfTicks += stepsDone;
@@ -393,15 +502,23 @@ async function bootstrap(): Promise<void> {
       const elapsed = now - perfWindowStart;
       if (elapsed >= 250) {
         const sec = elapsed / 1000;
-        ui.updatePerfHud(
-          true,
-          perfFrames / sec,
-          perfTicks / sec,
-          perfWasmSum / perfFrames,
-          perfDrawSum / perfFrames,
-          cur.hud.planetCount,
-          cur.hud.fleetCount,
-        );
+        latestPerf = {
+          fps: perfFrames / sec,
+          tps: perfTicks / sec,
+          wasmMs: perfWasmSum / perfFrames,
+          drawMs: perfDrawSum / perfFrames,
+        };
+        if (debugPerfEnabled) {
+          ui.updatePerfHud(
+            true,
+            latestPerf.fps,
+            latestPerf.tps,
+            latestPerf.wasmMs,
+            latestPerf.drawMs,
+            cur.hud.planetCount,
+            cur.hud.fleetCount,
+          );
+        }
         perfFrames = 0;
         perfTicks = 0;
         perfWasmSum = 0;

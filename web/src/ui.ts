@@ -26,6 +26,9 @@ export interface UiCallbacks {
   onLaunchRaces: (races: RaceDef[]) => void;
   onDebugPerfToggle: (enabled: boolean) => void;
   onDebugHistoryToggle: (enabled: boolean) => void;
+  onDebugTelemetryToggle: (enabled: boolean) => void;
+  onCopyTelemetry: () => void;
+  onClearTelemetry: () => void;
   onHistoryScrub: (index: number) => void;
   onHistoryStep: (delta: number) => void;
   onHistoryLive: () => void;
@@ -214,6 +217,13 @@ export class UiController {
     getEl('perfEnt').textContent = `${planets}p / ${fleets}f`;
   }
 
+  public updateTelemetryInfo(count: number, lastYear: number | null): void {
+    getEl('telemetryInfo').textContent =
+      count > 0 && lastYear !== null
+        ? `Recorded: ${count} years (last: ${lastYear})`
+        : 'Recorded: 0 years';
+  }
+
   public updateWinRateBar(res: TournamentResult, hud: HudSnapshot): void {
     getEl('tourneyLabel').textContent = `🏆 Win-Rate (${res.numGames} maps):`;
     const bar = getEl('winrateBar');
@@ -334,13 +344,18 @@ export class UiController {
 
     getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
 
-    // Debug Performance HUD & History Scrubber controls
+    // Debug Performance HUD, Telemetry & History Scrubber controls
     getEl<HTMLInputElement>('p_debugPerf').addEventListener('change', (e) => {
       this.callbacks.onDebugPerfToggle((e.target as HTMLInputElement).checked);
     });
     getEl<HTMLInputElement>('p_debugHistory').addEventListener('change', (e) => {
       this.callbacks.onDebugHistoryToggle((e.target as HTMLInputElement).checked);
     });
+    getEl<HTMLInputElement>('p_debugTelemetry').addEventListener('change', (e) => {
+      this.callbacks.onDebugTelemetryToggle((e.target as HTMLInputElement).checked);
+    });
+    getEl('btnCopyTelemetry').addEventListener('click', () => this.callbacks.onCopyTelemetry());
+    getEl('btnClearTelemetry').addEventListener('click', () => this.callbacks.onClearTelemetry());
     getEl<HTMLInputElement>('historySlider').addEventListener('input', (e) => {
       this.callbacks.onHistoryScrub(Number((e.target as HTMLInputElement).value));
     });
