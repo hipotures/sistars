@@ -1,9 +1,12 @@
 import { drawPowerChart } from './renderer';
 import type {
+  DebrisFieldView,
   Doctrine,
   EngineMeta,
   FleetClass,
+  FleetView,
   HudSnapshot,
+  MapSelection,
   PlanetView,
   RaceDef,
   ReportsSnapshot,
@@ -22,7 +25,7 @@ export interface UiCallbacks {
   onParamChange: (key: string, value: number) => void;
   onGalaxyChange: (size: string, shape: string) => void;
   onLabAction: (action: LabAction) => void;
-  onSelectPlanet: (index: number) => void;
+  onSelectObject: (sel: MapSelection) => void;
   onLaunchRaces: (races: RaceDef[]) => void;
   onDebugPerfToggle: (enabled: boolean) => void;
   onDebugHistoryToggle: (enabled: boolean) => void;
@@ -33,6 +36,8 @@ export interface UiCallbacks {
   onHistoryStep: (delta: number) => void;
   onHistoryLive: () => void;
   getPlanetDetail: (index: number) => PlanetView | null;
+  getFleetById: (id: number) => FleetView | null;
+  getDebrisDetail: (index: number) => DebrisFieldView | null;
   getReportsSnapshot: () => ReportsSnapshot;
   getPowerHistory: () => number[][];
 }
@@ -112,13 +117,15 @@ export class UiController {
 
   private sortKey: SortKey = 'res';
   private sortAsc = false;
-  private selectedPlanet = -1;
+  private selection: MapSelection = null;
   private lastHud: HudSnapshot | null = null;
   private lastConfig: SimConfig;
   private lastHudSignature = '';
   private lastEventsSignature = '';
   private lastHudUpdateMs = 0;
   private lastDrawerUpdateMs = 0;
+  private showEventLog = true;
+  private currentSpeed = 1;
 
   private customRaces: RaceDef[] = [];
   private selectedRaceIds: Set<string>;
@@ -150,17 +157,17 @@ export class UiController {
     getEl<HTMLSelectElement>('p_galaxyShape').value = cfg.galaxyShape;
   }
 
-  public setSelectedPlanet(index: number): void {
-    this.selectedPlanet = index;
-    if (index === -1) {
+  public setSelection(sel: MapSelection): void {
+    this.selection = sel;
+    if (!sel) {
       getEl('planetInspector').style.display = 'none';
     } else if (this.lastHud) {
       this.updateInspector(this.lastHud);
     }
   }
 
-  public getSelectedPlanet(): number {
-    return this.selectedPlanet;
+  public getSelection(): MapSelection {
+    return this.selection;
   }
 
   public setStatus(text: string): void {
@@ -169,9 +176,16 @@ export class UiController {
   }
 
   public setActiveSpeedButton(speed: number): void {
+    this.currentSpeed = speed;
     document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => {
       b.classList.toggle('active', Number(b.dataset.speed) === speed);
     });
+    this.syncEventLogVisibility();
+  }
+
+  private syncEventLogVisibility(): void {
+    const visible = this.showEventLog && this.currentSpeed <= 1;
+    getEl('eventLog').style.display = visible ? 'flex' : 'none';
   }
 
   public updateHistoryBar(
@@ -251,7 +265,7 @@ export class UiController {
       getEl('hudYear').textContent = hud.year.toFixed(1);
       this.updateEmpireHud(hud);
       this.renderEvents(hud);
-      if (this.selectedPlanet !== -1) {
+      if (this.selection !== null) {
         this.updateInspector(hud);
       }
     }
@@ -355,7 +369,14 @@ export class UiController {
 
     getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
 
-    // Debug Performance HUD, Telemetry & History Scrubber controls
+    // Debug Performance HUD, Event Log, Telemetry & History Scrubber controls
+    getEl<HTMLInputElement>('p_showEventLog').addEventListener('change', (e) => {
+      this.showEventLog = (e.target as HTMLInputElement).checked;
+      this.syncEventLogVisibility();
+      if (this.showEventLog && this.currentSpeed <= 1 && this.lastHud) {
+        this.renderEvents(this.lastHud);
+      }
+    });
     getEl<HTMLInputElement>('p_debugPerf').addEventListener('change', (e) => {
       this.callbacks.onDebugPerfToggle((e.target as HTMLInputElement).checked);
     });
@@ -387,7 +408,7 @@ export class UiController {
     });
 
     getEl('btnReset').addEventListener('click', () => this.callbacks.onReset());
-    getEl('btnCloseInspector').addEventListener('click', () => this.callbacks.onSelectPlanet(-1));
+    getEl('btnCloseInspector').addEventListener('click', () => this.callbacks.onSelectObject(null));
 
     // Tech drawer tabs
     document.querySelectorAll<HTMLButtonElement>('[data-tech-tab]').forEach((btn) => {
@@ -517,7 +538,14 @@ export class UiController {
       const row = (e.target as HTMLElement).closest('tr');
       if (!row || !row.dataset.planetIdx) return;
       const idx = Number(row.dataset.planetIdx);
-      if (!Number.isNaN(idx)) this.callbacks.onSelectPlanet(idx);
+      if (!Number.isNaN(idx)) this.callbacks.onSelectObject({ kind: 'planet', index: idx });
+    });
+
+    getEl('fleetTableBody').addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest('tr');
+      if (!row || !row.dataset.fleetId) return;
+      const id = Number(row.dataset.fleetId);
+      if (!Number.isNaN(id)) this.callbacks.onSelectObject({ kind: 'fleet', id });
     });
 
     // Lab actions
@@ -636,6 +664,7 @@ export class UiController {
   }
 
   private renderEvents(hud: HudSnapshot): void {
+    if (!this.showEventLog || this.currentSpeed > 1) return;
     const sig = hud.events.map((ev) => `${ev.year.toFixed(0)}:${ev.text}`).join('|');
     if (sig === this.lastEventsSignature) return;
     this.lastEventsSignature = sig;
@@ -648,38 +677,140 @@ export class UiController {
       .join('');
   }
 
-  private updateInspector(hud: HudSnapshot): void {
-    const i = this.selectedPlanet;
-    if (i < 0 || i >= hud.planetCount) {
-      getEl('planetInspector').style.display = 'none';
-      return;
-    }
-    const pl = this.callbacks.getPlanetDetail(i);
-    if (!pl) {
-      getEl('planetInspector').style.display = 'none';
-      return;
-    }
-    const insp = getEl('planetInspector');
-    insp.style.display = 'flex';
-    const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
-    insp.style.borderLeftColor = emp ? emp.color : '#64748b';
-    getEl('inspTitle').textContent = `System #${pl.id}`;
-    const ownerEl = getEl('inspOwner');
-    ownerEl.textContent = emp ? `${emp.name} (${shortPrt(emp.prt)})` : 'Uninhabited';
-    ownerEl.style.color = emp ? emp.color : '#94a3b8';
-    getEl('inspHab').textContent = `${Math.round(pl.hab * 100)}%`;
-    getEl('inspPop').textContent = `${Math.round(pl.pop)}k / ${Math.round(pl.maxPop)}k`;
-    getEl('inspRes').textContent = `${Math.round(pl.res)} Res/yr`;
-    getEl('inspFac').textContent = `${Math.round(pl.factories)} fac / ${Math.round(pl.mines)} mine`;
-    getEl('inspDef').textContent = `${Math.round(pl.defense)} | ${pl.hasGate ? '🌀 Active' : 'None'}`;
+  private setInspCell(idx: number, label: string, value: string, color = ''): void {
+    getEl(`inspLbl${idx}`).textContent = label;
+    const v = getEl(`inspVal${idx}`);
+    v.textContent = value;
+    v.style.color = color;
+  }
 
-    const maxC = this.lastConfig.crustRichness * 1.6;
-    getEl('barIron').style.width = `${Math.min(100, (pl.ironCrust / maxC) * 100)}%`;
-    getEl('valIron').textContent = `${Math.round(pl.ironSurf)} (${Math.round(pl.ironCrust)})`;
-    getEl('barBora').style.width = `${Math.min(100, (pl.boraCrust / maxC) * 100)}%`;
-    getEl('valBora').textContent = `${Math.round(pl.boraSurf)} (${Math.round(pl.boraCrust)})`;
-    getEl('barGerm').style.width = `${Math.min(100, (pl.germCrust / maxC) * 100)}%`;
-    getEl('valGerm').textContent = `${Math.round(pl.germSurf)} (${Math.round(pl.germCrust)})`;
+  private updateInspector(hud: HudSnapshot): void {
+    const sel = this.selection;
+    const insp = getEl('planetInspector');
+    const minWrap = getEl('inspMineralsWrap');
+    if (!sel) {
+      insp.style.display = 'none';
+      return;
+    }
+
+    if (sel.kind === 'planet') {
+      if (sel.index < 0 || sel.index >= hud.planetCount) {
+        insp.style.display = 'none';
+        return;
+      }
+      const pl = this.callbacks.getPlanetDetail(sel.index);
+      if (!pl) {
+        insp.style.display = 'none';
+        return;
+      }
+      insp.style.display = 'flex';
+      minWrap.style.display = 'flex';
+      const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
+      insp.style.borderLeftColor = emp ? emp.color : '#64748b';
+      getEl('inspTitle').textContent = `System #${pl.id}`;
+      this.setInspCell(0, 'Owner', emp ? `${emp.name} (${shortPrt(emp.prt)})` : 'Uninhabited', emp ? emp.color : '#94a3b8');
+      this.setInspCell(1, 'Habitability', `${Math.round(pl.hab * 100)}%`);
+      this.setInspCell(2, 'Population', `${Math.round(pl.pop)}k / ${Math.round(pl.maxPop)}k`);
+      this.setInspCell(3, 'Production', `${Math.round(pl.res)} Res/yr`, 'var(--accent)');
+      this.setInspCell(4, 'Factories / Mines', `${Math.round(pl.factories)} fac / ${Math.round(pl.mines)} mine`);
+      this.setInspCell(5, 'Defense / Gate', `${Math.round(pl.defense)} | ${pl.hasGate ? '🌀 Active' : 'None'}`);
+
+      const maxC = this.lastConfig.crustRichness * 1.6;
+      getEl('barIron').style.width = `${Math.min(100, (pl.ironCrust / maxC) * 100)}%`;
+      getEl('valIron').textContent = `${Math.round(pl.ironSurf)} (${Math.round(pl.ironCrust)})`;
+      getEl('barBora').style.width = `${Math.min(100, (pl.boraCrust / maxC) * 100)}%`;
+      getEl('valBora').textContent = `${Math.round(pl.boraSurf)} (${Math.round(pl.boraCrust)})`;
+      getEl('barGerm').style.width = `${Math.min(100, (pl.germCrust / maxC) * 100)}%`;
+      getEl('valGerm').textContent = `${Math.round(pl.germSurf)} (${Math.round(pl.germCrust)})`;
+      return;
+    }
+
+    if (sel.kind === 'fleet') {
+      const fl = this.callbacks.getFleetById(sel.id);
+      if (!fl) {
+        this.selection = null;
+        insp.style.display = 'none';
+        return;
+      }
+      insp.style.display = 'flex';
+      minWrap.style.display = 'none';
+      const emp = hud.empires[fl.emp - 1];
+      insp.style.borderLeftColor = emp ? emp.color : '#38bdf8';
+      const minNames = ['Ironium', 'Boranium', 'Germanium'];
+      const hullName = emp
+        ? fl.type === 'battleship'
+          ? emp.loadout.battleshipHull
+          : fl.type === 'cruiser'
+            ? emp.loadout.cruiserHull
+            : fl.type === 'bomber'
+              ? emp.loadout.bomberHull
+              : fl.type === 'freight'
+                ? `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
+                : 'Colony Ship'
+        : FLEET_LABELS[fl.type];
+      getEl('inspTitle').textContent = `Fleet F#${fl.id} • ${FLEET_LABELS[fl.type]}`;
+      this.setInspCell(0, 'Owner', emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`, emp ? emp.color : '#e2e8f0');
+      this.setInspCell(1, 'Hull / Class', hullName);
+      const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
+      this.setInspCell(2, fl.type === 'freight' ? 'Cargo' : 'Power / HP', fl.type === 'freight' ? `${Math.round(fl.power)} kT` : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`, 'var(--accent)');
+      const targetPl = this.callbacks.getPlanetDetail(fl.target);
+      const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
+      const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
+      this.setInspCell(3, 'Route / ETA', `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`);
+      const statusTxt = fl.hunting ? '🎯 Intercepting' : fl.usedWh ? '⚡ Gate/WH Jump' : 'En Route';
+      this.setInspCell(4, 'Orders / Dist', `${statusTxt} • ${Math.round(dist)}ly`);
+      this.setInspCell(5, 'Drive / Weapon', emp ? `${emp.loadout.engine}` : '—');
+      return;
+    }
+
+    if (sel.kind === 'wormhole') {
+      const wh = hud.wormholes[sel.index];
+      if (!wh) {
+        this.selection = null;
+        insp.style.display = 'none';
+        return;
+      }
+      insp.style.display = 'flex';
+      minWrap.style.display = 'none';
+      insp.style.borderLeftColor = '#d946ef';
+      const span = Math.hypot(wh.x2 - wh.x1, wh.y2 - wh.y1);
+      getEl('inspTitle').textContent = `🌀 Wormhole #${sel.index + 1}`;
+      this.setInspCell(0, 'Type', 'Natural Wormhole', '#f0abfc');
+      this.setInspCell(1, 'Span Distance', `${Math.round(span)} ly`, 'var(--accent)');
+      this.setInspCell(2, 'Endpoint A', `(${Math.round(wh.x1)}, ${Math.round(wh.y1)})`);
+      this.setInspCell(3, 'Endpoint B', `(${Math.round(wh.x2)}, ${Math.round(wh.y2)})`);
+      this.setInspCell(4, 'Stability', 'Bidirectional');
+      this.setInspCell(5, 'Trigger Radius', '28 ly (>22% shortcut)');
+      return;
+    }
+
+    if (sel.kind === 'debris') {
+      const deb = this.callbacks.getDebrisDetail(sel.index);
+      if (!deb) {
+        this.selection = null;
+        insp.style.display = 'none';
+        return;
+      }
+      insp.style.display = 'flex';
+      minWrap.style.display = 'flex';
+      insp.style.borderLeftColor = '#c084fc';
+      const total = deb.iron + deb.bora + deb.germ;
+      getEl('inspTitle').textContent = `✦ Salvage Debris #${sel.index + 1}`;
+      this.setInspCell(0, 'Type', 'Battle Wreckage', '#c084fc');
+      this.setInspCell(1, 'Total Salvage', `${Math.round(total)} kT`, 'var(--accent)');
+      this.setInspCell(2, 'Position', `(${Math.round(deb.x)}, ${Math.round(deb.y)})`);
+      this.setInspCell(3, 'Decay TTL', `${deb.ttl.toFixed(1)} yr`);
+      this.setInspCell(4, 'Collection', 'Any passing fleet');
+      this.setInspCell(5, 'Salvage Rate', `${Math.round(this.lastConfig.salvageRate * 100)}%`);
+
+      const barMax = Math.max(25, total);
+      getEl('barIron').style.width = `${Math.min(100, (deb.iron / barMax) * 100)}%`;
+      getEl('valIron').textContent = `${Math.round(deb.iron)} kT`;
+      getEl('barBora').style.width = `${Math.min(100, (deb.bora / barMax) * 100)}%`;
+      getEl('valBora').textContent = `${Math.round(deb.bora)} kT`;
+      getEl('barGerm').style.width = `${Math.min(100, (deb.germ / barMax) * 100)}%`;
+      getEl('valGerm').textContent = `${Math.round(deb.germ)} kT`;
+    }
   }
 
   private renderTechOverview(hud: HudSnapshot): void {
@@ -894,7 +1025,7 @@ export class UiController {
                 ? '#f87171'
                 : '#93c5fd';
         const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
-        return `<tr>
+        return `<tr data-fleet-id="${fl.id}">
           <td>F${fl.id}</td>
           <td><span class="dot" style="background:${empCol}"></span></td>
           <td style="color:${col};font-weight:bold;">${label}</td>

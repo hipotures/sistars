@@ -1,4 +1,11 @@
-import type { CombatFxView, HudSnapshot, JumpFxView, RenderFrame } from './types';
+import type { CombatFxView, FleetView, HudSnapshot, JumpFxView, MapSelection, RenderFrame } from './types';
+
+export type HitTarget =
+  | { kind: 'planet'; index: number }
+  | { kind: 'fleet'; index: number }
+  | { kind: 'wormhole'; index: number }
+  | { kind: 'debris'; index: number }
+  | null;
 
 export const PLANET_STRIDE = 7; // [x, y, owner, factories, hab, hasGate, crustSum]
 export const FLEET_STRIDE = 7;  // [x, y, targetX, targetY, emp, typeCode, flags]
@@ -145,32 +152,67 @@ export class GalaxyRenderer {
     };
   }
 
-  public findPlanetAt(
-    clientX: number,
-    clientY: number,
-    planetsBuf: Float32Array,
-    maxDistPx: number,
-  ): number {
+  public hitTest(clientX: number, clientY: number, frame: RenderFrame): HitTarget {
     const rect = this.canvas.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
     const { scale, offX, offY } = this.getTransform();
-    const wx = (clientX - rect.left - offX) / scale;
-    const wy = (clientY - rect.top - offY) / scale;
-    const maxWorldDistSq = (maxDistPx / scale) ** 2;
 
-    let closest = -1;
-    let minDistSq = maxWorldDistSq;
-    const count = Math.floor(planetsBuf.length / PLANET_STRIDE);
-    for (let i = 0; i < count; i++) {
+    let best: HitTarget = null;
+    let bestScore = Infinity;
+
+    // 1. Planets (18px radius)
+    const planetCount = Math.floor(frame.planetsBuf.length / PLANET_STRIDE);
+    for (let i = 0; i < planetCount; i++) {
       const off = i * PLANET_STRIDE;
-      const dx = planetsBuf[off] - wx;
-      const dy = planetsBuf[off + 1] - wy;
-      const dSq = dx * dx + dy * dy;
-      if (dSq < minDistSq) {
-        minDistSq = dSq;
-        closest = i;
+      const px = offX + frame.planetsBuf[off] * scale;
+      const py = offY + frame.planetsBuf[off + 1] * scale;
+      const d = Math.hypot(px - mx, py - my);
+      if (d <= 18 && d < bestScore) {
+        bestScore = d;
+        best = { kind: 'planet', index: i };
       }
     }
-    return closest;
+
+    // 2. Fleets (14px radius, slight priority boost so moving fleets near planets are clickable)
+    const fleetCount = Math.floor(frame.fleetsBuf.length / FLEET_STRIDE);
+    for (let i = 0; i < fleetCount; i++) {
+      const off = i * FLEET_STRIDE;
+      const fx = offX + frame.fleetsBuf[off] * scale;
+      const fy = offY + frame.fleetsBuf[off + 1] * scale;
+      const d = Math.hypot(fx - mx, fy - my);
+      if (d <= 14 && d - 3 < bestScore) {
+        bestScore = d - 3;
+        best = { kind: 'fleet', index: i };
+      }
+    }
+
+    // 3. Wormholes (both endpoints, 16px radius)
+    for (let i = 0; i < frame.hud.wormholes.length; i++) {
+      const wh = frame.hud.wormholes[i];
+      const d1 = Math.hypot(offX + wh.x1 * scale - mx, offY + wh.y1 * scale - my);
+      const d2 = Math.hypot(offX + wh.x2 * scale - mx, offY + wh.y2 * scale - my);
+      const d = Math.min(d1, d2);
+      if (d <= 16 && d < bestScore) {
+        bestScore = d;
+        best = { kind: 'wormhole', index: i };
+      }
+    }
+
+    // 4. Debris fields (12px radius)
+    const debrisCount = Math.floor(frame.debrisBuf.length / DEBRIS_STRIDE);
+    for (let i = 0; i < debrisCount; i++) {
+      const off = i * DEBRIS_STRIDE;
+      const dx = offX + frame.debrisBuf[off] * scale;
+      const dy = offY + frame.debrisBuf[off + 1] * scale;
+      const d = Math.hypot(dx - mx, dy - my);
+      if (d <= 12 && d < bestScore) {
+        bestScore = d;
+        best = { kind: 'debris', index: i };
+      }
+    }
+
+    return best;
   }
 
   private getGlowSprite(rgb: string): HTMLCanvasElement {
@@ -196,10 +238,17 @@ export class GalaxyRenderer {
   public draw(
     frame: RenderFrame,
     crustRichness: number,
-    selectedPlanet: number,
-    hoveredPlanet: number,
+    selection: MapSelection,
+    hovered: HitTarget,
+    selectedFleet: FleetView | null,
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
+    const selectedPlanet = selection?.kind === 'planet' ? selection.index : -1;
+    const hoveredPlanet = hovered?.kind === 'planet' ? hovered.index : -1;
+    const selectedWormhole = selection?.kind === 'wormhole' ? selection.index : -1;
+    const hoveredWormhole = hovered?.kind === 'wormhole' ? hovered.index : -1;
+    const selectedDebris = selection?.kind === 'debris' ? selection.index : -1;
+    const hoveredDebris = hovered?.kind === 'debris' ? hovered.index : -1;
     const ctx = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;
@@ -233,7 +282,10 @@ export class GalaxyRenderer {
     }
 
     // Wormholes
-    for (const wh of hud.wormholes) {
+    for (let i = 0; i < hud.wormholes.length; i++) {
+      const wh = hud.wormholes[i];
+      const isSel = i === selectedWormhole;
+      const isHov = i === hoveredWormhole;
       const x1 = sx(wh.x1);
       const y1 = sy(wh.y1);
       const x2 = sx(wh.x2);
@@ -241,7 +293,12 @@ export class GalaxyRenderer {
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
-      ctx.strokeStyle = 'rgba(217, 70, 239, 0.25)';
+      ctx.strokeStyle = isSel
+        ? 'rgba(240, 171, 252, 0.85)'
+        : isHov
+          ? 'rgba(240, 171, 252, 0.5)'
+          : 'rgba(217, 70, 239, 0.25)';
+      ctx.lineWidth = isSel ? 2.2 : 1.0;
       ctx.setLineDash([5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -251,9 +308,9 @@ export class GalaxyRenderer {
         [x2, y2],
       ]) {
         ctx.beginPath();
-        ctx.arc(wx, wy, 9, 0, Math.PI * 2);
-        ctx.strokeStyle = '#d946ef';
-        ctx.lineWidth = 1.6;
+        ctx.arc(wx, wy, isSel ? 12 : 9, 0, Math.PI * 2);
+        ctx.strokeStyle = isSel ? '#ffffff' : '#d946ef';
+        ctx.lineWidth = isSel ? 2.0 : 1.6;
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(wx, wy, 4, 0, Math.PI * 2);
@@ -266,15 +323,23 @@ export class GalaxyRenderer {
     // Debris fields
     const debrisCount = Math.floor(debrisBuf.length / DEBRIS_STRIDE);
     if (debrisCount > 0) {
-      ctx.strokeStyle = 'rgba(192, 132, 252, 0.75)';
       ctx.setLineDash([2, 2]);
       for (let i = 0; i < debrisCount; i++) {
         const off = i * DEBRIS_STRIDE;
+        const isSel = i === selectedDebris;
+        const isHov = i === hoveredDebris;
+        ctx.strokeStyle = isSel
+          ? '#ffffff'
+          : isHov
+            ? '#e9d5ff'
+            : 'rgba(192, 132, 252, 0.75)';
+        ctx.lineWidth = isSel ? 2.0 : 1.0;
         ctx.beginPath();
-        ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), 5, 0, Math.PI * 2);
+        ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), isSel ? 8 : 5, 0, Math.PI * 2);
         ctx.stroke();
       }
       ctx.setLineDash([]);
+      ctx.lineWidth = 1.0;
     }
 
     // Planets
@@ -447,6 +512,31 @@ export class GalaxyRenderer {
 
       fx.ttl--;
       if (fx.ttl <= 0) this.combatFx.splice(i, 1);
+    }
+
+    // Selected fleet live highlight & trajectory
+    if (selectedFleet) {
+      const fx = sx(selectedFleet.x);
+      const fy = sy(selectedFleet.y);
+      const tOff = selectedFleet.target * PLANET_STRIDE;
+      if (tOff + 1 < planetsBuf.length) {
+        const tx = sx(planetsBuf[tOff]);
+        const ty = sy(planetsBuf[tOff + 1]);
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.lineTo(tx, ty);
+        ctx.strokeStyle = selectedFleet.hunting ? '#f87171' : '#ffffff';
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([5, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.beginPath();
+      ctx.arc(fx, fy, 10, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+      ctx.lineWidth = 1.0;
     }
 
     this.drawScaleBar(scale);

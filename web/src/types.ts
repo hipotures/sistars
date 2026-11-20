@@ -269,6 +269,13 @@ export interface ReportsSnapshot {
   fleets: FleetView[];
 }
 
+export type MapSelection =
+  | { kind: 'planet'; index: number }
+  | { kind: 'fleet'; id: number }
+  | { kind: 'wormhole'; index: number }
+  | { kind: 'debris'; index: number }
+  | null;
+
 export interface RenderFrame {
   hud: HudSnapshot;
   planetsBuf: Float32Array;
