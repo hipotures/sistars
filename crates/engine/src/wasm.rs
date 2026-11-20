@@ -134,6 +134,29 @@ impl WasmEngine {
         }
     }
 
+    /// On-demand detail for a clicked fleet by buffer index or stable fleet ID.
+    pub fn get_fleet_by_index(&self, idx: usize) -> JsValue {
+        match self.sim.fleets.get(idx) {
+            Some(fl) => serde_wasm_bindgen::to_value(fl).unwrap_or(JsValue::NULL),
+            None => JsValue::NULL,
+        }
+    }
+
+    pub fn get_fleet_by_id(&self, id: u32) -> JsValue {
+        match self.sim.fleets.iter().find(|fl| fl.id == id) {
+            Some(fl) => serde_wasm_bindgen::to_value(fl).unwrap_or(JsValue::NULL),
+            None => JsValue::NULL,
+        }
+    }
+
+    /// On-demand detail for a clicked salvage debris field.
+    pub fn get_debris_detail(&self, idx: usize) -> JsValue {
+        match self.sim.debris_fields.get(idx) {
+            Some(deb) => serde_wasm_bindgen::to_value(deb).unwrap_or(JsValue::NULL),
+            None => JsValue::NULL,
+        }
+    }
+
     /// On-demand full planet/fleet tables (only called when Reports drawer is open).
     pub fn get_reports_snapshot(&self) -> JsValue {
         let rep = self.sim.take_reports_snapshot();

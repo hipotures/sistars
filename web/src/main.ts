@@ -1,10 +1,12 @@
 import './style.css';
 import initWasm, { WasmEngine } from './wasm/sistars_engine';
-import { GalaxyRenderer } from './renderer';
+import { GalaxyRenderer, type HitTarget } from './renderer';
 import { UiController } from './ui';
 import type {
   CoEvolutionResult,
+  DebrisFieldView,
   EngineMeta,
+  FleetView,
   HudSnapshot,
   PlanetView,
   RenderFrame,
@@ -88,7 +90,7 @@ async function bootstrap(): Promise<void> {
   let speed = 1;
   let lastNonZeroSpeed = 1;
   let tickAccum = 0;
-  let hoveredPlanet = -1;
+  let hoveredTarget: HitTarget = null;
   let lastHud = engine.take_hud_snapshot() as HudSnapshot;
   let liveViews = buildZeroCopyViews();
   renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
@@ -262,7 +264,7 @@ async function bootstrap(): Promise<void> {
       syncHistoryBar();
     },
     onReset: () => {
-      ui.setSelectedPlanet(-1);
+      ui.setSelection(null);
       engine.init(randomSeed());
       refreshLiveState(true, true);
     },
@@ -271,7 +273,7 @@ async function bootstrap(): Promise<void> {
       config = engine.get_config() as SimConfig;
       ui.setConfig(config);
       if (reset) {
-        ui.setSelectedPlanet(-1);
+        ui.setSelection(null);
         refreshLiveState(true, true);
       } else {
         refreshLiveState(false, false);
@@ -282,17 +284,17 @@ async function bootstrap(): Promise<void> {
       if (ok) {
         config = engine.get_config() as SimConfig;
         ui.setConfig(config);
-        ui.setSelectedPlanet(-1);
+        ui.setSelection(null);
         refreshLiveState(true, true);
       }
     },
-    onSelectPlanet: (index) => {
-      ui.setSelectedPlanet(index);
+    onSelectObject: (sel) => {
+      ui.setSelection(sel);
     },
     onLaunchRaces: (races) => {
       const ok = engine.set_races(races, randomSeed());
       if (ok) {
-        ui.setSelectedPlanet(-1);
+        ui.setSelection(null);
         refreshLiveState(true, true);
       }
     },
@@ -391,6 +393,8 @@ async function bootstrap(): Promise<void> {
       syncHistoryBar();
     },
     getPlanetDetail: (index) => engine.get_planet_detail(index) as PlanetView | null,
+    getFleetById: (id) => engine.get_fleet_by_id(id) as FleetView | null,
+    getDebrisDetail: (index) => engine.get_debris_detail(index) as DebrisFieldView | null,
     getReportsSnapshot: () => engine.get_reports_snapshot() as ReportsSnapshot,
     getPowerHistory: () => engine.get_power_history() as number[][],
     onLabAction: (action) => {
@@ -474,18 +478,25 @@ async function bootstrap(): Promise<void> {
       }
       return;
     }
-    hoveredPlanet = renderer.findPlanetAt(e.clientX, e.clientY, activeFrame().planetsBuf, 20);
-    canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
+    hoveredTarget = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+    canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
   });
 
   window.addEventListener('mouseup', (e) => {
     if (!isDragging) return;
     isDragging = false;
     if (!dragMoved && e.target === canvas) {
-      const closest = renderer.findPlanetAt(e.clientX, e.clientY, activeFrame().planetsBuf, 22);
-      ui.setSelectedPlanet(closest);
+      const hit = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+      if (!hit) {
+        ui.setSelection(null);
+      } else if (hit.kind === 'fleet') {
+        const fl = engine.get_fleet_by_index(hit.index) as FleetView | null;
+        ui.setSelection(fl ? { kind: 'fleet', id: fl.id } : null);
+      } else {
+        ui.setSelection(hit);
+      }
     }
-    canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
+    canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
   });
 
   canvas.addEventListener('dblclick', () => {
@@ -547,8 +558,11 @@ async function bootstrap(): Promise<void> {
     }
 
     const cur = activeFrame();
+    const sel = ui.getSelection();
+    const selectedFleet =
+      sel?.kind === 'fleet' ? (engine.get_fleet_by_id(sel.id) as FleetView | null) : null;
     const d0 = measurePerf ? performance.now() : 0;
-    renderer.draw(cur, config.crustRichness, ui.getSelectedPlanet(), hoveredPlanet);
+    renderer.draw(cur, config.crustRichness, sel, hoveredTarget, selectedFleet);
 
     if (measurePerf) {
       const drawMs = performance.now() - d0;

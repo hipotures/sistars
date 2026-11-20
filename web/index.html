@@ -58,21 +58,21 @@
   <span class="perf-item"><b>ENT</b> <span id="perfEnt">120p / 0f</span></span>
 </div>
 
-<!-- PLANET INSPECTOR -->
+<!-- OBJECT INSPECTOR (Planet / Fleet / Wormhole / Debris) -->
 <div id="planetInspector">
   <div class="insp-header">
     <div class="insp-title" id="inspTitle">System #1</div>
     <button class="insp-close" id="btnCloseInspector">✕</button>
   </div>
   <div class="insp-grid">
-    <div class="insp-stat"><span>Owner</span><b id="inspOwner">Uninhabited</b></div>
-    <div class="insp-stat"><span>Habitability</span><b id="inspHab">100%</b></div>
-    <div class="insp-stat"><span>Population</span><b id="inspPop">42k / 170k</b></div>
-    <div class="insp-stat"><span>Production</span><b id="inspRes" style="color:var(--accent)">30 Res/yr</b></div>
-    <div class="insp-stat"><span>Factories / Mines</span><b id="inspFac">16 / 18</b></div>
-    <div class="insp-stat"><span>Defense / Gate</span><b id="inspDef">40 | None</b></div>
+    <div class="insp-stat"><span id="inspLbl0">Owner</span><b id="inspVal0">Uninhabited</b></div>
+    <div class="insp-stat"><span id="inspLbl1">Habitability</span><b id="inspVal1">100%</b></div>
+    <div class="insp-stat"><span id="inspLbl2">Population</span><b id="inspVal2">42k / 170k</b></div>
+    <div class="insp-stat"><span id="inspLbl3">Production</span><b id="inspVal3" style="color:var(--accent)">30 Res/yr</b></div>
+    <div class="insp-stat"><span id="inspLbl4">Factories / Mines</span><b id="inspVal4">16 / 18</b></div>
+    <div class="insp-stat"><span id="inspLbl5">Defense / Gate</span><b id="inspVal5">40 | None</b></div>
   </div>
-  <div style="display:flex; flex-direction:column; gap:5px; margin-top:2px;">
+  <div id="inspMineralsWrap" style="display:flex; flex-direction:column; gap:5px; margin-top:2px;">
     <div class="min-bar-row"><span class="c-iron" style="width:58px;">Ironium</span><div class="min-bar-track"><div id="barIron" class="min-bar-fill" style="background:var(--iron);width:50%"></div></div><span id="valIron" style="width:85px;text-align:right;">160 (800)</span></div>
     <div class="min-bar-row"><span class="c-bora" style="width:58px;">Boranium</span><div class="min-bar-track"><div id="barBora" class="min-bar-fill" style="background:var(--bora);width:50%"></div></div><span id="valBora" style="width:85px;text-align:right;">160 (800)</span></div>
     <div class="min-bar-row"><span class="c-germ" style="width:58px;">Germanium</span><div class="min-bar-track"><div id="barGerm" class="min-bar-fill" style="background:var(--germ);width:50%"></div></div><span id="valGerm" style="width:85px;text-align:right;">160 (800)</span></div>
@@ -80,7 +80,7 @@
 </div>
 
 <div class="map-legend">
-  <span>Click a planet to inspect</span>
+  <span>Click any planet, fleet, wormhole or debris</span>
   <span style="color:#d946ef">🌀 Wormhole</span>
   <span style="color:#22d3ee">◯ Stargate</span>
   <span>▲ Cruiser</span>
@@ -322,7 +322,11 @@
   <div class="field"><div class="field-header"><span>Anti-leader coalition (Aggro)</span><span class="val" id="v_aggroBias">65%</span></div><input type="range" id="p_aggroBias" data-param="aggroBias" min="0" max="100" step="5" value="65"></div>
   <div class="field"><div class="field-header"><span>Empire sprawl penalty</span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
 
-  <h3>5. Debug</h3>
+  <h3>5. Debug &amp; UI</h3>
+  <label class="checkbox-row">
+    <input type="checkbox" id="p_showEventLog" checked />
+    <span>Show Event Log (auto-hidden above 1x speed)</span>
+  </label>
   <label class="checkbox-row">
     <input type="checkbox" id="p_debugPerf" />
     <span>Performance HUD (FPS, ticks/s, WASM &amp; Canvas ms)</span>
