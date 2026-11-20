@@ -452,9 +452,12 @@ async function bootstrap(): Promise<void> {
     },
   });
 
-  // Camera zoom (wheel), pan (drag), reset (dblclick / Home / 0) & planet click
-  let isDragging = false;
+  // Camera zoom (wheel + 2-finger pinch), pan (mouse drag + 1-finger drag),
+  // reset (dblclick / Home / 0) & object tap/click
+  const activePointers = new Map<number, { x: number; y: number }>();
   let dragMoved = false;
+  let wasPinching = false;
+  let primaryPointerId: number | null = null;
   let dragStartX = 0;
   let dragStartY = 0;
 
@@ -468,47 +471,112 @@ async function bootstrap(): Promise<void> {
     { passive: false },
   );
 
-  canvas.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    isDragging = true;
-    dragMoved = false;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    canvas.setPointerCapture(e.pointerId);
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointers.size === 1) {
+      primaryPointerId = e.pointerId;
+      dragMoved = false;
+      wasPinching = false;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+    } else if (activePointers.size >= 2) {
+      wasPinching = true;
+      dragMoved = true;
+    }
   });
 
-  window.addEventListener('mousemove', (e) => {
-    if (isDragging) {
-      const dx = e.clientX - dragStartX;
-      const dy = e.clientY - dragStartY;
-      if (Math.hypot(dx, dy) > 3) dragMoved = true;
-      if (dragMoved) {
-        renderer.panBy(dx, dy);
-        dragStartX = e.clientX;
-        dragStartY = e.clientY;
-        canvas.style.cursor = 'grabbing';
+  window.addEventListener('pointermove', (e) => {
+    if (activePointers.has(e.pointerId)) {
+      if (activePointers.size === 2) {
+        // Two-finger pinch-to-zoom around midpoint + simultaneous pan
+        const entries = Array.from(activePointers.entries());
+        const other = entries[0][0] === e.pointerId ? entries[1][1] : entries[0][1];
+        const prev = activePointers.get(e.pointerId)!;
+
+        const prevMidX = (prev.x + other.x) * 0.5;
+        const prevMidY = (prev.y + other.y) * 0.5;
+        const prevDist = Math.hypot(prev.x - other.x, prev.y - other.y);
+
+        const nextMidX = (e.clientX + other.x) * 0.5;
+        const nextMidY = (e.clientY + other.y) * 0.5;
+        const nextDist = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        renderer.panBy(nextMidX - prevMidX, nextMidY - prevMidY);
+        if (prevDist > 8 && nextDist > 8) {
+          renderer.zoomAt(nextMidX, nextMidY, nextDist / prevDist);
+        }
+        return;
       }
+
+      if (activePointers.size === 1 && primaryPointerId === e.pointerId) {
+        const dx = e.clientX - dragStartX;
+        const dy = e.clientY - dragStartY;
+        const threshold = e.pointerType === 'touch' ? 6 : 3;
+        if (!dragMoved && Math.hypot(dx, dy) > threshold) {
+          dragMoved = true;
+        }
+        if (dragMoved) {
+          renderer.panBy(dx, dy);
+          dragStartX = e.clientX;
+          dragStartY = e.clientY;
+          canvas.style.cursor = 'grabbing';
+        }
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        return;
+      }
+
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       return;
     }
-    hoveredTarget = renderer.hitTest(e.clientX, e.clientY, activeFrame());
-    canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
+
+    if (e.pointerType === 'mouse') {
+      hoveredTarget = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+      canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
+    }
   });
 
-  window.addEventListener('mouseup', (e) => {
-    if (!isDragging) return;
-    isDragging = false;
-    if (!dragMoved && e.target === canvas) {
-      const hit = renderer.hitTest(e.clientX, e.clientY, activeFrame());
-      if (!hit) {
-        ui.setSelection(null);
-      } else if (hit.kind === 'fleet') {
-        const fl = engine.get_fleet_by_index(hit.index) as FleetView | null;
-        ui.setSelection(fl ? { kind: 'fleet', id: fl.id } : null);
-      } else {
-        ui.setSelection(hit);
-      }
+  const handlePointerEnd = (e: PointerEvent): void => {
+    if (!activePointers.has(e.pointerId)) return;
+    activePointers.delete(e.pointerId);
+
+    if (activePointers.size === 1) {
+      // Transition cleanly from 2-finger pinch back to 1-finger pan
+      const [remId, remPos] = activePointers.entries().next().value as [
+        number,
+        { x: number; y: number },
+      ];
+      primaryPointerId = remId;
+      dragStartX = remPos.x;
+      dragStartY = remPos.y;
+      return;
     }
-    canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
-  });
+
+    if (activePointers.size === 0) {
+      if (!dragMoved && !wasPinching && e.type === 'pointerup') {
+        const hit = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+        if (!hit) {
+          ui.setSelection(null);
+        } else if (hit.kind === 'fleet') {
+          const fl = engine.get_fleet_by_index(hit.index) as FleetView | null;
+          ui.setSelection(fl ? { kind: 'fleet', id: fl.id } : null);
+        } else {
+          ui.setSelection(hit);
+        }
+      }
+      primaryPointerId = null;
+      wasPinching = false;
+      dragMoved = false;
+      canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
+    }
+  };
+
+  window.addEventListener('pointerup', handlePointerEnd);
+  window.addEventListener('pointercancel', handlePointerEnd);
 
   canvas.addEventListener('dblclick', () => {
     renderer.resetCamera();
