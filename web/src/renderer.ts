@@ -48,6 +48,9 @@ export class GalaxyRenderer {
 
   private worldW: number;
   private worldH: number;
+  private cssW = window.innerWidth;
+  private cssH = window.innerHeight;
+  private dpr = 1;
   private readonly bgStars: BgStar[];
   private readonly glowSpriteCache = new Map<string, HTMLCanvasElement>();
   private combatFx: CombatFxView[] = [];
@@ -95,6 +98,7 @@ export class GalaxyRenderer {
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    window.visualViewport?.addEventListener('resize', () => this.resize());
   }
 
   private async initBackend(): Promise<void> {
@@ -123,12 +127,23 @@ export class GalaxyRenderer {
   }
 
   public resize(): void {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.canvas.width = w;
-    this.canvas.height = h;
-    this.overlayCanvas.width = w;
-    this.overlayCanvas.height = h;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = Math.max(1, this.canvas.clientWidth || window.innerWidth);
+    const cssH = Math.max(1, this.canvas.clientHeight || window.innerHeight);
+    this.dpr = dpr;
+    this.cssW = cssW;
+    this.cssH = cssH;
+
+    const bufW = Math.round(cssW * dpr);
+    const bufH = Math.round(cssH * dpr);
+    if (this.canvas.width !== bufW || this.canvas.height !== bufH) {
+      this.canvas.width = bufW;
+      this.canvas.height = bufH;
+    }
+    if (this.overlayCanvas.width !== bufW || this.overlayCanvas.height !== bufH) {
+      this.overlayCanvas.width = bufW;
+      this.overlayCanvas.height = bufH;
+    }
     this.gpuBackend?.reconfigure();
   }
 
@@ -187,16 +202,22 @@ export class GalaxyRenderer {
     this.panY = my - wy * newScale - base.offY;
   }
 
+  private getHudTopHeight(): number {
+    const hudEl = document.querySelector('header.hud-top');
+    return hudEl ? hudEl.getBoundingClientRect().height : 54;
+  }
+
   private getBaseTransform(): ViewportTransform {
-    const padTop = 64;
-    const padBot = 34;
-    const padX = 24;
-    const availW = this.canvas.width - padX * 2;
-    const availH = this.canvas.height - padTop - padBot;
+    const padTop = this.getHudTopHeight() + 10;
+    const isNarrow = this.cssW <= 768;
+    const padBot = isNarrow ? 20 : 34;
+    const padX = isNarrow ? 12 : 24;
+    const availW = Math.max(1, this.cssW - padX * 2);
+    const availH = Math.max(1, this.cssH - padTop - padBot);
     const scale = Math.min(availW / this.worldW, availH / this.worldH);
     return {
       scale,
-      offX: (this.canvas.width - this.worldW * scale) / 2,
+      offX: (this.cssW - this.worldW * scale) / 2,
       offY: padTop + (availH - this.worldH * scale) / 2,
     };
   }
@@ -299,13 +320,16 @@ export class GalaxyRenderer {
   }
 
   private getDenseFactor(planetCount: number): number {
-    return planetCount >= 5000
-      ? 0.55
-      : planetCount >= 450
-        ? 0.72
-        : planetCount >= 220
-          ? 0.85
-          : 1.0;
+    const base =
+      planetCount >= 5000
+        ? 0.55
+        : planetCount >= 450
+          ? 0.72
+          : planetCount >= 220
+            ? 0.85
+            : 1.0;
+    const mobileScale = this.cssW < 640 ? 0.72 : 1.0;
+    return base * mobileScale;
   }
 
   private planetRadius(owner: number, factories: number, hab: number, denseFactor: number): number {
@@ -333,8 +357,8 @@ export class GalaxyRenderer {
           offY: transform.offY,
           scale: transform.scale,
           zoom: this.zoom,
-          viewportW: this.canvas.width,
-          viewportH: this.canvas.height,
+          viewportW: this.cssW,
+          viewportH: this.cssH,
           denseFactor,
           invCrustNorm,
           planetCount,
@@ -382,8 +406,9 @@ export class GalaxyRenderer {
     empColors: string[],
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
-    const W = this.canvas.width;
-    const H = this.canvas.height;
+    const W = this.cssW;
+    const H = this.cssH;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
     for (const s of this.bgStars) {
@@ -569,8 +594,9 @@ export class GalaxyRenderer {
     selectedFleet: FleetView | null,
   ): void {
     const ctx = this.overlayCtx;
-    const W = this.overlayCanvas.width;
-    const H = this.overlayCanvas.height;
+    const W = this.cssW;
+    const H = this.cssH;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
     const { hud, planetsBuf, debrisBuf } = frame;
@@ -777,8 +803,8 @@ export class GalaxyRenderer {
       }
     }
     const barW = Math.round(ly * scale);
-    const x = 16;
-    const y = 68;
+    const x = this.cssW <= 768 ? 10 : 16;
+    const y = Math.round(this.getHudTopHeight() + 10);
     const boxW = Math.max(barW + 24, 130);
     const boxH = 34;
 
