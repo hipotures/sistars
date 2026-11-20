@@ -72,7 +72,8 @@ async function bootstrap(): Promise<void> {
   let config = engine.get_config() as SimConfig;
 
   const canvas = document.getElementById('galaxyCanvas') as HTMLCanvasElement;
-  const renderer = new GalaxyRenderer(canvas, meta.worldW, meta.worldH);
+  const overlayCanvas = document.getElementById('overlayCanvas') as HTMLCanvasElement;
+  const renderer = await GalaxyRenderer.create(canvas, overlayCanvas, meta.worldW, meta.worldH);
 
   const buildZeroCopyViews = (): {
     planetsBuf: Float32Array;
@@ -307,7 +308,17 @@ async function bootstrap(): Promise<void> {
       perfDrawSum = 0;
       perfWindowStart = performance.now();
       const f = activeFrame();
-      ui.updatePerfHud(enabled, 0, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
+      ui.updatePerfHud(
+        enabled,
+        renderer.backendName,
+        0,
+        0,
+        0,
+        0,
+        0,
+        f.hud.planetCount,
+        f.hud.fleetCount,
+      );
     },
     onDebugHistoryToggle: (enabled) => {
       debugHistoryEnabled = enabled;
@@ -586,6 +597,7 @@ async function bootstrap(): Promise<void> {
         if (debugPerfEnabled) {
           ui.updatePerfHud(
             true,
+            renderer.backendName,
             latestPerf.fps,
             latestPerf.tps,
             latestPerf.wasmMs,

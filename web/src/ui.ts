@@ -214,6 +214,7 @@ export class UiController {
 
   public updatePerfHud(
     enabled: boolean,
+    backend: 'WebGPU' | 'Canvas2D',
     fps: number,
     tps: number,
     wasmMs: number,
@@ -225,6 +226,10 @@ export class UiController {
     const hud = getEl('perfHud');
     hud.classList.toggle('visible', enabled);
     if (!enabled) return;
+
+    const backendEl = getEl('perfBackend');
+    backendEl.textContent = backend;
+    backendEl.style.color = backend === 'WebGPU' ? 'var(--accent)' : 'var(--yellow)';
 
     const fpsEl = getEl('perfFps');
     fpsEl.textContent = String(Math.round(fps));
