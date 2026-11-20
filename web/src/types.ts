@@ -280,6 +280,16 @@ export type MapSelection =
   | { kind: 'debris'; index: number }
   | null;
 
+export type EquilibriumMode = 'gap' | 'none';
+export type RangeContourMode = 'hidden' | 'outer' | 'subtle' | 'full';
+
+export interface ScannerFieldSettings {
+  equilibriumMode: EquilibriumMode;
+  contourMode: RangeContourMode;
+  contourOpacity: number; // 0.0 .. 0.80
+  empireMask: number;     // bitmask: bit i => empire (i + 1) visible
+}
+
 export interface RenderFrame {
   hud: HudSnapshot;
   planetsBuf: Float32Array;

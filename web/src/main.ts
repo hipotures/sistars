@@ -1,16 +1,19 @@
 import './style.css';
-import { GalaxyRenderer, type HitTarget } from './renderer';
+import { GalaxyRenderer, PLANET_STRIDE, type HitTarget } from './renderer';
 import { UiController } from './ui';
 import type {
   CoEvolutionResult,
   DebrisFieldView,
   EngineMeta,
+  EquilibriumMode,
   FleetView,
   HudSnapshot,
   MapSelection,
   PlanetView,
+  RangeContourMode,
   RenderFrame,
   ReportsSnapshot,
+  ScannerFieldSettings,
   SimConfig,
   TechCatalogView,
   TournamentResult,
@@ -181,6 +184,13 @@ async function bootstrap(): Promise<void> {
   let rafId: number | null = null;
   let renderDirty = true;
 
+  // Scanner field visual settings & interactive Empire Lens state
+  let equilibriumMode: EquilibriumMode = 'gap';
+  let contourMode: RangeContourMode = 'subtle';
+  let contourOpacity = 0.22;
+  const hudLensEmpires = new Set<number>();
+  let lastLensSig = '';
+
   const scheduleRender = (): void => {
     renderDirty = true;
     if (rafId === null) {
@@ -329,8 +339,52 @@ async function bootstrap(): Promise<void> {
     syncHistoryBar();
   };
 
+  const computeActiveLens = (
+    frame: RenderFrame,
+    sel: MapSelection,
+  ): { mask: number; activeSet: Set<number> | null; sig: string } => {
+    // Auto-lens: when an owned planet is selected, temporarily isolate that empire's scanner field
+    if (sel?.kind === 'planet') {
+      const ownerOff = sel.index * PLANET_STRIDE + 2;
+      if (ownerOff >= 0 && ownerOff < frame.planetsBuf.length) {
+        const owner = Math.round(frame.planetsBuf[ownerOff]);
+        if (owner > 0) {
+          const empIdx = owner - 1;
+          return {
+            mask: 1 << empIdx,
+            activeSet: new Set([empIdx]),
+            sig: `auto:${empIdx}`,
+          };
+        }
+      }
+    }
+
+    // Manual HUD multi-select lens
+    if (hudLensEmpires.size > 0) {
+      let mask = 0;
+      for (const idx of hudLensEmpires) {
+        mask |= 1 << idx;
+      }
+      const sig = `hud:${mask}`;
+      return { mask, activeSet: hudLensEmpires, sig };
+    }
+
+    // Global view: all empires visible
+    return { mask: 0xffff, activeSet: null, sig: 'all' };
+  };
+
+  const syncLensUi = (frame: RenderFrame, sel: MapSelection): number => {
+    const lens = computeActiveLens(frame, sel);
+    if (lens.sig !== lastLensSig) {
+      lastLensSig = lens.sig;
+      ui.setEmpireLensState(lens.activeSet);
+    }
+    return lens.mask;
+  };
+
   const applySelection = (sel: MapSelection): void => {
     ui.setSelection(sel);
+    syncLensUi(activeFrame(), sel);
     const fleetId = sel?.kind === 'fleet' ? sel.id : null;
     postToWorker({ type: 'setSelectedFleet', fleetId });
     if (fleetId === null) {
@@ -380,6 +434,7 @@ async function bootstrap(): Promise<void> {
       postToWorker({ type: 'step', ticks: 1 });
     },
     onReset: () => {
+      hudLensEmpires.clear();
       applySelection(null);
       postToWorker({ type: 'newGalaxy', seed: randomSeed() });
     },
@@ -387,6 +442,7 @@ async function bootstrap(): Promise<void> {
       postToWorker({ type: 'updateConfig', key, value, seed: randomSeed() });
     },
     onGalaxyChange: (size, shape) => {
+      hudLensEmpires.clear();
       applySelection(null);
       postToWorker({ type: 'newGalaxy', seed: randomSeed(), size, shape });
     },
@@ -394,8 +450,36 @@ async function bootstrap(): Promise<void> {
       applySelection(sel);
     },
     onLaunchRaces: (races) => {
+      hudLensEmpires.clear();
       applySelection(null);
       postToWorker({ type: 'setRaces', races, seed: randomSeed() });
+    },
+    onToggleEmpireLens: (empIndex) => {
+      if (hudLensEmpires.has(empIndex)) {
+        hudLensEmpires.delete(empIndex);
+      } else {
+        hudLensEmpires.add(empIndex);
+      }
+      // If a planet auto-lens is active, clear planet selection so manual HUD selection takes immediate effect
+      const curSel = ui.getSelection();
+      if (curSel?.kind === 'planet') {
+        applySelection(null);
+      } else {
+        syncLensUi(activeFrame(), curSel);
+        scheduleRender();
+      }
+    },
+    onEquilibriumModeChange: (mode) => {
+      equilibriumMode = mode;
+      scheduleRender();
+    },
+    onContourModeChange: (mode) => {
+      contourMode = mode;
+      scheduleRender();
+    },
+    onContourOpacityChange: (opacity) => {
+      contourOpacity = opacity;
+      scheduleRender();
     },
     onDebugPerfToggle: (enabled) => {
       debugPerfEnabled = enabled;
@@ -825,10 +909,25 @@ async function bootstrap(): Promise<void> {
     const cur = activeFrame();
     const sel = ui.getSelection();
     const selectedFleet = sel?.kind === 'fleet' && historyViewIndex === null ? liveSelectedFleet : null;
+    const empireMask = syncLensUi(cur, sel);
+    const fieldSettings: ScannerFieldSettings = {
+      equilibriumMode,
+      contourMode,
+      contourOpacity,
+      empireMask,
+    };
 
     const measurePerf = debugPerfEnabled || debugTelemetryEnabled;
     const d0 = measurePerf ? performance.now() : 0;
-    renderer.draw(cur, config.crustRichness, sel, hoveredTarget, selectedFleet, dataVersion);
+    renderer.draw(
+      cur,
+      config.crustRichness,
+      sel,
+      hoveredTarget,
+      selectedFleet,
+      dataVersion,
+      fieldSettings,
+    );
 
     if (measurePerf) {
       perfDrawSum += performance.now() - d0;

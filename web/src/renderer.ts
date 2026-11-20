@@ -1,4 +1,12 @@
-import type { CombatFxView, FleetView, HudSnapshot, JumpFxView, MapSelection, RenderFrame } from './types';
+import type {
+  CombatFxView,
+  FleetView,
+  HudSnapshot,
+  JumpFxView,
+  MapSelection,
+  RenderFrame,
+  ScannerFieldSettings,
+} from './types';
 import { WebGpuGalaxyBackend } from './webgpu';
 
 export type RenderBackendName = 'WebGPU' | 'Canvas2D';
@@ -347,6 +355,12 @@ export class GalaxyRenderer {
     hovered: HitTarget,
     selectedFleet: FleetView | null,
     dataVersion = 0,
+    fieldSettings: ScannerFieldSettings = {
+      equilibriumMode: 'gap',
+      contourMode: 'subtle',
+      contourOpacity: 0.22,
+      empireMask: 0xffff,
+    },
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
     const transform = this.getTransform();
@@ -381,6 +395,7 @@ export class GalaxyRenderer {
         this.jumpFx,
         this.combatFx,
         dataVersion,
+        fieldSettings,
       );
     } else if (this.fallbackCtx) {
       this.drawCanvas2dBase(
@@ -390,6 +405,8 @@ export class GalaxyRenderer {
         denseFactor,
         invCrustNorm,
         empColors,
+        empRanges,
+        fieldSettings,
       );
     }
 
@@ -415,6 +432,8 @@ export class GalaxyRenderer {
     denseFactor: number,
     invCrustNorm: number,
     empColors: string[],
+    empRanges: [number, number][],
+    fieldSettings: ScannerFieldSettings,
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
     const W = this.cssW;
@@ -430,21 +449,37 @@ export class GalaxyRenderer {
     const { scale, offX, offY } = transform;
     const sx = (x: number) => offX + x * scale;
     const sy = (y: number) => offY + y * scale;
-    const glowSprites = hud.empires.map((emp) => this.getGlowSprite(hexToRgbTuple(emp.color)));
+    const empRgbs = hud.empires.map((emp) => hexToRgbTuple(emp.color));
+    const glowSprites = empRgbs.map((rgb) => this.getGlowSprite(rgb));
     const planetCount = Math.floor(planetsBuf.length / PLANET_STRIDE);
 
-    // Empire territory glows
-    for (let i = 0; i < planetCount; i++) {
-      const off = i * PLANET_STRIDE;
-      const owner = planetsBuf[off + 2];
-      if (owner === 0) continue;
-      const px = sx(planetsBuf[off]);
-      const py = sy(planetsBuf[off + 1]);
-      if (px < -60 || px > W + 60 || py < -60 || py > H + 60) continue;
-      const sprite = glowSprites[owner - 1];
-      if (!sprite) continue;
-      const rad = (24 + Math.sqrt(planetsBuf[off + 3]) * 2.2) * scale;
-      ctx.drawImage(sprite, px - rad, py - rad, rad * 2, rad * 2);
+    // Empire scanner fields (respecting empireMask and contour settings)
+    const showContours = fieldSettings.contourMode !== 'hidden' && fieldSettings.contourOpacity > 0.001;
+    if (fieldSettings.empireMask !== 0) {
+      for (let i = 0; i < planetCount; i++) {
+        const off = i * PLANET_STRIDE;
+        const owner = Math.round(planetsBuf[off + 2]);
+        if (owner === 0) continue;
+        const empIdx = owner - 1;
+        if ((fieldSettings.empireMask & (1 << empIdx)) === 0) continue;
+        const rangeLy = empRanges[empIdx]?.[0] ?? 0;
+        const rad = rangeLy * scale;
+        if (rad < 1.5) continue;
+        const px = sx(planetsBuf[off]);
+        const py = sy(planetsBuf[off + 1]);
+        if (px + rad < 0 || px - rad > W || py + rad < 0 || py - rad > H) continue;
+        const sprite = glowSprites[empIdx];
+        if (sprite) {
+          ctx.drawImage(sprite, px - rad, py - rad, rad * 2, rad * 2);
+        }
+        if (showContours) {
+          ctx.beginPath();
+          ctx.arc(px, py, rad, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(${empRgbs[empIdx] ?? '56,189,248'}, ${fieldSettings.contourOpacity * 0.75})`;
+          ctx.lineWidth = 1.0;
+          ctx.stroke();
+        }
+      }
     }
 
     // Wormhole links

@@ -3,12 +3,14 @@ import type {
   DebrisFieldView,
   Doctrine,
   EngineMeta,
+  EquilibriumMode,
   FleetClass,
   FleetView,
   HudSnapshot,
   MapSelection,
   PlanetView,
   RaceDef,
+  RangeContourMode,
   ReportsSnapshot,
   SimConfig,
   TechCatalogView,
@@ -27,6 +29,10 @@ export interface UiCallbacks {
   onLabAction: (action: LabAction) => void;
   onSelectObject: (sel: MapSelection) => void;
   onLaunchRaces: (races: RaceDef[]) => void;
+  onToggleEmpireLens: (empIndex: number) => void;
+  onEquilibriumModeChange: (mode: EquilibriumMode) => void;
+  onContourModeChange: (mode: RangeContourMode) => void;
+  onContourOpacityChange: (opacity: number) => void;
   onDebugPerfToggle: (enabled: boolean) => void;
   onDebugHistoryToggle: (enabled: boolean) => void;
   onDebugTelemetryToggle: (enabled: boolean) => void;
@@ -142,6 +148,9 @@ export class UiController {
   private customRaces: RaceDef[] = [];
   private selectedRaceIds: Set<string>;
   private activeTechTab: 'overview' | 'browser' = 'overview';
+  private activeLensEmpires: Set<number> | null = null;
+  private activeContourMode: RangeContourMode = 'subtle';
+  private lastNonZeroContourOpacity = 22;
 
   constructor(
     meta: EngineMeta,
@@ -392,6 +401,68 @@ export class UiController {
     });
 
     getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
+
+    // Interactive HUD empire lens multi-select
+    getEl('empiresBar').addEventListener('click', (e) => {
+      const pill = (e.target as HTMLElement).closest<HTMLElement>('.emp-pill');
+      if (!pill || pill.dataset.empIdx === undefined) return;
+      const idx = Number(pill.dataset.empIdx);
+      if (!Number.isNaN(idx)) {
+        this.callbacks.onToggleEmpireLens(idx);
+      }
+    });
+
+    // Scanner field visual controls (Equilibrium Line, Range Contours, Contour Opacity)
+    const syncContourOpacityUi = (pct: number): void => {
+      const clamped = Math.max(0, Math.min(80, Math.round(pct)));
+      getEl<HTMLInputElement>('p_contourOpacity').value = String(clamped);
+      getEl('v_contourOpacity').textContent = `${clamped}%`;
+    };
+
+    document.querySelectorAll<HTMLButtonElement>('[data-eq-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = (btn.dataset.eqMode === 'none' ? 'none' : 'gap') as EquilibriumMode;
+        document.querySelectorAll<HTMLButtonElement>('[data-eq-mode]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.eqMode === mode);
+        });
+        this.callbacks.onEquilibriumModeChange(mode);
+      });
+    });
+
+    document.querySelectorAll<HTMLButtonElement>('[data-contour-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = (btn.dataset.contourMode ?? 'subtle') as RangeContourMode;
+        this.activeContourMode = mode;
+        document.querySelectorAll<HTMLButtonElement>('[data-contour-mode]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.contourMode === mode);
+        });
+        let pct = this.lastNonZeroContourOpacity;
+        if (mode === 'hidden') pct = 0;
+        else if (mode === 'subtle') pct = 22;
+        else if (mode === 'full') pct = 58;
+        else if (mode === 'outer') pct = pct > 0 ? pct : 45;
+        if (pct > 0) this.lastNonZeroContourOpacity = pct;
+        syncContourOpacityUi(pct);
+        this.callbacks.onContourModeChange(mode);
+        this.callbacks.onContourOpacityChange(pct / 100);
+      });
+    });
+
+    getEl<HTMLInputElement>('p_contourOpacity').addEventListener('input', (e) => {
+      const pct = Math.max(0, Math.min(80, Math.round(Number((e.target as HTMLInputElement).value))));
+      getEl('v_contourOpacity').textContent = `${pct}%`;
+      if (pct > 0) {
+        this.lastNonZeroContourOpacity = pct;
+        if (this.activeContourMode === 'hidden') {
+          this.activeContourMode = 'subtle';
+          document.querySelectorAll<HTMLButtonElement>('[data-contour-mode]').forEach((b) => {
+            b.classList.toggle('active', b.dataset.contourMode === 'subtle');
+          });
+          this.callbacks.onContourModeChange('subtle');
+        }
+      }
+      this.callbacks.onContourOpacityChange(pct / 100);
+    });
 
     // Debug Performance HUD, Event Log, Telemetry & History Scrubber controls
     getEl<HTMLInputElement>('p_showEventLog').addEventListener('change', (e) => {
@@ -658,6 +729,23 @@ export class UiController {
       .join('');
   }
 
+  public setEmpireLensState(activeEmpires: Set<number> | null): void {
+    this.activeLensEmpires = activeEmpires ? new Set(activeEmpires) : null;
+    this.applyEmpireLensClasses();
+  }
+
+  private applyEmpireLensClasses(): void {
+    const bar = getEl('empiresBar');
+    const pills = bar.querySelectorAll<HTMLElement>('.emp-pill');
+    const hasFilter = this.activeLensEmpires !== null && this.activeLensEmpires.size > 0;
+    pills.forEach((pill) => {
+      const idx = Number(pill.dataset.empIdx ?? -1);
+      const isSelected = hasFilter && this.activeLensEmpires!.has(idx);
+      pill.classList.toggle('lens-active', isSelected);
+      pill.classList.toggle('lens-dimmed', hasFilter && !isSelected);
+    });
+  }
+
   private updateEmpireHud(hud: HudSnapshot): void {
     const bar = getEl('empiresBar');
     const sig = hud.empires.map((e) => `${e.id}:${e.color}`).join('|');
@@ -665,7 +753,7 @@ export class UiController {
       this.lastHudSignature = sig;
       bar.innerHTML = hud.empires
         .map(
-          (emp, idx) => `<div class="emp-pill" id="hudPill_${idx}" style="border-top-color:${emp.color};">
+          (emp, idx) => `<div class="emp-pill" id="hudPill_${idx}" data-emp-idx="${idx}" style="border-top-color:${emp.color};--emp-color:${emp.color};">
             <div class="emp-row1">
               <span style="color:${emp.color};">■ ${emp.name}</span>
               <span id="hudTechB_${idx}"></span>
@@ -677,6 +765,7 @@ export class UiController {
           </div>`,
         )
         .join('');
+      this.applyEmpireLensClasses();
     }
 
     for (let i = 0; i < hud.empires.length; i++) {
