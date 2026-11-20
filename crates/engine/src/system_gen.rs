@@ -7,11 +7,14 @@
 
 use std::f32::consts::TAU;
 
-use crate::types::{BodyType, PlanetLiveStateView, StarSystemView, StarView, SystemBodyView};
+use crate::types::{
+    BodyType, MoonView, PlanetLiveStateView, StarSystemView, StarView, SystemBodyView,
+};
 
 const ROMAN: [&str; 12] = [
     "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII",
 ];
+const MOON_LETTERS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
 /// Input snapshot for the anchored primary world from `Simulation`.
 #[derive(Debug, Clone)]
@@ -365,6 +368,116 @@ fn classify_and_style_body(
     )
 }
 
+fn generate_moons(
+    parent_name: &str,
+    parent_type: BodyType,
+    parent_temp_k: f32,
+    parent_has_rings: bool,
+    ring_outer: f32,
+    orbit_au: f32,
+    frost_line_au: f32,
+    count: u8,
+    rng: &mut SysRng,
+) -> Vec<MoonView> {
+    let capped = (count as usize).min(6);
+    if capped == 0 {
+        return Vec::new();
+    }
+    let is_giant = matches!(parent_type, BodyType::GasGiant | BodyType::IceGiant);
+    let mut moons = Vec::with_capacity(capped);
+    let mut cur_r = if parent_has_rings {
+        (ring_outer + 0.32).max(1.85)
+    } else {
+        rng.range(1.65, 2.05)
+    };
+
+    for m in 0..capped {
+        if m > 0 {
+            cur_r += rng.range(0.36, 0.58);
+        }
+        let letter = MOON_LETTERS.get(m).copied().unwrap_or("x");
+        let name = format!("{parent_name}-{letter}");
+        let seed = rng.next_u32();
+        let orbit_angle_rad = rng.range(0.0, TAU);
+        // Keplerian-like angular speed: inner moons orbit faster
+        let orbit_speed = (0.72 / cur_r.powf(1.25)).clamp(0.12, 0.55);
+        let radius_earth = if is_giant {
+            rng.range(0.16, 0.42)
+        } else {
+            rng.range(0.12, 0.29)
+        };
+
+        // Tidal heating on innermost giant moon (Io-like), icy shells beyond frost line,
+        // Titan-like hazy moon occasionally around gas giants, or cratered rocky moons
+        let (body_type, temp_k, water_pct, ice_pct, atmo_density, atmo_color_rgb, cloud_pct) =
+            if is_giant && m == 0 && rng.next_f32() < 0.45 {
+                (
+                    BodyType::Volcanic,
+                    rng.range(640.0, 790.0),
+                    0.0,
+                    0.0,
+                    rng.range(0.05, 0.22),
+                    [0.98, 0.54, 0.24],
+                    rng.range(0.0, 0.14),
+                )
+            } else if orbit_au >= frost_line_au * 0.9 || parent_temp_k < 210.0 {
+                if is_giant && radius_earth > 0.30 && rng.next_f32() < 0.28 {
+                    // Titan-like hazy icy/organic moon
+                    (
+                        BodyType::Desert,
+                        parent_temp_k.clamp(85.0, 145.0),
+                        0.08,
+                        0.15,
+                        rng.range(0.55, 0.85),
+                        [0.92, 0.68, 0.34],
+                        rng.range(0.35, 0.65),
+                    )
+                } else {
+                    (
+                        BodyType::Ice,
+                        parent_temp_k.clamp(55.0, 185.0),
+                        0.0,
+                        rng.range(0.68, 0.96),
+                        rng.range(0.0, 0.08),
+                        [0.68, 0.84, 0.98],
+                        0.0,
+                    )
+                }
+            } else {
+                (
+                    BodyType::Rock,
+                    parent_temp_k.clamp(160.0, 520.0),
+                    0.0,
+                    if parent_temp_k < 250.0 {
+                        rng.range(0.05, 0.25)
+                    } else {
+                        0.0
+                    },
+                    rng.range(0.0, 0.05),
+                    [0.72, 0.72, 0.74],
+                    0.0,
+                )
+            };
+
+        moons.push(MoonView {
+            name,
+            orbit_radius_planet: cur_r,
+            orbit_angle_rad,
+            orbit_speed,
+            radius_earth,
+            body_type,
+            temp_k,
+            water_pct,
+            ice_pct,
+            atmo_density,
+            atmo_color_rgb,
+            cloud_pct,
+            seed,
+        });
+    }
+    moons
+}
+
 /// Generate a complete, physically consistent `StarSystemView` anchored to `input`.
 pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
     let (mut rng, system_seed) = SysRng::from_seed(input.map_seed, input.planet_id);
@@ -461,6 +574,19 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
                 &mut rng,
             );
 
+            let moons = generate_moons(
+                &name,
+                body_type,
+                primary_temp_k,
+                has_rings,
+                ring_outer,
+                orbit_au,
+                frost_line_au,
+                moons_count,
+                &mut rng,
+            );
+            let actual_moons_count = moons.len() as u8;
+
             bodies.push(SystemBodyView {
                 name,
                 orbit_au,
@@ -477,7 +603,8 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
                 ring_inner,
                 ring_outer,
                 ring_color_rgb,
-                moons_count,
+                moons_count: actual_moons_count,
+                moons,
                 seed: body_seed,
                 live_state: Some(PlanetLiveStateView {
                     owner: input.owner,
@@ -529,6 +656,19 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
                 &mut rng,
             );
 
+            let moons = generate_moons(
+                &name,
+                body_type,
+                eq_temp,
+                has_rings,
+                ring_outer,
+                orbit_au,
+                frost_line_au,
+                moons_count,
+                &mut rng,
+            );
+            let actual_moons_count = moons.len() as u8;
+
             bodies.push(SystemBodyView {
                 name,
                 orbit_au,
@@ -545,7 +685,8 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
                 ring_inner,
                 ring_outer,
                 ring_color_rgb,
-                moons_count,
+                moons_count: actual_moons_count,
+                moons,
                 seed: body_seed,
                 live_state: None,
             });
@@ -600,9 +741,16 @@ mod tests {
             assert!(w[1].orbit_au > w[0].orbit_au);
         }
 
-        // Only primary body carries live_state
+        // Only primary body carries live_state, and all moons have valid strictly increasing orbits
         for (i, body) in a.bodies.iter().enumerate() {
             assert_eq!(body.live_state.is_some(), i == a.primary_index);
+            assert_eq!(body.moons.len(), body.moons_count as usize);
+            for m in &body.moons {
+                assert!(m.orbit_radius_planet > 1.4);
+            }
+            for w in body.moons.windows(2) {
+                assert!(w[1].orbit_radius_planet > w[0].orbit_radius_planet);
+            }
         }
     }
 
