@@ -227,6 +227,32 @@ export class GalaxyRenderer {
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.lineWidth = 1.0;
+
+        // Draw operational fuel range circle for owned planets
+        if (pl.owner > 0) {
+          const emp = snap.empires[pl.owner - 1];
+          if (emp) {
+            const rgb = rgbCache[pl.owner - 1] ?? '56,189,248';
+            const colRad = emp.loadout.rangeCol * scale;
+            ctx.beginPath();
+            ctx.arc(px, py, colRad, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(${rgb}, ${i === selectedPlanet ? 0.55 : 0.28})`;
+            ctx.setLineDash([6, 4]);
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+
+            const capRad = emp.loadout.rangeBattleship * scale;
+            if (Math.abs(capRad - colRad) > 12) {
+              ctx.beginPath();
+              ctx.arc(px, py, capRad, 0, Math.PI * 2);
+              ctx.strokeStyle = `rgba(${rgb}, ${i === selectedPlanet ? 0.30 : 0.14})`;
+              ctx.setLineDash([3, 5]);
+              ctx.lineWidth = 1.0;
+              ctx.stroke();
+            }
+            ctx.setLineDash([]);
+          }
+        }
       }
     }
 

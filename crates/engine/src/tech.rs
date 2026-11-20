@@ -485,6 +485,12 @@ pub struct RawHullComponent {
     #[serde(default)]
     pub max_safe_speed: i32,
     #[serde(default)]
+    pub fuel_usage: Vec<i32>,
+    #[serde(default)]
+    pub fuel_bonus: i32,
+    #[serde(default)]
+    pub fuel_generation: i32,
+    #[serde(default)]
     pub cloak_units: i32,
     #[serde(default)]
     pub safe_hull_mass: i64,
@@ -859,6 +865,8 @@ impl TechStore {
 pub struct HullSpec {
     pub name: String,
     pub armor: f32,
+    pub mass: f32,
+    pub fuel_capacity: f32,
     pub cargo: f32,
     pub iron: f32,
     pub bora: f32,
@@ -874,6 +882,8 @@ pub struct EmpireTechCache {
 
     pub engine_name: String,
     pub engine_warp: f32,
+    pub engine_free_speed: i32,
+    pub engine_fuel_usage: f32,
 
     pub weapon_name: String,
     pub weapon_power: f32,
@@ -904,12 +914,20 @@ pub struct EmpireTechCache {
     pub stargate_cost_germ: f32,
 
     pub mining_rate: f32,
+    pub fuel_tank_bonus: f32,
+    pub fuel_gen: f32,
 
     pub hull_col: HullSpec,
     pub hull_freight: HullSpec,
     pub hull_cruiser: HullSpec,
     pub hull_battleship: HullSpec,
     pub hull_bomber: HullSpec,
+
+    pub range_col: f32,
+    pub range_freight: f32,
+    pub range_cruiser: f32,
+    pub range_battleship: f32,
+    pub range_bomber: f32,
 }
 
 impl Default for EmpireTechCache {
@@ -922,12 +940,50 @@ fn hull_from_raw(h: &RawHull) -> HullSpec {
     HullSpec {
         name: h.tech.name.clone(),
         armor: h.armor.max(10) as f32,
+        mass: h.mass.max(8) as f32,
+        fuel_capacity: h.fuel_capacity.max(50) as f32,
         cargo: h.cargo_capacity.max(10) as f32,
         iron: h.tech.cost.ironium.max(2) as f32,
         bora: h.tech.cost.boranium.max(1) as f32,
         germ: h.tech.cost.germanium.max(2) as f32,
         res: h.tech.cost.resources.max(10) as f32,
     }
+}
+
+fn compute_hull_range(
+    hull: &HullSpec,
+    engine_warp: f32,
+    engine_free_speed: i32,
+    engine_fuel_usage: f32,
+    fuel_tank_bonus: f32,
+    fuel_gen: f32,
+    lrt_mask: u32,
+    is_he_colonizer: bool,
+) -> f32 {
+    // Stars!-inspired operational fuel range scaled to the 1000x560 galaxy map:
+    // Early ships (~130-190 ly) must expand via stepping-stone worlds;
+    // mid-game hulls/tanks/Fuel Mizer reach ~260-420 ly;
+    // ramscoops, Fuel Generators, and Capital Ships project across the galaxy (550-1200 ly).
+    let eff_fuel = hull.fuel_capacity + fuel_tank_bonus * 0.35 + fuel_gen * 6.0;
+    let eff_mass = hull.mass + 24.0;
+    let usage = engine_fuel_usage.max(35.0) * if lrt_mask & LRT_IFE != 0 { 0.85 } else { 1.0 };
+    let base_ly =
+        65.0 + (eff_fuel / eff_mass).sqrt() * (engine_warp * 8.5) * (100.0 / usage).powf(0.55);
+
+    // Ramscoops (free_speed >= 4) & HE Settler's Delight dramatically extend cruise range
+    let ramscoop_mult = if is_he_colonizer {
+        1.45
+    } else if engine_free_speed >= 8 {
+        2.5
+    } else if engine_free_speed >= 6 {
+        1.9
+    } else if engine_free_speed >= 4 {
+        1.35
+    } else {
+        1.0
+    };
+
+    (base_ly * ramscoop_mult).clamp(105.0, 1300.0)
 }
 
 impl EmpireTechCache {
@@ -953,6 +1009,8 @@ impl EmpireTechCache {
         // Defaults (tech 0 baseline)
         let mut engine_name = "Quick Jump 5".to_string();
         let mut engine_warp = 5.0f32;
+        let mut engine_free_speed = 1i32;
+        let mut engine_fuel_usage = 100.0f32;
         let mut weapon_name = "Laser".to_string();
         let mut weapon_power = 10.0f32;
         let mut bomb_name = "Lady Finger Bomb".to_string();
@@ -974,6 +1032,8 @@ impl EmpireTechCache {
         let mut stargate_cost_iron = 50.0f32;
         let mut stargate_cost_germ = 50.0f32;
         let mut mining_rate = 2.0f32;
+        let mut fuel_tank_bonus = 0.0f32;
+        let mut fuel_gen = 0.0f32;
 
         // 1. Planetary Scanners
         for (id, item) in &store.planetary_scanners {
@@ -1032,11 +1092,21 @@ impl EmpireTechCache {
 
             match item.tech.category.as_str() {
                 "TECH_CATEGORY_ENGINE" => {
-                    // Prefer highest ideal_speed (ignoring Settler's Delight hull-locked engine unless better)
+                    // Prefer highest ideal_speed (cruise warp) and ramscoop free_speed on tie
                     if item.tech.requirements.hulls_allowed.is_empty() {
-                        let spd = (item.ideal_speed.max(item.max_safe_speed - 1)) as f32;
-                        if spd > engine_warp {
+                        let spd = item.ideal_speed.max(5) as f32;
+                        let ideal_idx = (item.ideal_speed.max(1) as usize).min(item.fuel_usage.len().saturating_sub(1));
+                        let usage = item
+                            .fuel_usage
+                            .get(ideal_idx)
+                            .copied()
+                            .unwrap_or(100) as f32;
+                        let better_engine = spd > engine_warp
+                            || ((spd - engine_warp).abs() < 0.01 && item.free_speed > engine_free_speed);
+                        if better_engine {
                             engine_warp = spd;
+                            engine_free_speed = item.free_speed;
+                            engine_fuel_usage = if usage <= 0.0 { 40.0 } else { usage };
                             engine_name = item.tech.name.clone();
                         }
                     }
@@ -1101,6 +1171,14 @@ impl EmpireTechCache {
                         mining_rate = item.mining_rate as f32;
                     }
                 }
+                "TECH_CATEGORY_MECHANICAL" => {
+                    if (item.fuel_bonus as f32) > fuel_tank_bonus {
+                        fuel_tank_bonus = item.fuel_bonus as f32;
+                    }
+                    if (item.fuel_generation as f32) > fuel_gen {
+                        fuel_gen = item.fuel_generation as f32;
+                    }
+                }
                 _ => {}
             }
         }
@@ -1109,6 +1187,8 @@ impl EmpireTechCache {
         let mut hull_col = HullSpec {
             name: "Colony Ship".to_string(),
             armor: 20.0,
+            mass: 20.0,
+            fuel_capacity: 200.0,
             cargo: 25.0,
             iron: 10.0,
             bora: 4.0,
@@ -1118,6 +1198,8 @@ impl EmpireTechCache {
         let mut hull_freight = HullSpec {
             name: "Small Freighter".to_string(),
             armor: 25.0,
+            mass: 25.0,
+            fuel_capacity: 130.0,
             cargo: 70.0,
             iron: 12.0,
             bora: 2.0,
@@ -1127,6 +1209,8 @@ impl EmpireTechCache {
         let mut hull_cruiser = HullSpec {
             name: "Scout".to_string(),
             armor: 20.0,
+            mass: 8.0,
+            fuel_capacity: 50.0,
             cargo: 0.0,
             iron: 4.0,
             bora: 2.0,
@@ -1136,6 +1220,8 @@ impl EmpireTechCache {
         let mut hull_battleship = HullSpec {
             name: "Destroyer".to_string(),
             armor: 200.0,
+            mass: 30.0,
+            fuel_capacity: 280.0,
             cargo: 0.0,
             iron: 15.0,
             bora: 3.0,
@@ -1145,6 +1231,8 @@ impl EmpireTechCache {
         let mut hull_bomber = HullSpec {
             name: "Mini Bomber".to_string(),
             armor: 50.0,
+            mass: 28.0,
+            fuel_capacity: 120.0,
             cargo: 0.0,
             iron: 20.0,
             bora: 5.0,
@@ -1225,12 +1313,66 @@ impl EmpireTechCache {
             perk_mask |= BP_ALCHEMY2;
         }
 
+        let is_he_col = prt == "PRT_HE" || ignore_traits;
+        let range_col = compute_hull_range(
+            &hull_col,
+            engine_warp,
+            engine_free_speed,
+            engine_fuel_usage,
+            fuel_tank_bonus,
+            fuel_gen,
+            lrt_mask,
+            is_he_col,
+        );
+        let range_freight = compute_hull_range(
+            &hull_freight,
+            engine_warp,
+            engine_free_speed,
+            engine_fuel_usage,
+            fuel_tank_bonus,
+            fuel_gen,
+            lrt_mask,
+            false,
+        );
+        let range_cruiser = compute_hull_range(
+            &hull_cruiser,
+            engine_warp,
+            engine_free_speed,
+            engine_fuel_usage,
+            fuel_tank_bonus,
+            fuel_gen,
+            lrt_mask,
+            false,
+        );
+        let range_battleship = compute_hull_range(
+            &hull_battleship,
+            engine_warp,
+            engine_free_speed,
+            engine_fuel_usage,
+            fuel_tank_bonus,
+            fuel_gen,
+            lrt_mask,
+            false,
+        );
+        let range_bomber = compute_hull_range(
+            &hull_bomber,
+            engine_warp,
+            engine_free_speed,
+            engine_fuel_usage,
+            fuel_tank_bonus,
+            fuel_gen,
+            lrt_mask,
+            false,
+        );
+
         Self {
             unlocked_bits,
             unlocked_count,
             perk_mask,
             engine_name,
             engine_warp,
+            engine_free_speed,
+            engine_fuel_usage,
             weapon_name,
             weapon_power,
             bomb_name,
@@ -1252,11 +1394,18 @@ impl EmpireTechCache {
             stargate_cost_iron,
             stargate_cost_germ,
             mining_rate,
+            fuel_tank_bonus,
+            fuel_gen,
             hull_col,
             hull_freight,
             hull_cruiser,
             hull_battleship,
             hull_bomber,
+            range_col,
+            range_freight,
+            range_cruiser,
+            range_battleship,
+            range_bomber,
         }
     }
 
@@ -1279,6 +1428,10 @@ impl EmpireTechCache {
             cruiser_hull: self.hull_cruiser.name.clone(),
             battleship_hull: self.hull_battleship.name.clone(),
             bomber_hull: self.hull_bomber.name.clone(),
+            range_col: self.range_col,
+            range_cruiser: self.range_cruiser,
+            range_battleship: self.range_battleship,
+            range_bomber: self.range_bomber,
         }
     }
 }
@@ -1351,6 +1504,9 @@ mod tests {
         assert!(mid.stargate_name.is_some());
         assert!(max.weapon_power > mid.weapon_power);
         assert!(max.engine_warp >= 9.0);
+        assert!(low.range_col < 260.0, "early colonizer range should be local, got {}", low.range_col);
+        assert!(mid.range_col > low.range_col, "mid-game tech should expand ship range");
+        assert!(max.range_battleship > 500.0, "late-game ramscoop capital range should span sectors");
         assert_eq!(classic_races().len(), 6);
     }
 }

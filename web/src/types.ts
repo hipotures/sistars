@@ -139,6 +139,10 @@ export interface EmpireLoadoutView {
   cruiserHull: string;
   battleshipHull: string;
   bomberHull: string;
+  rangeCol: number;
+  rangeCruiser: number;
+  rangeBattleship: number;
+  rangeBomber: number;
 }
 
 export interface EmpireSummaryView {
