@@ -95,6 +95,51 @@ impl WasmEngine {
         }
     }
 
+    /// Lightweight per-frame HUD snapshot + updates flat render buffers in WASM linear memory.
+    pub fn take_hud_snapshot(&mut self) -> JsValue {
+        let hud = self.sim.take_hud_snapshot();
+        serde_wasm_bindgen::to_value(&hud).unwrap_or(JsValue::NULL)
+    }
+
+    /// Zero-copy pointers & lengths into WASM linear memory for flat Float32Array views.
+    pub fn planets_render_ptr(&self) -> *const f32 {
+        self.sim.planet_render_buf.as_ptr()
+    }
+
+    pub fn planets_render_len(&self) -> usize {
+        self.sim.planet_render_buf.len()
+    }
+
+    pub fn fleets_render_ptr(&self) -> *const f32 {
+        self.sim.fleet_render_buf.as_ptr()
+    }
+
+    pub fn fleets_render_len(&self) -> usize {
+        self.sim.fleet_render_buf.len()
+    }
+
+    pub fn debris_render_ptr(&self) -> *const f32 {
+        self.sim.debris_render_buf.as_ptr()
+    }
+
+    pub fn debris_render_len(&self) -> usize {
+        self.sim.debris_render_buf.len()
+    }
+
+    /// On-demand detail for a single inspected planet.
+    pub fn get_planet_detail(&self, idx: usize) -> JsValue {
+        match self.sim.planet_view(idx) {
+            Some(pv) => serde_wasm_bindgen::to_value(&pv).unwrap_or(JsValue::NULL),
+            None => JsValue::NULL,
+        }
+    }
+
+    /// On-demand full planet/fleet tables (only called when Reports drawer is open).
+    pub fn get_reports_snapshot(&self) -> JsValue {
+        let rep = self.sim.take_reports_snapshot();
+        serde_wasm_bindgen::to_value(&rep).unwrap_or(JsValue::NULL)
+    }
+
     pub fn take_snapshot(&mut self) -> JsValue {
         let snap = self.sim.take_snapshot();
         serde_wasm_bindgen::to_value(&snap).unwrap_or(JsValue::NULL)

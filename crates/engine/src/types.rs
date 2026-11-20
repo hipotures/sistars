@@ -203,6 +203,36 @@ pub struct PlanetView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HudSnapshot {
+    pub year: f32,
+    pub ticks: u64,
+    pub map_seed: u32,
+    pub world_w: f32,
+    pub world_h: f32,
+    pub dna_generation: u32,
+    pub empires: Vec<EmpireSummaryView>,
+    pub wormholes: Vec<Wormhole>,
+    pub new_combat_fx: Vec<CombatFx>,
+    pub new_jump_fx: Vec<JumpFx>,
+    pub power_history: Vec<Vec<f32>>,
+    pub events: Vec<SimEvent>,
+    pub planet_count: usize,
+    pub fleet_count: usize,
+    pub space_battles_count: u32,
+    pub invasions_count: u32,
+    pub total_salvaged: u32,
+    pub gate_jumps_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportsSnapshot {
+    pub planets: Vec<PlanetView>,
+    pub fleets: Vec<Fleet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SimSnapshot {
     pub year: f32,
     pub ticks: u64,

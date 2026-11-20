@@ -1,4 +1,8 @@
-import type { CombatFxView, JumpFxView, PlanetView, SimSnapshot } from './types';
+import type { CombatFxView, HudSnapshot, JumpFxView, RenderFrame } from './types';
+
+export const PLANET_STRIDE = 7; // [x, y, owner, factories, hab, hasGate, crustSum]
+export const FLEET_STRIDE = 7;  // [x, y, targetX, targetY, emp, typeCode, flags]
+export const DEBRIS_STRIDE = 2; // [x, y]
 
 interface BgStar {
   x: number;
@@ -66,15 +70,15 @@ export class GalaxyRenderer {
     this.jumpFx = [];
   }
 
-  public ingestFx(snap: SimSnapshot): void {
-    if (snap.newCombatFx.length > 0) {
-      this.combatFx.push(...snap.newCombatFx);
+  public ingestFx(hud: HudSnapshot): void {
+    if (hud.newCombatFx.length > 0) {
+      this.combatFx.push(...hud.newCombatFx);
       if (this.combatFx.length > 35) {
         this.combatFx.splice(0, this.combatFx.length - 35);
       }
     }
-    if (snap.newJumpFx.length > 0) {
-      this.jumpFx.push(...snap.newJumpFx);
+    if (hud.newJumpFx.length > 0) {
+      this.jumpFx.push(...hud.newJumpFx);
       if (this.jumpFx.length > 25) {
         this.jumpFx.splice(0, this.jumpFx.length - 25);
       }
@@ -143,21 +147,25 @@ export class GalaxyRenderer {
   public findPlanetAt(
     clientX: number,
     clientY: number,
-    planets: PlanetView[],
+    planetsBuf: Float32Array,
     maxDistPx: number,
   ): number {
     const rect = this.canvas.getBoundingClientRect();
     const { scale, offX, offY } = this.getTransform();
     const wx = (clientX - rect.left - offX) / scale;
     const wy = (clientY - rect.top - offY) / scale;
-    const maxWorldDist = maxDistPx / scale;
+    const maxWorldDistSq = (maxDistPx / scale) ** 2;
 
     let closest = -1;
-    let minDist = maxWorldDist;
-    for (let i = 0; i < planets.length; i++) {
-      const d = Math.hypot(planets[i].x - wx, planets[i].y - wy);
-      if (d < minDist) {
-        minDist = d;
+    let minDistSq = maxWorldDistSq;
+    const count = Math.floor(planetsBuf.length / PLANET_STRIDE);
+    for (let i = 0; i < count; i++) {
+      const off = i * PLANET_STRIDE;
+      const dx = planetsBuf[off] - wx;
+      const dy = planetsBuf[off + 1] - wy;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < minDistSq) {
+        minDistSq = dSq;
         closest = i;
       }
     }
@@ -165,11 +173,12 @@ export class GalaxyRenderer {
   }
 
   public draw(
-    snap: SimSnapshot,
+    frame: RenderFrame,
     crustRichness: number,
     selectedPlanet: number,
     hoveredPlanet: number,
   ): void {
+    const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
     const ctx = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;
@@ -183,16 +192,20 @@ export class GalaxyRenderer {
     const { scale, offX, offY } = this.getTransform();
     const sx = (x: number) => offX + x * scale;
     const sy = (y: number) => offY + y * scale;
-    const rgbCache = snap.empires.map((emp) => hexToRgbTuple(emp.color));
+    const rgbCache = hud.empires.map((emp) => hexToRgbTuple(emp.color));
+    const empColors = hud.empires.map((emp) => emp.color);
+    const planetCount = Math.floor(planetsBuf.length / PLANET_STRIDE);
 
     // Empire territory glows
-    for (const pl of snap.planets) {
-      if (pl.owner === 0) continue;
-      const eIdx = pl.owner - 1;
-      const rgb = rgbCache[eIdx] ?? '56,189,248';
-      const px = sx(pl.x);
-      const py = sy(pl.y);
-      const rad = (24 + Math.sqrt(pl.factories) * 2.2) * scale;
+    for (let i = 0; i < planetCount; i++) {
+      const off = i * PLANET_STRIDE;
+      const owner = planetsBuf[off + 2];
+      if (owner === 0) continue;
+      const px = sx(planetsBuf[off]);
+      const py = sy(planetsBuf[off + 1]);
+      if (px < -60 || px > W + 60 || py < -60 || py > H + 60) continue;
+      const rgb = rgbCache[owner - 1] ?? '56,189,248';
+      const rad = (24 + Math.sqrt(planetsBuf[off + 3]) * 2.2) * scale;
       const grad = ctx.createRadialGradient(px, py, 2, px, py, rad);
       grad.addColorStop(0, `rgba(${rgb}, 0.14)`);
       grad.addColorStop(1, `rgba(${rgb}, 0)`);
@@ -203,7 +216,7 @@ export class GalaxyRenderer {
     }
 
     // Wormholes
-    for (const wh of snap.wormholes) {
+    for (const wh of hud.wormholes) {
       const x1 = sx(wh.x1);
       const y1 = sy(wh.y1);
       const x2 = sx(wh.x2);
@@ -234,36 +247,47 @@ export class GalaxyRenderer {
     }
 
     // Debris fields
-    for (const deb of snap.debrisFields) {
-      ctx.beginPath();
-      ctx.arc(sx(deb.x), sy(deb.y), 5, 0, Math.PI * 2);
+    const debrisCount = Math.floor(debrisBuf.length / DEBRIS_STRIDE);
+    if (debrisCount > 0) {
       ctx.strokeStyle = 'rgba(192, 132, 252, 0.75)';
       ctx.setLineDash([2, 2]);
-      ctx.stroke();
+      for (let i = 0; i < debrisCount; i++) {
+        const off = i * DEBRIS_STRIDE;
+        ctx.beginPath();
+        ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
     }
 
     // Planets
-    const denseFactor = snap.planets.length >= 450 ? 0.72 : snap.planets.length >= 220 ? 0.85 : 1.0;
-    for (let i = 0; i < snap.planets.length; i++) {
-      const pl = snap.planets[i];
-      const px = sx(pl.x);
-      const py = sy(pl.y);
+    const denseFactor = planetCount >= 450 ? 0.72 : planetCount >= 220 ? 0.85 : 1.0;
+    const invCrustNorm = 1.0 / (crustRichness * 4);
+    for (let i = 0; i < planetCount; i++) {
+      const off = i * PLANET_STRIDE;
+      const px = sx(planetsBuf[off]);
+      const py = sy(planetsBuf[off + 1]);
+      if (px < -30 || px > W + 30 || py < -30 || py > H + 30) continue;
+
+      const owner = planetsBuf[off + 2];
+      const factories = planetsBuf[off + 3];
+      const hab = planetsBuf[off + 4];
+      const hasGate = planetsBuf[off + 5] > 0.5;
+      const crustSum = planetsBuf[off + 6];
+
       const r =
-        (pl.owner > 0 ? Math.min(13, 4 + Math.sqrt(pl.factories) * 0.45) : 3 + pl.hab * 2.5) *
-        denseFactor;
+        (owner > 0 ? Math.min(13, 4 + Math.sqrt(factories) * 0.45) : 3 + hab * 2.5) * denseFactor;
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
-      if (pl.owner > 0) {
-        ctx.fillStyle = snap.empires[pl.owner - 1]?.color ?? '#94a3b8';
+      if (owner > 0) {
+        ctx.fillStyle = empColors[owner - 1] ?? '#94a3b8';
       } else {
-        const sumC = pl.ironCrust + pl.boraCrust + pl.germCrust;
-        const alpha = Math.min(1, 0.3 + (sumC / (crustRichness * 4)) * 0.7);
+        const alpha = Math.min(1, 0.3 + crustSum * invCrustNorm * 0.7);
         ctx.fillStyle = `rgba(148, 163, 184, ${alpha})`;
       }
       ctx.fill();
 
-      if (pl.owner > 0 && pl.hasGate) {
+      if (owner > 0 && hasGate) {
         ctx.beginPath();
         ctx.arc(px, py, r + 3.5, 0, Math.PI * 2);
         ctx.strokeStyle = '#22d3ee';
@@ -275,7 +299,7 @@ export class GalaxyRenderer {
       if (this.zoom >= 1.65) {
         ctx.font = '10px monospace';
         ctx.fillStyle = 'rgba(203, 213, 225, 0.72)';
-        ctx.fillText(`#${pl.id}`, px + r + 4, py + 3);
+        ctx.fillText(`#${i + 1}`, px + r + 4, py + 3);
       }
 
       if (i === selectedPlanet || i === hoveredPlanet) {
@@ -286,11 +310,10 @@ export class GalaxyRenderer {
         ctx.stroke();
         ctx.lineWidth = 1.0;
 
-        // Draw operational fuel range circle for owned planets
-        if (pl.owner > 0) {
-          const emp = snap.empires[pl.owner - 1];
+        if (owner > 0) {
+          const emp = hud.empires[owner - 1];
           if (emp) {
-            const rgb = rgbCache[pl.owner - 1] ?? '56,189,248';
+            const rgb = rgbCache[owner - 1] ?? '56,189,248';
             const colRad = emp.loadout.rangeCol * scale;
             ctx.beginPath();
             ctx.arc(px, py, colRad, 0, Math.PI * 2);
@@ -328,25 +351,33 @@ export class GalaxyRenderer {
       if (jx.ttl <= 0) this.jumpFx.splice(i, 1);
     }
 
-    // Fleets
-    for (const fl of snap.fleets) {
-      const target = snap.planets[fl.target];
-      if (!target) continue;
-      const fx = sx(fl.x);
-      const fy = sy(fl.y);
+    // Fleets (flat Float32Array zero-copy loop)
+    const fleetCount = Math.floor(fleetsBuf.length / FLEET_STRIDE);
+    for (let i = 0; i < fleetCount; i++) {
+      const off = i * FLEET_STRIDE;
+      const fx = sx(fleetsBuf[off]);
+      const fy = sy(fleetsBuf[off + 1]);
+      if (fx < -20 || fx > W + 20 || fy < -20 || fy > H + 20) continue;
+
+      const tx = sx(fleetsBuf[off + 2]);
+      const ty = sy(fleetsBuf[off + 3]);
+      const emp = fleetsBuf[off + 4];
+      const fType = fleetsBuf[off + 5];
+      const hunting = (fleetsBuf[off + 6] & 1) !== 0;
 
       ctx.beginPath();
       ctx.moveTo(fx, fy);
-      ctx.lineTo(sx(target.x), sy(target.y));
-      ctx.strokeStyle = fl.hunting
+      ctx.lineTo(tx, ty);
+      ctx.strokeStyle = hunting
         ? 'rgba(248, 113, 113, 0.45)'
-        : fl.type === 'freight'
+        : fType === 4
           ? 'rgba(192,132,252,0.16)'
           : 'rgba(255,255,255,0.09)';
       ctx.stroke();
 
-      ctx.fillStyle = snap.empires[fl.emp - 1]?.color ?? '#e2e8f0';
-      if (fl.type === 'battleship') {
+      ctx.fillStyle = empColors[emp - 1] ?? '#e2e8f0';
+      if (fType === 2) {
+        // Battleship
         ctx.beginPath();
         ctx.moveTo(fx, fy - 5.5);
         ctx.lineTo(fx + 5.5, fy);
@@ -354,22 +385,26 @@ export class GalaxyRenderer {
         ctx.lineTo(fx - 5.5, fy);
         ctx.closePath();
         ctx.fill();
-      } else if (fl.type === 'bomber') {
+      } else if (fType === 3) {
+        // Bomber
         ctx.beginPath();
         ctx.arc(fx, fy, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = '#f87171';
         ctx.stroke();
-      } else if (fl.type === 'cruiser') {
+      } else if (fType === 1) {
+        // Cruiser
         ctx.beginPath();
         ctx.moveTo(fx, fy - 5);
         ctx.lineTo(fx - 4.2, fy + 3.5);
         ctx.lineTo(fx + 4.2, fy + 3.5);
         ctx.closePath();
         ctx.fill();
-      } else if (fl.type === 'freight') {
+      } else if (fType === 4) {
+        // Freighter
         ctx.fillRect(fx - 2.8, fy - 2.8, 5.6, 5.6);
       } else {
+        // Colonizer
         ctx.beginPath();
         ctx.arc(fx, fy, 3, 0, Math.PI * 2);
         ctx.fill();
@@ -432,7 +467,6 @@ export class GalaxyRenderer {
     ctx.lineTo(bx, by);
     ctx.lineTo(bx + barW, by);
     ctx.lineTo(bx + barW, by - 5);
-    // Midpoint tick
     ctx.moveTo(bx + barW * 0.5, by - 3);
     ctx.lineTo(bx + barW * 0.5, by);
     ctx.stroke();
