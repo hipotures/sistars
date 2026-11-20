@@ -553,18 +553,20 @@ export class ProceduralBodyRenderer {
   private readonly gl: WebGL2RenderingContext | null;
   private readonly prog: WebGLProgram | null = null;
   private readonly vao: WebGLVertexArrayObject | null = null;
+  private readonly fixedSize: boolean;
   private target: ProceduralTarget | null = null;
   private rafId: number | null = null;
   private startMs = performance.now();
   private active = false;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, fixedSize = false) {
     this.canvas = canvas;
+    this.fixedSize = fixedSize;
     this.gl = canvas.getContext('webgl2', {
       alpha: false,
       antialias: true,
       premultipliedAlpha: false,
-      preserveDrawingBuffer: false,
+      preserveDrawingBuffer: fixedSize,
     });
     if (this.gl) {
       this.prog = compileProgram(this.gl, FULLSCREEN_VS, SPHERE_FS);
@@ -608,14 +610,19 @@ export class ProceduralBodyRenderer {
 
   public renderOnce(timeSec: number): void {
     if (!this.target) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const cssW = Math.max(1, this.canvas.clientWidth || this.canvas.width || 240);
-    const cssH = Math.max(1, this.canvas.clientHeight || this.canvas.height || 136);
-    const bufW = Math.round(cssW * dpr);
-    const bufH = Math.round(cssH * dpr);
-    if (this.canvas.width !== bufW || this.canvas.height !== bufH) {
-      this.canvas.width = bufW;
-      this.canvas.height = bufH;
+    let bufW: number;
+    let bufH: number;
+    if (this.fixedSize || this.canvas.clientWidth === 0 || this.canvas.clientHeight === 0) {
+      bufW = Math.max(1, this.canvas.width || 128);
+      bufH = Math.max(1, this.canvas.height || 128);
+    } else {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      bufW = Math.round(this.canvas.clientWidth * dpr);
+      bufH = Math.round(this.canvas.clientHeight * dpr);
+      if (this.canvas.width !== bufW || this.canvas.height !== bufH) {
+        this.canvas.width = bufW;
+        this.canvas.height = bufH;
+      }
     }
 
     const gl = this.gl;
@@ -680,7 +687,7 @@ export function renderProceduralThumbnailTo2d(
     sharedThumbCanvas = document.createElement('canvas');
     sharedThumbCanvas.width = 128;
     sharedThumbCanvas.height = 128;
-    sharedThumbRenderer = new ProceduralBodyRenderer(sharedThumbCanvas);
+    sharedThumbRenderer = new ProceduralBodyRenderer(sharedThumbCanvas, true);
   }
   if (!sharedThumbRenderer) return;
   sharedThumbRenderer.setTarget(target, false);
