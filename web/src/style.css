@@ -147,12 +147,12 @@ header.hud-top {
 }
 
 .emp-pill {
-  flex: 0 0 166px;
-  width: 166px;
+  flex: 0 0 176px;
+  width: 176px;
   background: rgba(15, 23, 38, 0.88);
   border: 1px solid var(--border);
   border-top: 2px solid var(--accent);
-  padding: 3px 8px;
+  padding: 3px 7px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -828,8 +828,8 @@ tr:hover {
   }
 
   .emp-pill {
-    flex: 0 0 124px;
-    width: 124px;
+    flex: 0 0 140px;
+    width: 140px;
     padding: 2px 6px;
   }
 
