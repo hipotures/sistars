@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SI-Stars – Continuous-Time 4X Space Strategy</title>
+</head>
+<body>
+
+<canvas id="galaxyCanvas"></canvas>
+
+<!-- TOP HUD BAR -->
+<header class="hud-top">
+  <div class="brand">
+    <div class="brand-title">SI-STARS</div>
+    <div class="year-box" id="hudYear">2400.0</div>
+    <div class="speed-controls">
+      <button class="hud-btn" id="btnPause" data-speed="0">⏸</button>
+      <button class="hud-btn active" id="btn1x" data-speed="1">1x</button>
+      <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
+      <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
+    </div>
+  </div>
+
+  <div class="empires-bar">
+    <div class="emp-pill e1">
+      <div class="emp-row1"><span style="color:var(--green)">■ INDUSTRY</span><span id="techB1"></span></div>
+      <div class="emp-row2"><span id="hudE1">1 pl | 28 Res</span><span id="hudK1">💥0 🌀0</span></div>
+    </div>
+    <div class="emp-pill e2">
+      <div class="emp-row1"><span style="color:var(--accent)">■ FLEET</span><span id="techB2"></span></div>
+      <div class="emp-row2"><span id="hudE2">1 pl | 25 Res</span><span id="hudK2">💥0 🌀0</span></div>
+    </div>
+    <div class="emp-pill e3">
+      <div class="emp-row1"><span style="color:var(--yellow)">■ SCIENCE</span><span id="techB3"></span></div>
+      <div class="emp-row2"><span id="hudE3">1 pl | 25 Res</span><span id="hudK3">💥0 🌀0</span></div>
+    </div>
+  </div>
+
+  <div class="nav-actions">
+    <button class="hud-btn" id="tabTech" data-drawer="drawerTech">🔬 Research (6)</button>
+    <button class="hud-btn" id="tabStats" data-drawer="drawerStats">📊 Charts &amp; AI</button>
+    <button class="hud-btn" id="tabReports" data-drawer="drawerReports">📋 Reports</button>
+    <button class="hud-btn" id="tabSettings" data-drawer="drawerSettings">⚙️ Settings</button>
+    <button class="hud-btn danger" id="btnReset" title="New galaxy">↺ Map</button>
+  </div>
+</header>
+
+<!-- PLANET INSPECTOR -->
+<div id="planetInspector">
+  <div class="insp-header">
+    <div class="insp-title" id="inspTitle">System #1</div>
+    <button class="insp-close" id="btnCloseInspector">✕</button>
+  </div>
+  <div class="insp-grid">
+    <div class="insp-stat"><span>Owner</span><b id="inspOwner">Uninhabited</b></div>
+    <div class="insp-stat"><span>Habitability</span><b id="inspHab">100%</b></div>
+    <div class="insp-stat"><span>Population</span><b id="inspPop">42k / 170k</b></div>
+    <div class="insp-stat"><span>Production</span><b id="inspRes" style="color:var(--accent)">30 Res/yr</b></div>
+    <div class="insp-stat"><span>Factories / Mines</span><b id="inspFac">16 / 18</b></div>
+    <div class="insp-stat"><span>Defense / Gate</span><b id="inspDef">40 | None</b></div>
+  </div>
+  <div style="display:flex; flex-direction:column; gap:5px; margin-top:2px;">
+    <div class="min-bar-row"><span class="c-iron" style="width:58px;">Ironium</span><div class="min-bar-track"><div id="barIron" class="min-bar-fill" style="background:var(--iron);width:50%"></div></div><span id="valIron" style="width:85px;text-align:right;">160 (800)</span></div>
+    <div class="min-bar-row"><span class="c-bora" style="width:58px;">Boranium</span><div class="min-bar-track"><div id="barBora" class="min-bar-fill" style="background:var(--bora);width:50%"></div></div><span id="valBora" style="width:85px;text-align:right;">160 (800)</span></div>
+    <div class="min-bar-row"><span class="c-germ" style="width:58px;">Germanium</span><div class="min-bar-track"><div id="barGerm" class="min-bar-fill" style="background:var(--germ);width:50%"></div></div><span id="valGerm" style="width:85px;text-align:right;">160 (800)</span></div>
+  </div>
+</div>
+
+<div class="map-legend">
+  <span>Click a planet to inspect</span>
+  <span style="color:#d946ef">🌀 Wormhole</span>
+  <span style="color:#22d3ee">◯ Stargate</span>
+  <span>▲ Cruiser</span>
+  <span>◆ Battleship</span>
+  <span>★ Bomber</span>
+  <span style="color:#c084fc">✦ Debris</span>
+</div>
+
+<div id="eventLog"></div>
+
+<!-- DRAWER 0: 6 TECH FIELDS (STARS! MODEL) -->
+<div class="drawer wide" id="drawerTech">
+  <div class="drawer-head">
+    <div class="drawer-title">🔬 6 Tech Fields &amp; Multi-Field Breakthroughs</div>
+    <button class="insp-close" data-close-drawer="drawerTech">✕</button>
+  </div>
+
+  <div class="tech-grid" id="techCardsContainer"></div>
+
+  <h3>Multi-Field Breakthroughs (Unlocked automatically when both field levels are reached)</h3>
+  <div class="bp-grid" id="breakthroughsContainer"></div>
+</div>
+
+<!-- DRAWER 1: STATS, POWER CHART & AI DNA -->
+<div class="drawer wide" id="drawerStats">
+  <div class="drawer-head">
+    <div class="drawer-title">📊 Galaxy Analysis &amp; AI Evolution</div>
+    <button class="insp-close" data-close-drawer="drawerStats">✕</button>
+  </div>
+
+  <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem;">
+    <span id="tourneyLabel" style="color:var(--muted);">🏆 Win-Rate (Monte Carlo Tournament):</span>
+    <span id="dnaGenInfo" style="color:var(--purple); font-family:monospace;">DNA Generation: #0</span>
+  </div>
+  <div class="winrate-bar">
+    <div id="wrBar1" class="wr-seg" style="width:33.3%; background:var(--green);">33%</div>
+    <div id="wrBar2" class="wr-seg" style="width:33.3%; background:var(--accent);">33%</div>
+    <div id="wrBar3" class="wr-seg" style="width:33.4%; background:var(--yellow);">34%</div>
+  </div>
+
+  <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted);">
+    <span>Empire Production Power (Res/yr)</span>
+    <span id="maxResInfo">Max: 50 Res/yr</span>
+  </div>
+  <canvas id="powerCanvas" width="720" height="185"></canvas>
+
+  <h3>Trained Strategy DNA (Budget + Fleet Classes + 6-Field Allocation)</h3>
+  <div class="table-wrap" style="flex:0 0 auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>Civilization</th><th>Fac</th><th>Ship</th><th>Tech</th>
+          <th>⚡Cru</th><th>🛡️Bsh</th><th>💣Bom</th><th>🎯Int</th>
+          <th>Top Field</th><th>Win-Rate</th><th>Power</th>
+        </tr>
+      </thead>
+      <tbody id="dnaTableBody"></tbody>
+    </table>
+  </div>
+
+  <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap;">
+    <button class="hud-btn" data-action="tournament">🏆 40-Map Tournament</button>
+    <button class="hud-btn" data-action="coevolve">🧬 Train AI (Co-Evolution)</button>
+    <button class="hud-btn" data-action="autobalance">⚡ Auto-Balance Races</button>
+    <button class="hud-btn" data-action="copyjson">📋 Copy JSON</button>
+  </div>
+  <div id="statusMsgStats" style="font-size:0.72rem; color:var(--purple); min-height:18px;"></div>
+</div>
+
+<!-- DRAWER 2: REPORTS -->
+<div class="drawer wide" id="drawerReports">
+  <div class="drawer-head">
+    <div class="drawer-title">📋 Empire Reports</div>
+    <div style="display:flex; gap:6px;">
+      <button class="hud-btn active" id="repBtnPlanets" data-report="planets">Planets (80)</button>
+      <button class="hud-btn" id="repBtnFleets" data-report="fleets">Fleets in Flight (0)</button>
+      <button class="insp-close" data-close-drawer="drawerReports">✕</button>
+    </div>
+  </div>
+
+  <div class="table-wrap" id="repPlanetsWrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="id">#</th><th data-sort="owner">AI</th><th data-sort="gate">🌀</th>
+          <th data-sort="hab">Hab</th><th data-sort="pop">Pop</th><th data-sort="fac">Fac</th>
+          <th data-sort="iron" class="c-iron">Iron (Cr)</th><th data-sort="bora" class="c-bora">Bora (Cr)</th>
+          <th data-sort="germ" class="c-germ">Germ (Cr)</th><th data-sort="res">Res/yr</th><th data-sort="def">Def</th>
+        </tr>
+      </thead>
+      <tbody id="planetTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap" id="repFleetsWrap" style="display:none;">
+    <table>
+      <thead>
+        <tr><th>#</th><th>AI</th><th>Class / Order</th><th>Route</th><th>Power / HP</th><th>Dist</th><th>ETA</th></tr>
+      </thead>
+      <tbody id="fleetTableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- DRAWER 3: SETTINGS -->
+<div class="drawer" id="drawerSettings">
+  <div class="drawer-head">
+    <div class="drawer-title">⚙️ World Parameters &amp; Balance</div>
+    <button class="insp-close" data-close-drawer="drawerSettings">✕</button>
+  </div>
+
+  <div class="lab-tools">
+    <button class="hud-btn" data-action="tournament">🏆 Tournament 40x</button>
+    <button class="hud-btn" data-action="coevolve">🧬 Train AI</button>
+    <button class="hud-btn" data-action="autobalance">⚡ Auto-Balance</button>
+    <button class="hud-btn" data-action="copyjson">📋 Copy JSON</button>
+  </div>
+  <div id="statusMsg" style="font-size:0.7rem; color:var(--purple); min-height:16px;"></div>
+
+  <h3>1. Galaxy &amp; Wormholes</h3>
+  <div class="field"><div class="field-header"><span>Planet count</span><span class="val" id="v_planets">80</span></div><input type="range" id="p_planets" data-param="planets" min="30" max="200" step="10" value="80"></div>
+  <div class="field"><div class="field-header"><span>Wormhole pairs</span><span class="val" id="v_wormholePairs">2</span></div><input type="range" id="p_wormholePairs" data-param="wormholePairs" min="0" max="5" step="1" value="2"></div>
+  <div class="field"><div class="field-header"><span>Crust richness I/B/G (kT)</span><span class="val" id="v_crustRichness">800</span></div><input type="range" id="p_crustRichness" data-param="crustRichness" min="300" max="2500" step="100" value="800"></div>
+
+  <h3>2. Stargate &amp; Space Combat</h3>
+  <div class="field"><div class="field-header"><span>Stargate cost (I+G kT)</span><span class="val" id="v_gateCost">45</span></div><input type="range" id="p_gateCost" data-param="gateCost" min="15" max="120" step="5" value="45"></div>
+  <div class="field"><div class="field-header"><span>Intercept radius</span><span class="val" id="v_interceptRad">22</span></div><input type="range" id="p_interceptRad" data-param="interceptRad" min="8" max="50" step="2" value="22"></div>
+  <div class="field"><div class="field-header"><span>Debris salvage rate</span><span class="val" id="v_salvageRate">65%</span></div><input type="range" id="p_salvageRate" data-param="salvageRate" min="0" max="100" step="5" value="65"></div>
+
+  <h3>3. Race Multipliers &amp; Economy</h3>
+  <div class="field"><div class="field-header"><span>🟢 Industry &amp; Bunkers (Race 1)</span><span class="val" id="v_indWeight">1.05</span></div><input type="range" id="p_indWeight" data-param="indWeight" min="0.5" max="2.5" step="0.05" value="1.05"></div>
+  <div class="field"><div class="field-header"><span>🔵 Logistics &amp; Ships (Race 2)</span><span class="val" id="v_expWeight">1.05</span></div><input type="range" id="p_expWeight" data-param="expWeight" min="0.5" max="2.5" step="0.05" value="1.05"></div>
+  <div class="field"><div class="field-header"><span>🟡 Science &amp; Weapons (Race 3)</span><span class="val" id="v_techWeight">1.15</span></div><input type="range" id="p_techWeight" data-param="techWeight" min="0.5" max="2.5" step="0.05" value="1.15"></div>
+  <div class="field"><div class="field-header"><span>Anti-leader coalition (Aggro)</span><span class="val" id="v_aggroBias">65%</span></div><input type="range" id="p_aggroBias" data-param="aggroBias" min="0" max="100" step="5" value="65"></div>
+  <div class="field"><div class="field-header"><span>Empire sprawl penalty</span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

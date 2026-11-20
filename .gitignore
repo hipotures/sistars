@@ -1,0 +1,16 @@
+# Rust
+/target
+Cargo.lock
+
+# WASM build artifacts
+/crates/engine/pkg
+/web/src/wasm
+
+# Node / Vite
+/web/node_modules
+/web/dist
+*.local
+
+# OS / Editor
+.DS_Store
+*.swp

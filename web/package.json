@@ -1,0 +1,17 @@
+{
+  "name": "sistars-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build ../crates/engine --target web --out-dir ../../web/src/wasm",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}
