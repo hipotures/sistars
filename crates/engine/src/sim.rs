@@ -67,6 +67,16 @@ impl EmpireState {
         }
     }
 
+    pub fn ship_range(&self, class: FleetClass) -> f32 {
+        match class {
+            FleetClass::Col => self.tech_cache.range_col,
+            FleetClass::Freight => self.tech_cache.range_freight,
+            FleetClass::Cruiser => self.tech_cache.range_cruiser,
+            FleetClass::Battleship => self.tech_cache.range_battleship,
+            FleetClass::Bomber => self.tech_cache.range_bomber,
+        }
+    }
+
     /// Normalized mineral costs (iron, bora, germ) preserving exact craig-stars hull ratios.
     pub fn ship_mineral_cost(&self, class: FleetClass) -> (f32, f32, f32) {
         let h = self.hull_for_class(class);
@@ -567,9 +577,11 @@ impl Simulation {
                 self.min_surf[base_idx + 1] -= d_add * 0.15;
             }
 
-            // Inter-planet freighter logistics
+            // Inter-planet freighter logistics (bounded by freighter fuel range / Stargate relay)
             if self.next_rand() < 0.05 {
                 let cargo_cap = (self.empires[e].tech_cache.hull_freight.cargo * 0.75).clamp(45.0, 220.0);
+                let freight_range = self.empires[e].ship_range(FleetClass::Freight);
+                let gate_range = self.empires[e].tech_cache.stargate_max_range.max(250.0);
                 for m in 0..3 {
                     if self.min_surf[base_idx + m] > 95.0 {
                         let mut needy: Option<usize> = None;
@@ -578,6 +590,15 @@ impl Simulation {
                             if self.owner[j] == emp_u8
                                 && j != i
                                 && self.min_surf[j * 3 + m] < lowest_val
+                                && self
+                                    .effective_travel_dist(
+                                        i,
+                                        j,
+                                        freight_range,
+                                        &gate_lists[e],
+                                        gate_range,
+                                    )
+                                    .is_some()
                             {
                                 lowest_val = self.min_surf[j * 3 + m];
                                 needy = Some(j);
@@ -616,14 +637,22 @@ impl Simulation {
                     let mut best_score = -1.0f32;
                     let mut mission = FleetClass::Col;
                     let my_bit = 1u16 << e;
+                    let gate_range = self.empires[e].tech_cache.stargate_max_range.max(250.0);
 
                     let (col_i, _, col_g) = self.empires[e].ship_mineral_cost(FleetClass::Col);
+                    let col_range = self.empires[e].ship_range(FleetClass::Col);
                     if self.min_surf[base_idx] >= col_i && self.min_surf[base_idx + 2] >= col_g {
                         for j in 0..n {
                             if self.owner[j] == 0 && (self.claim_mask[j] & my_bit) == 0 {
-                                let d = (self.pos_x[j] - self.pos_x[i])
-                                    .hypot(self.pos_y[j] - self.pos_y[i])
-                                    .max(25.0);
+                                let Some(d) = self.effective_travel_dist(
+                                    i,
+                                    j,
+                                    col_range,
+                                    &gate_lists[e],
+                                    gate_range,
+                                ) else {
+                                    continue;
+                                };
                                 let sum_crust = self.min_crust[j * 3]
                                     + self.min_crust[j * 3 + 1]
                                     + self.min_crust[j * 3 + 2];
@@ -676,6 +705,7 @@ impl Simulation {
 
                         if let Some(c_class) = chosen_class {
                             let my_attack_est = self.compute_fleet_power(e, c_class, self.factories[i]);
+                            let ship_range = self.empires[e].ship_range(c_class);
                             let bomb_pen = if c_class == FleetClass::Bomber {
                                 (self.cfg.bomber_pen
                                     + (self.empires[e].tech_cache.bomb_power * 0.02).min(0.22))
@@ -690,10 +720,17 @@ impl Simulation {
                                     && target_owner != emp_u8
                                     && (self.claim_mask[j] & my_bit) == 0
                                 {
+                                    let Some(d) = self.effective_travel_dist(
+                                        i,
+                                        j,
+                                        ship_range,
+                                        &gate_lists[e],
+                                        gate_range,
+                                    ) else {
+                                        continue;
+                                    };
                                     let target_e = (target_owner - 1) as usize;
-                                    let d = (self.pos_x[j] - self.pos_x[i])
-                                        .hypot(self.pos_y[j] - self.pos_y[i])
-                                        .max(30.0);
+                                    let d = d.max(30.0);
                                     let eff_def = self.defense[j] * (1.0 - bomb_pen);
                                     let enemy_def = 20.0 + eff_def + self.pop[j] * 0.35;
                                     let target_share =
@@ -1169,6 +1206,41 @@ impl Simulation {
         }
 
         stats
+    }
+
+    fn effective_travel_dist(
+        &self,
+        from_idx: usize,
+        target_idx: usize,
+        max_range: f32,
+        friendly_gates: &[usize],
+        gate_range: f32,
+    ) -> Option<f32> {
+        let direct = (self.pos_x[target_idx] - self.pos_x[from_idx])
+            .hypot(self.pos_y[target_idx] - self.pos_y[from_idx]);
+        if direct <= max_range {
+            return Some(direct.max(25.0));
+        }
+        if self.has_gate[from_idx] != 0 && friendly_gates.len() > 1 {
+            let mut best: Option<f32> = None;
+            for &g_idx in friendly_gates {
+                if g_idx == from_idx {
+                    continue;
+                }
+                let jump = (self.pos_x[g_idx] - self.pos_x[from_idx])
+                    .hypot(self.pos_y[g_idx] - self.pos_y[from_idx]);
+                if jump > gate_range {
+                    continue;
+                }
+                let after = (self.pos_x[target_idx] - self.pos_x[g_idx])
+                    .hypot(self.pos_y[target_idx] - self.pos_y[g_idx]);
+                if after <= max_range && best.map_or(true, |b| after < b) {
+                    best = Some(after.max(25.0));
+                }
+            }
+            return best;
+        }
+        None
     }
 
     fn compute_fleet_power(&self, e: usize, class: FleetClass, factories_here: f32) -> f32 {

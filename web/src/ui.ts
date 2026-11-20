@@ -636,6 +636,8 @@ export class UiController {
             <span>Gate: ${lo.stargate}</span>
             <span>Cru: ${lo.cruiserHull}</span>
             <span>Cap: ${lo.battleshipHull}</span>
+            <span>Col Rng: ${Math.round(lo.rangeCol)}ly</span>
+            <span>Cap Rng: ${Math.round(lo.rangeBattleship)}ly</span>
           </div>
         </div>`;
       })

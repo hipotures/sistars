@@ -81,6 +81,10 @@ pub struct EmpireLoadoutView {
     pub cruiser_hull: String,
     pub battleship_hull: String,
     pub bomber_hull: String,
+    pub range_col: f32,
+    pub range_cruiser: f32,
+    pub range_battleship: f32,
+    pub range_bomber: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
