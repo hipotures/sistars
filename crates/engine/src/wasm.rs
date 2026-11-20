@@ -134,6 +134,14 @@ impl WasmEngine {
         }
     }
 
+    /// On-demand lazy deterministic star system generation anchored to planet `idx`.
+    pub fn get_star_system(&self, idx: usize) -> JsValue {
+        match self.sim.get_star_system(idx) {
+            Some(sys) => serde_wasm_bindgen::to_value(&sys).unwrap_or(JsValue::NULL),
+            None => JsValue::NULL,
+        }
+    }
+
     /// On-demand detail for a clicked fleet by buffer index or stable fleet ID.
     pub fn get_fleet_by_index(&self, idx: usize) -> JsValue {
         match self.sim.fleets.get(idx) {

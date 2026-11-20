@@ -289,3 +289,75 @@ pub struct TechCatalogView {
     pub lrts: Vec<LrtMeta>,
     pub classic_races: Vec<RaceDef>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BodyType {
+    Terrestrial,
+    Oceanic,
+    Desert,
+    Ice,
+    Volcanic,
+    Rock,
+    GasGiant,
+    IceGiant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarView {
+    pub spectral_class: String,
+    pub temp_k: f32,
+    pub mass_solar: f32,
+    pub radius_solar: f32,
+    pub luminosity_solar: f32,
+    pub color_rgb: [f32; 3],
+    pub seed: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanetLiveStateView {
+    pub owner: u8,
+    pub owner_color: String,
+    pub pop_norm: f32,
+    pub has_starbase: bool,
+    pub has_stargate: bool,
+    pub has_jammer: bool,
+    pub mineral_tint: [f32; 3],
+    pub grav_g: f32,
+    pub rad_mr: f32,
+    pub terra_pct: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemBodyView {
+    pub name: String,
+    pub orbit_au: f32,
+    pub orbit_angle_rad: f32,
+    pub radius_earth: f32,
+    pub body_type: BodyType,
+    pub temp_k: f32,
+    pub water_pct: f32,
+    pub ice_pct: f32,
+    pub atmo_density: f32,
+    pub atmo_color_rgb: [f32; 3],
+    pub cloud_pct: f32,
+    pub has_rings: bool,
+    pub ring_inner: f32,
+    pub ring_outer: f32,
+    pub ring_color_rgb: [f32; 3],
+    pub moons_count: u8,
+    pub seed: u32,
+    pub live_state: Option<PlanetLiveStateView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarSystemView {
+    pub planet_id: usize,
+    pub system_seed: u32,
+    pub star: StarView,
+    pub primary_index: usize,
+    pub bodies: Vec<SystemBodyView>,
+}

@@ -8,6 +8,7 @@ import type {
   RaceDef,
   ReportsSnapshot,
   SimConfig,
+  StarSystemView,
   TechCatalogView,
   TournamentResult,
 } from './types';
@@ -43,6 +44,7 @@ export type MainToWorkerMsg =
       debris: ArrayBuffer;
     }
   | { type: 'getPlanetDetail'; reqId: number; index: number }
+  | { type: 'getStarSystem'; reqId: number; index: number }
   | { type: 'getFleetById'; reqId: number; id: number }
   | { type: 'getFleetByIndex'; reqId: number; index: number }
   | { type: 'getDebrisDetail'; reqId: number; index: number }
@@ -77,6 +79,7 @@ export type WorkerToMainMsg =
       resetHistory: boolean;
     }
   | { type: 'planetDetail'; reqId: number; data: PlanetView | null }
+  | { type: 'starSystem'; reqId: number; data: StarSystemView | null }
   | { type: 'fleetDetail'; reqId: number; data: FleetView | null }
   | { type: 'debrisDetail'; reqId: number; data: DebrisFieldView | null }
   | { type: 'reportsSnapshot'; reqId: number; data: ReportsSnapshot }

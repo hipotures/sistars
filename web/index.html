@@ -66,6 +66,17 @@
     <div class="insp-title" id="inspTitle">System #1</div>
     <button class="insp-close" id="btnCloseInspector">✕</button>
   </div>
+  <div id="inspGlobeWrap" class="insp-globe-wrap" style="display:none;">
+    <canvas id="inspPlanetCanvas" class="insp-planet-canvas"></canvas>
+    <div class="insp-globe-top">
+      <span id="inspStarBadge" class="insp-badge">G2V • 5780K</span>
+      <span id="inspOrbitBadges" class="insp-orbit-badges"></span>
+    </div>
+    <div class="insp-globe-bottom">
+      <span id="inspBodyTypeBadge" class="insp-badge">Terrestrial</span>
+      <button class="hud-btn active" id="btnOpenSystemView" style="padding:3px 7px;font-size:0.65rem;">🌌 System View</button>
+    </div>
+  </div>
   <div class="insp-grid">
     <div class="insp-stat"><span id="inspLbl0">Owner</span><b id="inspVal0">Uninhabited</b></div>
     <div class="insp-stat"><span id="inspLbl1">Habitability</span><b id="inspVal1">100%</b></div>
@@ -371,6 +382,34 @@
     <button class="hud-btn" id="btnClearTelemetry" title="Clear recorded telemetry">🗑</button>
   </div>
   <div id="telemetryInfo" style="font-size:0.68rem; font-family:monospace; color:var(--muted);">Recorded: 0 years</div>
+</div>
+
+<!-- STAR SYSTEM VIEW MODAL -->
+<div id="systemModal" class="sys-modal" style="display:none;">
+  <div class="sys-modal-card">
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-title" id="sysModalTitle">🌌 System #1</div>
+        <div id="sysStarMeta" style="font-size:0.69rem; font-family:monospace; color:var(--muted); margin-top:2px;">G2V • 5780 K • 1.00 M☉</div>
+      </div>
+      <button class="insp-close" id="btnCloseSystemModal">✕</button>
+    </div>
+
+    <div class="sys-orbit-strip" id="sysOrbitStrip"></div>
+
+    <div class="sys-detail-split">
+      <div class="sys-preview-box">
+        <canvas id="sysPreviewCanvas" class="sys-preview-canvas"></canvas>
+        <div class="sys-preview-bar">
+          <span id="sysSelectedLabel" style="font-size:0.74rem; font-weight:700;">System #1 III</span>
+          <button class="hud-btn" id="btnExportPlanetPng" title="Export equirectangular surface texture">⬇ Export 2048×1024 PNG</button>
+        </div>
+      </div>
+      <div class="sys-stats-pane">
+        <div class="insp-grid" id="sysBodyStats"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script type="module" src="/src/main.ts"></script>

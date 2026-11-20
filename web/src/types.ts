@@ -337,3 +337,65 @@ export interface CoEvolutionResult {
   dnaGeneration: number;
   tournament: TournamentResult;
 }
+
+export type BodyType =
+  | 'Terrestrial'
+  | 'Oceanic'
+  | 'Desert'
+  | 'Ice'
+  | 'Volcanic'
+  | 'Rock'
+  | 'GasGiant'
+  | 'IceGiant';
+
+export interface StarView {
+  spectralClass: string;
+  tempK: number;
+  massSolar: number;
+  radiusSolar: number;
+  luminositySolar: number;
+  colorRgb: [number, number, number];
+  seed: number;
+}
+
+export interface PlanetLiveStateView {
+  owner: number;
+  ownerColor: string;
+  popNorm: number;
+  hasStarbase: boolean;
+  hasStargate: boolean;
+  hasJammer: boolean;
+  mineralTint: [number, number, number];
+  gravG: number;
+  radMr: number;
+  terraPct: number;
+}
+
+export interface SystemBodyView {
+  name: string;
+  orbitAu: number;
+  orbitAngleRad: number;
+  radiusEarth: number;
+  bodyType: BodyType;
+  tempK: number;
+  waterPct: number;
+  icePct: number;
+  atmoDensity: number;
+  atmoColorRgb: [number, number, number];
+  cloudPct: number;
+  hasRings: boolean;
+  ringInner: number;
+  ringOuter: number;
+  ringColorRgb: [number, number, number];
+  moonsCount: number;
+  seed: number;
+  liveState: PlanetLiveStateView | null;
+}
+
+export interface StarSystemView {
+  planetId: number;
+  systemSeed: number;
+  star: StarView;
+  primaryIndex: number;
+  bodies: SystemBodyView[];
+}

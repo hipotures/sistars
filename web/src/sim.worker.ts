@@ -8,6 +8,7 @@ import type {
   PlanetView,
   ReportsSnapshot,
   SimConfig,
+  StarSystemView,
   TechCatalogView,
   TournamentResult,
 } from './types';
@@ -372,6 +373,12 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
     case 'getPlanetDetail': {
       const data = engine.get_planet_detail(msg.index) as PlanetView | null;
       post({ type: 'planetDetail', reqId: msg.reqId, data });
+      break;
+    }
+
+    case 'getStarSystem': {
+      const data = engine.get_star_system(msg.index) as StarSystemView | null;
+      post({ type: 'starSystem', reqId: msg.reqId, data });
       break;
     }
 
