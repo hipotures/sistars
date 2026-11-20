@@ -4,6 +4,7 @@
 * You are running on a dedicated Ubuntu VM with full access to this project workspace.
 * You may freely install local project dependencies (`cargo` crates, `wasm-pack`, `npm`/`pnpm` packages).
 * **No `sudo` / `apt` privileges:** If a system package is missing (e.g., `pkg-config`, `libssl-dev`, `binaryen`), do not attempt workarounds. Explicitly inform the user with the exact `sudo apt install ...` command required.
+* **Dev server networking:** Always bind dev/preview servers to the external network interface (`--host 0.0.0.0`), not `localhost` only, so the app is reachable remotely from outside the VM.
 
 ## Architecture & Scope
 * Follow the simplest modular structure that meets current requirements—avoid speculative abstractions or premature indirection:
