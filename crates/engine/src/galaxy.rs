@@ -11,6 +11,8 @@ pub enum GalaxySize {
     Medium,
     Large,
     Huge,
+    Colossal,
+    Galactic,
 }
 
 impl GalaxySize {
@@ -21,6 +23,8 @@ impl GalaxySize {
             GalaxySize::Medium => (250, 1450.0, 950.0),
             GalaxySize::Large => (500, 2000.0, 1350.0),
             GalaxySize::Huge => (1000, 2800.0, 1900.0),
+            GalaxySize::Colossal => (10_000, 8800.0, 6000.0),
+            GalaxySize::Galactic => (100_000, 28_000.0, 19_000.0),
         }
     }
 
@@ -30,6 +34,8 @@ impl GalaxySize {
             "medium" => Some(GalaxySize::Medium),
             "large" => Some(GalaxySize::Large),
             "huge" => Some(GalaxySize::Huge),
+            "colossal" => Some(GalaxySize::Colossal),
+            "galactic" => Some(GalaxySize::Galactic),
             _ => None,
         }
     }
@@ -78,15 +84,71 @@ fn rand_normal(seed: &mut u32) -> f32 {
     (next_rand(seed) + next_rand(seed) + next_rand(seed) + next_rand(seed) - 2.0) * 0.85
 }
 
-fn far_enough(x: f32, y: f32, xs: &[f32], ys: &[f32], min_dist_sq: f32) -> bool {
-    for i in 0..xs.len() {
-        let dx = xs[i] - x;
-        let dy = ys[i] - y;
-        if dx * dx + dy * dy < min_dist_sq {
-            return false;
+struct SpacingGrid {
+    cols: usize,
+    rows: usize,
+    inv_cell: f32,
+    head: Vec<i32>,
+    next: Vec<i32>,
+}
+
+impl SpacingGrid {
+    fn new(world_w: f32, world_h: f32, cell_size: f32, capacity: usize) -> Self {
+        let inv_cell = 1.0 / cell_size;
+        let cols = ((world_w * inv_cell).ceil() as usize).max(1);
+        let rows = ((world_h * inv_cell).ceil() as usize).max(1);
+        Self {
+            cols,
+            rows,
+            inv_cell,
+            head: vec![-1; cols * rows],
+            next: Vec::with_capacity(capacity),
         }
     }
-    true
+
+    #[inline]
+    fn cell(&self, x: f32, y: f32) -> (usize, usize) {
+        let cx = ((x * self.inv_cell) as isize).clamp(0, (self.cols - 1) as isize) as usize;
+        let cy = ((y * self.inv_cell) as isize).clamp(0, (self.rows - 1) as isize) as usize;
+        (cx, cy)
+    }
+
+    #[inline]
+    fn far_enough(&self, x: f32, y: f32, xs: &[f32], ys: &[f32], min_dist_sq: f32) -> bool {
+        let (cx, cy) = self.cell(x, y);
+        let min_x = cx.saturating_sub(1);
+        let max_x = (cx + 1).min(self.cols - 1);
+        let min_y = cy.saturating_sub(1);
+        let max_y = (cy + 1).min(self.rows - 1);
+        for gy in min_y..=max_y {
+            let row_off = gy * self.cols;
+            for gx in min_x..=max_x {
+                let mut cur = self.head[row_off + gx];
+                while cur >= 0 {
+                    let i = cur as usize;
+                    let dx = xs[i] - x;
+                    let dy = ys[i] - y;
+                    if dx * dx + dy * dy < min_dist_sq {
+                        return false;
+                    }
+                    cur = self.next[i];
+                }
+            }
+        }
+        true
+    }
+
+    #[inline]
+    fn insert(&mut self, idx: usize, x: f32, y: f32) {
+        let (cx, cy) = self.cell(x, y);
+        let cell = cy * self.cols + cx;
+        let prev = self.head[cell];
+        if self.next.len() <= idx {
+            self.next.resize(idx + 1, -1);
+        }
+        self.next[idx] = prev;
+        self.head[cell] = idx as i32;
+    }
 }
 
 pub fn generate_galaxy(
@@ -109,6 +171,7 @@ pub fn generate_galaxy(
 
     let mut pos_x = Vec::with_capacity(n);
     let mut pos_y = Vec::with_capacity(n);
+    let mut grid = SpacingGrid::new(world_w, world_h, min_spacing, n);
 
     // 1. Place homeworlds (indices 0..num_empires) symmetrically according to galaxy shape
     let base_angle = next_rand(rng_seed) * TAU;
@@ -135,14 +198,18 @@ pub fn generate_galaxy(
                 (cx + ang.cos() * (rx * 0.76), cy + ang.sin() * (ry * 0.76))
             }
         };
-        pos_x.push(hx.clamp(margin, world_w - margin));
-        pos_y.push(hy.clamp(margin, world_h - margin));
+        let px = hx.clamp(margin, world_w - margin);
+        let py = hy.clamp(margin, world_h - margin);
+        let idx = pos_x.len();
+        pos_x.push(px);
+        pos_y.push(py);
+        grid.insert(idx, px, py);
     }
 
     // Add extra neutral cluster centers for Clusters shape
     if shape == GalaxyShape::Clusters {
         cluster_centers.push((cx, cy));
-        let extra = (n / 65).clamp(2, 6);
+        let extra = (n / 65).clamp(2, 16);
         for k in 0..extra {
             let ang = base_angle + 0.5 + (k as f32 / extra as f32) * TAU;
             let x = (cx + ang.cos() * (rx * 0.42)).clamp(margin + 40.0, world_w - margin - 40.0);
@@ -151,7 +218,7 @@ pub fn generate_galaxy(
         }
     }
 
-    // 2. Guarantee 2 local frontier worlds within 45..78 ly of each homeworld so no empire is ever stranded
+    // 2. Guarantee 2 local frontier worlds within 42..76 ly of each homeworld so no empire is ever stranded
     for e in 0..num_empires {
         let hx = pos_x[e];
         let hy = pos_y[e];
@@ -164,21 +231,24 @@ pub fn generate_galaxy(
                 let d = 42.0 + next_rand(rng_seed) * 34.0;
                 let x = (hx + a.cos() * d).clamp(margin, world_w - margin);
                 let y = (hy + a.sin() * d).clamp(margin, world_h - margin);
-                if far_enough(x, y, &pos_x, &pos_y, min_spacing_sq) {
+                if grid.far_enough(x, y, &pos_x, &pos_y, min_spacing_sq) {
+                    let idx = pos_x.len();
                     pos_x.push(x);
                     pos_y.push(y);
+                    grid.insert(idx, x, y);
                     break;
                 }
             }
         }
     }
 
-    // 3. Generate remaining stars using chosen galaxy topology
+    // 3. Generate remaining stars using chosen galaxy topology (O(N) via SpacingGrid!)
     let num_arms = if n >= 400 { 4 } else { 3 };
     let arm_twist = 2.6f32;
     let mut safety = 0usize;
+    let max_attempts = n.saturating_mul(8).max(4000);
 
-    while pos_x.len() < n && safety < n * 40 {
+    while pos_x.len() < n && safety < max_attempts {
         safety += 1;
         let (x, y) = match shape {
             GalaxyShape::Random => (
@@ -187,7 +257,6 @@ pub fn generate_galaxy(
             ),
             GalaxyShape::Spiral => {
                 if next_rand(rng_seed) < 0.14 {
-                    // Galactic core bulge
                     let r = next_rand(rng_seed).powf(0.7) * 0.24;
                     let a = next_rand(rng_seed) * TAU;
                     (cx + a.cos() * rx * r, cy + a.sin() * ry * r)
@@ -211,7 +280,7 @@ pub fn generate_galaxy(
                 let c_idx = (next_rand(rng_seed) * cluster_centers.len() as f32) as usize
                     % cluster_centers.len();
                 let (ccx, ccy) = cluster_centers[c_idx];
-                let spread = (world_w.min(world_h) * 0.13).clamp(70.0, 180.0);
+                let spread = (world_w.min(world_h) * 0.13).clamp(70.0, 1400.0);
                 (
                     ccx + rand_normal(rng_seed) * spread,
                     ccy + rand_normal(rng_seed) * spread,
@@ -227,9 +296,11 @@ pub fn generate_galaxy(
         if x < margin || x > world_w - margin || y < margin || y > world_h - margin {
             continue;
         }
-        if far_enough(x, y, &pos_x, &pos_y, min_spacing_sq) {
+        if grid.far_enough(x, y, &pos_x, &pos_y, min_spacing_sq) {
+            let idx = pos_x.len();
             pos_x.push(x);
             pos_y.push(y);
+            grid.insert(idx, x, y);
         }
     }
 

@@ -120,7 +120,7 @@ export class GalaxyRenderer {
     const wx = (mx - before.offX) / before.scale;
     const wy = (my - before.offY) / before.scale;
 
-    this.zoom = Math.max(0.6, Math.min(6.0, this.zoom * factor));
+    this.zoom = Math.max(0.6, Math.min(40.0, this.zoom * factor));
 
     const base = this.getBaseTransform();
     const newScale = base.scale * this.zoom;
@@ -342,8 +342,16 @@ export class GalaxyRenderer {
       ctx.lineWidth = 1.0;
     }
 
-    // Planets
-    const denseFactor = planetCount >= 450 ? 0.72 : planetCount >= 220 ? 0.85 : 1.0;
+    // Planets (fast fillRect LOD when drawing 10k-100k neutral stars zoomed out)
+    const denseFactor =
+      planetCount >= 5000
+        ? 0.55
+        : planetCount >= 450
+          ? 0.72
+          : planetCount >= 220
+            ? 0.85
+            : 1.0;
+    const fastDotMode = planetCount >= 5000 && this.zoom < 4.0;
     const invCrustNorm = 1.0 / (crustRichness * 4);
     for (let i = 0; i < planetCount; i++) {
       const off = i * PLANET_STRIDE;
@@ -356,6 +364,12 @@ export class GalaxyRenderer {
       const hab = planetsBuf[off + 4];
       const hasGate = planetsBuf[off + 5] > 0.5;
       const crustSum = planetsBuf[off + 6];
+
+      if (fastDotMode && owner === 0 && i !== selectedPlanet && i !== hoveredPlanet) {
+        ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
+        ctx.fillRect(px - 0.75, py - 0.75, 1.5, 1.5);
+        continue;
+      }
 
       const r =
         (owner > 0 ? Math.min(13, 4 + Math.sqrt(factories) * 0.45) : 3 + hab * 2.5) * denseFactor;
@@ -544,7 +558,7 @@ export class GalaxyRenderer {
 
   private drawScaleBar(scale: number): void {
     const ctx = this.ctx;
-    const candidates = [10, 20, 25, 50, 100, 150, 200, 250, 500];
+    const candidates = [10, 20, 25, 50, 100, 150, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
     let ly = 100;
     for (const c of candidates) {
       const px = c * scale;
