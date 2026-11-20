@@ -22,6 +22,7 @@ export interface UiCallbacks {
   onLabAction: (action: LabAction) => void;
   onSelectPlanet: (index: number) => void;
   onLaunchRaces: (races: RaceDef[]) => void;
+  onDebugPerfToggle: (enabled: boolean) => void;
   onDebugHistoryToggle: (enabled: boolean) => void;
   onHistoryScrub: (index: number) => void;
   onHistoryStep: (delta: number) => void;
@@ -186,6 +187,29 @@ export class UiController {
     getEl('btnHistLive').classList.toggle('active', isLive);
   }
 
+  public updatePerfHud(
+    enabled: boolean,
+    fps: number,
+    tps: number,
+    wasmMs: number,
+    drawMs: number,
+    planets: number,
+    fleets: number,
+  ): void {
+    const hud = getEl('perfHud');
+    hud.classList.toggle('visible', enabled);
+    if (!enabled) return;
+
+    const fpsEl = getEl('perfFps');
+    fpsEl.textContent = String(Math.round(fps));
+    fpsEl.style.color = fps >= 50 ? 'var(--green)' : fps >= 28 ? 'var(--yellow)' : 'var(--red)';
+
+    getEl('perfTps').textContent = String(Math.round(tps));
+    getEl('perfWasm').textContent = `${wasmMs.toFixed(2)}ms`;
+    getEl('perfDraw').textContent = `${drawMs.toFixed(2)}ms`;
+    getEl('perfEnt').textContent = `${planets}p / ${fleets}f`;
+  }
+
   public updateWinRateBar(res: TournamentResult, snap: SimSnapshot): void {
     getEl('tourneyLabel').textContent = `🏆 Win-Rate (${res.numGames} maps):`;
     const bar = getEl('winrateBar');
@@ -305,7 +329,10 @@ export class UiController {
 
     getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
 
-    // Debug History Scrubber controls
+    // Debug Performance HUD & History Scrubber controls
+    getEl<HTMLInputElement>('p_debugPerf').addEventListener('change', (e) => {
+      this.callbacks.onDebugPerfToggle((e.target as HTMLInputElement).checked);
+    });
     getEl<HTMLInputElement>('p_debugHistory').addEventListener('change', (e) => {
       this.callbacks.onDebugHistoryToggle((e.target as HTMLInputElement).checked);
     });

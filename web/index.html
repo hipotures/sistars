@@ -48,6 +48,15 @@
   <button class="hud-btn active" id="btnHistLive">● Live</button>
 </div>
 
+<!-- DEBUG PERFORMANCE HUD -->
+<div id="perfHud">
+  <span class="perf-item"><b>FPS</b> <span id="perfFps">60</span></span>
+  <span class="perf-item"><b>TPS</b> <span id="perfTps">60</span></span>
+  <span class="perf-item"><b>WASM</b> <span id="perfWasm">0.0ms</span></span>
+  <span class="perf-item"><b>DRAW</b> <span id="perfDraw">0.0ms</span></span>
+  <span class="perf-item"><b>ENT</b> <span id="perfEnt">120p / 0f</span></span>
+</div>
+
 <!-- PLANET INSPECTOR -->
 <div id="planetInspector">
   <div class="insp-header">
@@ -313,6 +322,10 @@
   <div class="field"><div class="field-header"><span>Empire sprawl penalty</span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
 
   <h3>5. Debug</h3>
+  <label class="checkbox-row">
+    <input type="checkbox" id="p_debugPerf" />
+    <span>Performance HUD (FPS, ticks/s, WASM &amp; Canvas ms)</span>
+  </label>
   <label class="checkbox-row">
     <input type="checkbox" id="p_debugHistory" />
     <span>History Scrubber (record &amp; rewind up to 600 snapshots)</span>
