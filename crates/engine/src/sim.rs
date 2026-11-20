@@ -196,6 +196,7 @@ pub struct Simulation {
     pub owner: Vec<u8>,
     pub has_gate: Vec<u8>,
     pub claim_mask: Vec<u16>,
+    pub explored_mask: Vec<u16>,
 
     // Precomputed sorted nearest-neighbor lists per planet & wormhole endpoints (eliminates O(P^2) scans)
     planet_neighbors: Vec<Vec<(u32, f32)>>,
@@ -278,6 +279,7 @@ impl Simulation {
             owner: Vec::new(),
             has_gate: Vec::new(),
             claim_mask: Vec::new(),
+            explored_mask: Vec::new(),
             planet_neighbors: Vec::new(),
             wh_near_a: Vec::new(),
             wh_near_b: Vec::new(),
@@ -496,6 +498,8 @@ impl Simulation {
         self.has_gate.resize(n, 0);
         self.claim_mask.clear();
         self.claim_mask.resize(n, 0);
+        self.explored_mask.clear();
+        self.explored_mask.resize(n, 0);
 
         self.build_planet_neighbors();
 
@@ -535,6 +539,12 @@ impl Simulation {
                 res: 25.0,
                 gates: 0,
             };
+        }
+
+        // Initial planetary scanner reveal around each empire's homeworld
+        for e in 0..num_emp {
+            let scan_r = self.effective_scanner_range(e);
+            self.reveal_around_planet(e, e, scan_r);
         }
 
         self.fleets.clear();
@@ -829,6 +839,10 @@ impl Simulation {
             // Time-sliced AI target search (freighters, colonizers, warships) using precomputed neighbor lists
             let ai_turn = (i + tick_usize) % AI_DECISION_STRIDE == 0;
             if ai_turn {
+                // Planetary scanner sweep (Fog of War discovery)
+                let scan_r = self.effective_scanner_range(e);
+                self.reveal_around_planet(i, e, scan_r);
+
                 let gate_range = self.empires[e].tech_cache.stargate_max_range.max(250.0);
 
                 // Freighter logistics (scaled probability for stride)
@@ -899,12 +913,18 @@ impl Simulation {
                             let j = j_u16 as usize;
                             if self.owner[j] == 0 && (self.claim_mask[j] & my_bit) == 0 {
                                 let d = dist.max(25.0);
-                                let sum_crust = self.min_crust[j * 3]
-                                    + self.min_crust[j * 3 + 1]
-                                    + self.min_crust[j * 3 + 2];
-                                let quality = self.hab[j].powf(1.5)
-                                    * (0.4 + sum_crust / (self.cfg.crust_richness * 3.0));
-                                let score = quality.powf(qual_exp) / (d / 180.0).powf(dist_exp);
+                                let known = (self.explored_mask[j] & my_bit) != 0;
+                                let score = if known {
+                                    let sum_crust = self.min_crust[j * 3]
+                                        + self.min_crust[j * 3 + 1]
+                                        + self.min_crust[j * 3 + 2];
+                                    let quality = self.hab[j].powf(1.5)
+                                        * (0.4 + sum_crust / (self.cfg.crust_richness * 3.0));
+                                    quality.powf(qual_exp) / (d / 180.0).powf(dist_exp)
+                                } else {
+                                    // Uncharted system: empire doesn't know hab/minerals yet, can scout if needed
+                                    0.22 / (d / 180.0).powf(dist_exp)
+                                };
                                 if score > best_score {
                                     best_score = score;
                                     best_target = Some(j);
@@ -1059,6 +1079,7 @@ impl Simulation {
                                 let target_owner = self.owner[j];
                                 if target_owner != 0
                                     && target_owner != emp_u8
+                                    && (self.explored_mask[j] & my_bit) != 0
                                     && (self.claim_mask[j] & my_bit) == 0
                                 {
                                     let target_e = (target_owner - 1) as usize;
@@ -1118,6 +1139,7 @@ impl Simulation {
                                         let target_owner = self.owner[j];
                                         if target_owner != 0
                                             && target_owner != emp_u8
+                                            && (self.explored_mask[j] & my_bit) != 0
                                             && (self.claim_mask[j] & my_bit) == 0
                                         {
                                             let target_e = (target_owner - 1) as usize;
@@ -1177,6 +1199,7 @@ impl Simulation {
                                             let target_owner = self.owner[j];
                                             if target_owner != 0
                                                 && target_owner != emp_u8
+                                                && (self.explored_mask[j] & my_bit) != 0
                                                 && (self.claim_mask[j] & my_bit) == 0
                                             {
                                                 let target_e = (target_owner - 1) as usize;
@@ -1589,6 +1612,9 @@ impl Simulation {
             if !heading_to_wh && tdx * tdx + tdy * tdy <= step_dist * step_dist {
                 let fl = self.fleets.swap_remove(f_idx);
                 self.claim_mask[target_idx] &= !(1u16 << e);
+                // Arriving fleet's shipboard scanner reveals the target system & nearby space
+                let ship_scan = self.effective_scanner_range(e) * 0.65;
+                self.reveal_around_planet(target_idx, e, ship_scan);
 
                 if fl.fleet_type == FleetClass::Freight {
                     self.min_surf[target_idx * 3 + fl.min_type as usize] += fl.power;
@@ -1819,6 +1845,28 @@ impl Simulation {
         }
 
         stats
+    }
+
+    #[inline]
+    fn effective_scanner_range(&self, e: usize) -> f32 {
+        let base = self.empires[e].tech_cache.scanner_range;
+        if self.empires[e].race.prt == "PRT_SS" {
+            base * 1.25
+        } else {
+            base
+        }
+    }
+
+    #[inline]
+    fn reveal_around_planet(&mut self, center_idx: usize, e: usize, radius: f32) {
+        let bit = 1u16 << e;
+        self.explored_mask[center_idx] |= bit;
+        for &(j_u32, dist) in &self.planet_neighbors[center_idx] {
+            if dist > radius {
+                break;
+            }
+            self.explored_mask[j_u32 as usize] |= bit;
+        }
     }
 
     fn compute_fleet_power(&self, e: usize, class: FleetClass, factories_here: f32) -> f32 {

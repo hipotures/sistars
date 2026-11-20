@@ -1432,6 +1432,7 @@ impl EmpireTechCache {
             range_cruiser: self.range_cruiser,
             range_battleship: self.range_battleship,
             range_bomber: self.range_bomber,
+            scanner_range: self.scanner_range,
         }
     }
 }

@@ -148,6 +148,7 @@ export interface EmpireLoadoutView {
   rangeCruiser: number;
   rangeBattleship: number;
   rangeBomber: number;
+  scannerRange: number;
 }
 
 export interface EmpireSummaryView {
