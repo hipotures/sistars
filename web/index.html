@@ -15,7 +15,11 @@
     <div class="brand-title">SI-STARS</div>
     <div class="year-box" id="hudYear">2400.0</div>
     <div class="speed-controls">
-      <button class="hud-btn" id="btnPause" data-speed="0">⏸</button>
+      <button class="hud-btn" id="btnPause" data-speed="0" title="Pause">⏸</button>
+      <button class="hud-btn" id="btnStep" title="Step 1 tick">⏭</button>
+      <button class="hud-btn" id="btn01x" data-speed="0.1">0.1x</button>
+      <button class="hud-btn" id="btn025x" data-speed="0.25">0.25x</button>
+      <button class="hud-btn" id="btn05x" data-speed="0.5">0.5x</button>
       <button class="hud-btn active" id="btn1x" data-speed="1">1x</button>
       <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
       <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
@@ -33,6 +37,16 @@
     <button class="hud-btn danger" id="btnReset" title="New galaxy">↺ Map</button>
   </div>
 </header>
+
+<!-- DEBUG HISTORY SCRUBBER -->
+<div id="historyBar">
+  <span class="hist-badge" id="historyBadge">DEBUG REPLAY</span>
+  <button class="hud-btn" id="btnHistPrev" title="Previous snapshot">◀</button>
+  <input type="range" id="historySlider" min="0" max="0" step="1" value="0" />
+  <button class="hud-btn" id="btnHistNext" title="Next snapshot">▶</button>
+  <span class="hist-label" id="historyLabel">Year 2400.0 (0 / 0)</span>
+  <button class="hud-btn active" id="btnHistLive">● Live</button>
+</div>
 
 <!-- PLANET INSPECTOR -->
 <div id="planetInspector">
@@ -279,6 +293,12 @@
   <h3>4. Diplomacy &amp; Administration</h3>
   <div class="field"><div class="field-header"><span>Anti-leader coalition (Aggro)</span><span class="val" id="v_aggroBias">65%</span></div><input type="range" id="p_aggroBias" data-param="aggroBias" min="0" max="100" step="5" value="65"></div>
   <div class="field"><div class="field-header"><span>Empire sprawl penalty</span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
+
+  <h3>5. Debug</h3>
+  <label class="checkbox-row">
+    <input type="checkbox" id="p_debugHistory" />
+    <span>History Scrubber (record &amp; rewind up to 600 snapshots)</span>
+  </label>
 </div>
 
 <script type="module" src="/src/main.ts"></script>
