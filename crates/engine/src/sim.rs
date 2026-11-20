@@ -688,41 +688,64 @@ impl Simulation {
                 self.min_surf[base_idx + min_m] += transmuted;
             }
 
-            // Stargate construction
+            // Strategic Stargate hubs (capped per empire + minimum hub spacing; PRT_IT builds denser networks)
             let has_stargate_tech = self.empires[e].tech_cache.stargate_name.is_some();
-            if has_stargate_tech && self.has_gate[i] == 0 && self.factories[i] >= 38.0 {
+            let prt_it = self.empires[e].race.prt == "PRT_IT";
+            let max_gates_for_emp = if prt_it {
+                (self.p_counts[e] as usize / 4).max(2)
+            } else {
+                (self.p_counts[e] as usize / 8).max(2)
+            };
+            let min_fac_for_gate = if prt_it { 40.0 } else { 58.0 };
+            if has_stargate_tech
+                && self.has_gate[i] == 0
+                && self.gate_lists[e].len() < max_gates_for_emp
+                && self.factories[i] >= min_fac_for_gate
+            {
                 let gate_iron = self
                     .empires[e]
                     .tech_cache
                     .stargate_cost_iron
-                    .min(self.cfg.gate_cost);
+                    .min(if prt_it { self.cfg.gate_cost } else { self.cfg.gate_cost * 1.4 });
                 let gate_germ = self
                     .empires[e]
                     .tech_cache
                     .stargate_cost_germ
-                    .min(self.cfg.gate_cost);
+                    .min(if prt_it { self.cfg.gate_cost } else { self.cfg.gate_cost * 1.4 });
                 if self.min_surf[base_idx] >= gate_iron
                     && self.min_surf[base_idx + 2] >= gate_germ
-                    && self.next_rand() < 0.08
+                    && self.next_rand() < 0.06
                 {
-                    self.min_surf[base_idx] -= gate_iron;
-                    self.min_surf[base_idx + 2] -= gate_germ;
-                    self.has_gate[i] = 1;
-                    self.gate_lists[e].push(i);
-                    if !silent && self.gate_lists[e].len() == 1 {
-                        let g_name = self.empires[e]
-                            .tech_cache
-                            .stargate_name
-                            .clone()
-                            .unwrap_or_else(|| "Stargate".to_string());
-                        let msg = format!(
-                            "{} built its first 🌀 {} (#{})!",
-                            self.empires[e].race.name,
-                            g_name,
-                            i + 1
-                        );
-                        let col = self.empires[e].race.color.clone();
-                        self.push_event(msg, &col);
+                    // Ensure minimum spacing from existing friendly Stargate hubs
+                    let min_hub_dist = if prt_it { 95.0 } else { 155.0 };
+                    let min_hub_sq = min_hub_dist * min_hub_dist;
+                    let xi = self.pos_x[i];
+                    let yi = self.pos_y[i];
+                    let too_close = self.gate_lists[e].iter().any(|&g| {
+                        let dx = self.pos_x[g] - xi;
+                        let dy = self.pos_y[g] - yi;
+                        dx * dx + dy * dy < min_hub_sq
+                    });
+                    if !too_close {
+                        self.min_surf[base_idx] -= gate_iron;
+                        self.min_surf[base_idx + 2] -= gate_germ;
+                        self.has_gate[i] = 1;
+                        self.gate_lists[e].push(i);
+                        if !silent && self.gate_lists[e].len() == 1 {
+                            let g_name = self.empires[e]
+                                .tech_cache
+                                .stargate_name
+                                .clone()
+                                .unwrap_or_else(|| "Stargate".to_string());
+                            let msg = format!(
+                                "{} built its first 🌀 {} (#{})!",
+                                self.empires[e].race.name,
+                                g_name,
+                                i + 1
+                            );
+                            let col = self.empires[e].race.color.clone();
+                            self.push_event(msg, &col);
+                        }
                     }
                 }
             }
@@ -790,7 +813,7 @@ impl Simulation {
 
                 // Shipyard launch decision
                 let con_discount = 1.0 / (1.0 + lv[3] * 0.035);
-                let trait_ship_discount = if prt_wm { 0.85 } else { 1.0 }
+                let trait_ship_discount = if prt_wm { 0.90 } else { 1.0 }
                     * if lrt & LRT_CE != 0 { 0.88 } else { 1.0 };
                 let effective_ship_cost =
                     self.cfg.col_ship_cost * con_discount * trait_ship_discount;
@@ -1060,7 +1083,7 @@ impl Simulation {
             self.mines[i] += room_for_mines.min((res_gen * mine_share) / 5.0);
 
             let bio_growth = 1.0 + lv[5] * 0.025;
-            let prt_growth = if prt_he { 1.65 } else { 1.0 };
+            let prt_growth = if prt_he { 1.80 } else { 1.0 };
             let startup_factor = if self.pop[i] < 15.0 {
                 0.4 + 0.6 * (self.pop[i] / 15.0)
             } else {
@@ -1550,15 +1573,15 @@ impl Simulation {
         let tc = &emp.tech_cache;
         let hull = emp.hull_for_class(class);
 
-        let wep_scale = (1.0 + (tc.weapon_power / 45.0).sqrt() * 0.65)
-            * if emp.race.prt == "PRT_WM" { 1.22 } else { 1.0 };
+        let wep_scale = (1.0 + (tc.weapon_power / 40.0).sqrt() * 0.80)
+            * if emp.race.prt == "PRT_WM" { 1.12 } else { 1.0 };
         let shield_mult = if emp.race.lrt_mask & LRT_RS != 0 {
             1.25
         } else {
             1.0
         };
         let dur_scale =
-            1.0 + ((hull.armor + tc.armor_val + tc.shield_val * shield_mult) / 400.0).sqrt() * 0.35;
+            1.0 + ((hull.armor + tc.armor_val + tc.shield_val * shield_mult) / 400.0).sqrt() * 0.45;
         let class_mod = match class {
             FleetClass::Battleship => 1.32,
             FleetClass::Bomber => 1.10 + (tc.bomb_power * 0.03).min(0.45),
