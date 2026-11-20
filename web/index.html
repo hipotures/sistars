@@ -22,23 +22,11 @@
     </div>
   </div>
 
-  <div class="empires-bar">
-    <div class="emp-pill e1">
-      <div class="emp-row1"><span style="color:var(--green)">■ INDUSTRY</span><span id="techB1"></span></div>
-      <div class="emp-row2"><span id="hudE1">1 pl | 28 Res</span><span id="hudK1">💥0 🌀0</span></div>
-    </div>
-    <div class="emp-pill e2">
-      <div class="emp-row1"><span style="color:var(--accent)">■ FLEET</span><span id="techB2"></span></div>
-      <div class="emp-row2"><span id="hudE2">1 pl | 25 Res</span><span id="hudK2">💥0 🌀0</span></div>
-    </div>
-    <div class="emp-pill e3">
-      <div class="emp-row1"><span style="color:var(--yellow)">■ SCIENCE</span><span id="techB3"></span></div>
-      <div class="emp-row2"><span id="hudE3">1 pl | 25 Res</span><span id="hudK3">💥0 🌀0</span></div>
-    </div>
-  </div>
+  <div class="empires-bar" id="empiresBar"></div>
 
   <div class="nav-actions">
-    <button class="hud-btn" id="tabTech" data-drawer="drawerTech">🔬 Research (6)</button>
+    <button class="hud-btn" id="tabRaces" data-drawer="drawerRaces">🧬 Races</button>
+    <button class="hud-btn" id="tabTech" data-drawer="drawerTech">🔬 Tech (239)</button>
     <button class="hud-btn" id="tabStats" data-drawer="drawerStats">📊 Charts &amp; AI</button>
     <button class="hud-btn" id="tabReports" data-drawer="drawerReports">📋 Reports</button>
     <button class="hud-btn" id="tabSettings" data-drawer="drawerSettings">⚙️ Settings</button>
@@ -79,17 +67,107 @@
 
 <div id="eventLog"></div>
 
-<!-- DRAWER 0: 6 TECH FIELDS (STARS! MODEL) -->
-<div class="drawer wide" id="drawerTech">
+<!-- DRAWER: RACES & CUSTOM RACE BUILDER -->
+<div class="drawer wide" id="drawerRaces">
   <div class="drawer-head">
-    <div class="drawer-title">🔬 6 Tech Fields &amp; Multi-Field Breakthroughs</div>
-    <button class="insp-close" data-close-drawer="drawerTech">✕</button>
+    <div class="drawer-title">🧬 Races Roster (2–16) &amp; Custom Race Builder</div>
+    <button class="insp-close" data-close-drawer="drawerRaces">✕</button>
   </div>
 
-  <div class="tech-grid" id="techCardsContainer"></div>
+  <div class="roster-toolbar">
+    <span id="rosterCountInfo" style="font-size:0.74rem; color:var(--muted);">Selected: 6 races</span>
+    <div style="display:flex; gap:6px;">
+      <button class="hud-btn" id="btnSelectClassic6">Classic 6</button>
+      <button class="hud-btn" id="btnSelectAllRaces">Select All</button>
+      <button class="hud-btn active" id="btnLaunchRoster">🚀 Launch Galaxy</button>
+    </div>
+  </div>
 
-  <h3>Multi-Field Breakthroughs (Unlocked automatically when both field levels are reached)</h3>
-  <div class="bp-grid" id="breakthroughsContainer"></div>
+  <div class="race-list" id="raceRosterList"></div>
+
+  <h3>Create Custom Race (Stars! PRT + LRT System)</h3>
+  <div class="race-builder">
+    <div class="builder-row">
+      <label class="builder-field" style="flex:2;">
+        <span>Race Name</span>
+        <input type="text" id="crName" class="text-input" placeholder="e.g. Terran Directorate" maxlength="24" />
+      </label>
+      <label class="builder-field" style="width:74px;">
+        <span>Color</span>
+        <input type="color" id="crColor" class="color-input" value="#22d3ee" />
+      </label>
+      <label class="builder-field" style="flex:2;">
+        <span>Primary Racial Trait (PRT)</span>
+        <select id="crPrt" class="select-input"></select>
+      </label>
+      <label class="builder-field" style="flex:1.4;">
+        <span>AI Doctrine Focus</span>
+        <select id="crFocus" class="select-input">
+          <option value="balanced">Balanced</option>
+          <option value="industry">Industry &amp; Defense</option>
+          <option value="expansion">Fast Expansion</option>
+          <option value="warfare">Heavy Warfare</option>
+          <option value="science">High Science</option>
+        </select>
+      </label>
+    </div>
+    <div id="crPrtDesc" style="font-size:0.7rem; color:var(--accent); min-height:16px;"></div>
+
+    <div style="font-size:0.68rem; color:var(--muted); margin-top:2px;">Lesser Racial Traits (LRTs):</div>
+    <div class="lrt-grid" id="crLrtGrid"></div>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;">
+      <span id="crStatus" style="font-size:0.7rem; color:var(--purple);"></span>
+      <button class="hud-btn active" id="btnCreateRace">+ Add Custom Race</button>
+    </div>
+  </div>
+</div>
+
+<!-- DRAWER 0: FULL TECH TREE & EMPIRE LOADOUTS -->
+<div class="drawer wide" id="drawerTech">
+  <div class="drawer-head">
+    <div class="drawer-title">🔬 craig-stars Technology System (239 Techs, Lv 0–26)</div>
+    <div style="display:flex; gap:6px; align-items:center;">
+      <button class="hud-btn active" id="techTabOverview" data-tech-tab="overview">Empires &amp; Loadouts</button>
+      <button class="hud-btn" id="techTabBrowser" data-tech-tab="browser">Tech Browser (239)</button>
+      <button class="insp-close" data-close-drawer="drawerTech">✕</button>
+    </div>
+  </div>
+
+  <div id="techOverviewPane" style="display:flex; flex-direction:column; gap:10px;">
+    <div class="tech-grid" id="techCardsContainer"></div>
+    <h3>Key Tech Milestones</h3>
+    <div class="bp-grid" id="breakthroughsContainer"></div>
+  </div>
+
+  <div id="techBrowserPane" style="display:none; flex-direction:column; gap:8px; flex:1; min-height:0;">
+    <div class="browser-filters">
+      <input type="text" id="techSearch" class="text-input" placeholder="Search 239 technologies..." style="flex:2;" />
+      <select id="techCatFilter" class="select-input" style="flex:1.2;"></select>
+      <select id="techStatusFilter" class="select-input" style="flex:1;">
+        <option value="all">All Statuses</option>
+        <option value="unlocked">Unlocked by ≥1 Empire</option>
+        <option value="locked">Not Yet Unlocked</option>
+      </select>
+    </div>
+    <div id="techBrowserCount" style="font-size:0.69rem; color:var(--muted);">Showing 239 technologies</div>
+    <div class="table-wrap" style="flex:1;">
+      <table>
+        <thead>
+          <tr>
+            <th>Technology</th>
+            <th>Category</th>
+            <th>Req (E/W/P/C/L/B)</th>
+            <th>Traits</th>
+            <th>Cost (Fe/Bo/Ge/Res)</th>
+            <th>Stats</th>
+            <th>Unlocked</th>
+          </tr>
+        </thead>
+        <tbody id="techBrowserBody"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <!-- DRAWER 1: STATS, POWER CHART & AI DNA -->
@@ -103,11 +181,7 @@
     <span id="tourneyLabel" style="color:var(--muted);">🏆 Win-Rate (Monte Carlo Tournament):</span>
     <span id="dnaGenInfo" style="color:var(--purple); font-family:monospace;">DNA Generation: #0</span>
   </div>
-  <div class="winrate-bar">
-    <div id="wrBar1" class="wr-seg" style="width:33.3%; background:var(--green);">33%</div>
-    <div id="wrBar2" class="wr-seg" style="width:33.3%; background:var(--accent);">33%</div>
-    <div id="wrBar3" class="wr-seg" style="width:33.4%; background:var(--yellow);">34%</div>
-  </div>
+  <div class="winrate-bar" id="winrateBar"></div>
 
   <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted);">
     <span>Empire Production Power (Res/yr)</span>
@@ -116,11 +190,11 @@
   <canvas id="powerCanvas" width="720" height="185"></canvas>
 
   <h3>Trained Strategy DNA (Budget + Fleet Classes + 6-Field Allocation)</h3>
-  <div class="table-wrap" style="flex:0 0 auto;">
+  <div class="table-wrap" style="flex:0 0 auto; max-height:240px;">
     <table>
       <thead>
         <tr>
-          <th>Civilization</th><th>Fac</th><th>Ship</th><th>Tech</th>
+          <th>Civilization</th><th>PRT</th><th>Fac</th><th>Ship</th><th>Tech</th>
           <th>⚡Cru</th><th>🛡️Bsh</th><th>💣Bom</th><th>🎯Int</th>
           <th>Top Field</th><th>Win-Rate</th><th>Power</th>
         </tr>
@@ -130,9 +204,8 @@
   </div>
 
   <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap;">
-    <button class="hud-btn" data-action="tournament">🏆 40-Map Tournament</button>
+    <button class="hud-btn" data-action="tournament">🏆 30-Map Tournament</button>
     <button class="hud-btn" data-action="coevolve">🧬 Train AI (Co-Evolution)</button>
-    <button class="hud-btn" data-action="autobalance">⚡ Auto-Balance Races</button>
     <button class="hud-btn" data-action="copyjson">📋 Copy JSON</button>
   </div>
   <div id="statusMsgStats" style="font-size:0.72rem; color:var(--purple); min-height:18px;"></div>
@@ -143,7 +216,7 @@
   <div class="drawer-head">
     <div class="drawer-title">📋 Empire Reports</div>
     <div style="display:flex; gap:6px;">
-      <button class="hud-btn active" id="repBtnPlanets" data-report="planets">Planets (80)</button>
+      <button class="hud-btn active" id="repBtnPlanets" data-report="planets">Planets (90)</button>
       <button class="hud-btn" id="repBtnFleets" data-report="fleets">Fleets in Flight (0)</button>
       <button class="insp-close" data-close-drawer="drawerReports">✕</button>
     </div>
@@ -176,32 +249,34 @@
 <!-- DRAWER 3: SETTINGS -->
 <div class="drawer" id="drawerSettings">
   <div class="drawer-head">
-    <div class="drawer-title">⚙️ World Parameters &amp; Balance</div>
+    <div class="drawer-title">⚙️ World Parameters &amp; Rules</div>
     <button class="insp-close" data-close-drawer="drawerSettings">✕</button>
   </div>
 
   <div class="lab-tools">
-    <button class="hud-btn" data-action="tournament">🏆 Tournament 40x</button>
+    <button class="hud-btn" data-action="tournament">🏆 Tournament 30x</button>
     <button class="hud-btn" data-action="coevolve">🧬 Train AI</button>
-    <button class="hud-btn" data-action="autobalance">⚡ Auto-Balance</button>
     <button class="hud-btn" data-action="copyjson">📋 Copy JSON</button>
   </div>
   <div id="statusMsg" style="font-size:0.7rem; color:var(--purple); min-height:16px;"></div>
 
-  <h3>1. Galaxy &amp; Wormholes</h3>
-  <div class="field"><div class="field-header"><span>Planet count</span><span class="val" id="v_planets">80</span></div><input type="range" id="p_planets" data-param="planets" min="30" max="200" step="10" value="80"></div>
+  <h3>1. Tech Rules</h3>
+  <label class="checkbox-row">
+    <input type="checkbox" id="p_ignoreRacialTraits" />
+    <span>Sandbox Tech (ignore PRT / LRT restrictions)</span>
+  </label>
+
+  <h3>2. Galaxy &amp; Wormholes</h3>
+  <div class="field"><div class="field-header"><span>Planet count</span><span class="val" id="v_planets">90</span></div><input type="range" id="p_planets" data-param="planets" min="30" max="200" step="10" value="90"></div>
   <div class="field"><div class="field-header"><span>Wormhole pairs</span><span class="val" id="v_wormholePairs">2</span></div><input type="range" id="p_wormholePairs" data-param="wormholePairs" min="0" max="5" step="1" value="2"></div>
   <div class="field"><div class="field-header"><span>Crust richness I/B/G (kT)</span><span class="val" id="v_crustRichness">800</span></div><input type="range" id="p_crustRichness" data-param="crustRichness" min="300" max="2500" step="100" value="800"></div>
 
-  <h3>2. Stargate &amp; Space Combat</h3>
-  <div class="field"><div class="field-header"><span>Stargate cost (I+G kT)</span><span class="val" id="v_gateCost">45</span></div><input type="range" id="p_gateCost" data-param="gateCost" min="15" max="120" step="5" value="45"></div>
+  <h3>3. Stargate &amp; Space Combat</h3>
+  <div class="field"><div class="field-header"><span>Stargate cost cap (I+G kT)</span><span class="val" id="v_gateCost">45</span></div><input type="range" id="p_gateCost" data-param="gateCost" min="15" max="120" step="5" value="45"></div>
   <div class="field"><div class="field-header"><span>Intercept radius</span><span class="val" id="v_interceptRad">22</span></div><input type="range" id="p_interceptRad" data-param="interceptRad" min="8" max="50" step="2" value="22"></div>
   <div class="field"><div class="field-header"><span>Debris salvage rate</span><span class="val" id="v_salvageRate">65%</span></div><input type="range" id="p_salvageRate" data-param="salvageRate" min="0" max="100" step="5" value="65"></div>
 
-  <h3>3. Race Multipliers &amp; Economy</h3>
-  <div class="field"><div class="field-header"><span>🟢 Industry &amp; Bunkers (Race 1)</span><span class="val" id="v_indWeight">1.05</span></div><input type="range" id="p_indWeight" data-param="indWeight" min="0.5" max="2.5" step="0.05" value="1.05"></div>
-  <div class="field"><div class="field-header"><span>🔵 Logistics &amp; Ships (Race 2)</span><span class="val" id="v_expWeight">1.05</span></div><input type="range" id="p_expWeight" data-param="expWeight" min="0.5" max="2.5" step="0.05" value="1.05"></div>
-  <div class="field"><div class="field-header"><span>🟡 Science &amp; Weapons (Race 3)</span><span class="val" id="v_techWeight">1.15</span></div><input type="range" id="p_techWeight" data-param="techWeight" min="0.5" max="2.5" step="0.05" value="1.15"></div>
+  <h3>4. Diplomacy &amp; Administration</h3>
   <div class="field"><div class="field-header"><span>Anti-leader coalition (Aggro)</span><span class="val" id="v_aggroBias">65%</span></div><input type="range" id="p_aggroBias" data-param="aggroBias" min="0" max="100" step="5" value="65"></div>
   <div class="field"><div class="field-header"><span>Empire sprawl penalty</span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
 </div>

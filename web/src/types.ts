@@ -13,7 +13,6 @@ export interface BreakthroughMeta {
   bit: number;
   icon: string;
   name: string;
-  req: [[number, number], [number, number]];
   reqTxt: string;
   desc: string;
 }
@@ -21,35 +20,49 @@ export interface BreakthroughMeta {
 export interface EngineMeta {
   worldW: number;
   worldH: number;
+  maxTechLevel: number;
   techFields: TechFieldMeta[];
   breakthroughs: BreakthroughMeta[];
 }
 
-export interface SimConfig {
-  planets: number;
-  wormholePairs: number;
-  crustRichness: number;
-  gateCost: number;
-  interceptRad: number;
-  scannerRange: number;
-  salvageRate: number;
-  indWeight: number;
-  expWeight: number;
-  techWeight: number;
-  aggroBias: number;
-  sprawlPenalty: number;
-  colShipCost: number;
-  bomberPen: number;
-  facCostRes: number;
-  facCostGerm: number;
-  fleetSpeed: number;
-  growth: number;
-  opLimit: number;
+export interface TechCost {
+  ironium: number;
+  boranium: number;
+  germanium: number;
+  resources: number;
+}
+
+export interface CatalogEntry {
+  id: number;
+  name: string;
+  category: string;
+  categoryLabel: string;
+  origin: string;
+  cost: TechCost;
+  reqLevels: number[];
+  prtsRequired: string[];
+  prtsDenied: string[];
+  lrtsRequired: number;
+  lrtsDenied: number;
+  acquirable: boolean;
+  statsSummary: string;
+}
+
+export interface PrtMeta {
+  code: string;
+  shortName: string;
+  name: string;
+  desc: string;
+}
+
+export interface LrtMeta {
+  bit: number;
+  code: string;
+  name: string;
+  desc: string;
 }
 
 export interface Doctrine {
-  name: string;
-  color: string;
   facShare: number;
   shipShare: number;
   techShare: number;
@@ -67,11 +80,79 @@ export interface Doctrine {
   winRate: number;
 }
 
+export interface RaceDef {
+  id: string;
+  name: string;
+  color: string;
+  prt: string;
+  lrtMask: number;
+  isCustom: boolean;
+  doctrine: Doctrine;
+}
+
+export interface TechCatalogView {
+  entries: CatalogEntry[];
+  prts: PrtMeta[];
+  lrts: LrtMeta[];
+  classicRaces: RaceDef[];
+}
+
+export interface SimConfig {
+  planets: number;
+  wormholePairs: number;
+  crustRichness: number;
+  gateCost: number;
+  interceptRad: number;
+  scannerRange: number;
+  salvageRate: number;
+  aggroBias: number;
+  sprawlPenalty: number;
+  colShipCost: number;
+  bomberPen: number;
+  facCostRes: number;
+  facCostGerm: number;
+  fleetSpeed: number;
+  growth: number;
+  opLimit: number;
+  ignoreRacialTraits: boolean;
+}
+
 export interface EmpireStats {
   planets: number;
   factories: number;
   res: number;
   gates: number;
+}
+
+export interface EmpireLoadoutView {
+  unlockedCount: number;
+  unlockedBits: number[];
+  engine: string;
+  weapon: string;
+  bomb: string;
+  armor: string;
+  shield: string;
+  scanner: string;
+  defense: string;
+  terraform: string;
+  stargate: string;
+  cruiserHull: string;
+  battleshipHull: string;
+  bomberHull: string;
+}
+
+export interface EmpireSummaryView {
+  id: string;
+  name: string;
+  color: string;
+  prt: string;
+  lrtMask: number;
+  isCustom: boolean;
+  stats: EmpireStats;
+  techLv: number[];
+  perks: number;
+  doctrine: Doctrine;
+  loadout: EmpireLoadoutView;
 }
 
 export interface PlanetView {
@@ -159,10 +240,7 @@ export interface SimSnapshot {
   ticks: number;
   mapSeed: number;
   dnaGeneration: number;
-  stats: EmpireStats[];
-  techLv: number[][];
-  perks: number[];
-  doctrines: Doctrine[];
+  empires: EmpireSummaryView[];
   planets: PlanetView[];
   fleets: FleetView[];
   wormholes: WormholeView[];
@@ -186,12 +264,5 @@ export interface TournamentResult {
 
 export interface CoEvolutionResult {
   dnaGeneration: number;
-  tournament: TournamentResult;
-}
-
-export interface AutoBalanceResult {
-  indWeight: number;
-  expWeight: number;
-  techWeight: number;
   tournament: TournamentResult;
 }

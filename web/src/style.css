@@ -51,8 +51,8 @@ header.hud-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 14px;
-  gap: 10px;
+  padding: 0 12px;
+  gap: 8px;
   z-index: 20;
   backdrop-filter: blur(6px);
 }
@@ -61,6 +61,7 @@ header.hud-top {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .brand-title {
@@ -73,11 +74,11 @@ header.hud-top {
 
 .year-box {
   font-family: monospace;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   font-weight: 700;
   background: #0a101a;
   border: 1px solid var(--border);
-  padding: 4px 9px;
+  padding: 4px 8px;
   color: #f8fafc;
 }
 
@@ -90,8 +91,8 @@ header.hud-top {
   background: #131c2c;
   color: var(--text);
   border: 1px solid var(--border);
-  padding: 5px 9px;
-  font-size: 0.72rem;
+  padding: 5px 8px;
+  font-size: 0.71rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.12s;
@@ -118,48 +119,48 @@ header.hud-top {
 
 .empires-bar {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex: 1;
-  justify-content: center;
-  max-width: 680px;
+  overflow-x: auto;
+  padding: 2px 0;
+  scrollbar-width: thin;
 }
 
 .emp-pill {
-  flex: 1;
+  flex: 0 0 auto;
   background: rgba(15, 23, 38, 0.88);
   border: 1px solid var(--border);
-  border-top: 2px solid var(--border);
-  padding: 4px 9px;
+  border-top: 2px solid var(--accent);
+  padding: 3px 8px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  min-width: 150px;
+  min-width: 122px;
 }
-
-.emp-pill.e1 { border-top-color: var(--green); }
-.emp-pill.e2 { border-top-color: var(--accent); }
-.emp-pill.e3 { border-top-color: var(--yellow); }
 
 .emp-row1 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.71rem;
+  font-size: 0.69rem;
   font-weight: 700;
+  gap: 6px;
 }
 
 .emp-row2 {
   display: flex;
   justify-content: space-between;
-  font-size: 0.66rem;
+  font-size: 0.63rem;
   font-family: monospace;
   color: var(--muted);
   margin-top: 1px;
+  gap: 6px;
 }
 
 .nav-actions {
   display: flex;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 /* Planet Inspector */
@@ -253,7 +254,7 @@ header.hud-top {
   position: absolute;
   bottom: 16px;
   right: 16px;
-  width: 310px;
+  width: 320px;
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -294,7 +295,7 @@ header.hud-top {
   top: 54px;
   bottom: 0;
   right: 0;
-  width: 380px;
+  width: 390px;
   max-width: 96vw;
   background: var(--panel);
   border-left: 1px solid var(--border);
@@ -309,7 +310,7 @@ header.hud-top {
 }
 
 .drawer.wide {
-  width: 780px;
+  width: 880px;
 }
 
 .drawer.open {
@@ -368,15 +369,44 @@ input[type='range'] {
   margin: 0;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.74rem;
+  cursor: pointer;
+  background: #080d16;
+  border: 1px solid var(--border);
+  padding: 7px 9px;
+}
+
+.text-input,
+.select-input {
+  background: #080d16;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 0.73rem;
+  user-select: text;
+}
+
+.color-input {
+  width: 100%;
+  height: 29px;
+  background: #080d16;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
 .lab-tools {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
 }
 
 .winrate-bar {
   width: 100%;
-  height: 16px;
+  height: 18px;
   background: #0a101a;
   border: 1px solid var(--border);
   display: flex;
@@ -388,10 +418,12 @@ input[type='range'] {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.65rem;
+  font-size: 0.63rem;
   font-weight: 800;
   color: #05080f;
   transition: width 0.25s;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 #powerCanvas {
@@ -453,14 +485,14 @@ tr:hover {
 .c-bora { color: var(--bora); }
 .c-germ { color: var(--germ); }
 
-/* 6 Tech Field Cards */
+/* Tech Cards & Loadouts */
 .tech-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 780px) {
   .tech-grid {
     grid-template-columns: 1fr;
   }
@@ -472,11 +504,11 @@ tr:hover {
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
 .tech-card-head {
-  font-size: 0.74rem;
+  font-size: 0.73rem;
   font-weight: 700;
   display: flex;
   justify-content: space-between;
@@ -487,14 +519,14 @@ tr:hover {
 .tech-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.68rem;
+  gap: 5px;
+  font-size: 0.66rem;
   font-family: monospace;
 }
 
 .tech-bar {
   flex: 1;
-  height: 6px;
+  height: 5px;
   background: #111927;
   border: 1px solid #1e293b;
 }
@@ -502,6 +534,18 @@ tr:hover {
 .tech-fill {
   height: 100%;
   background: var(--accent);
+}
+
+.loadout-mini {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed #1e293b;
+  font-size: 0.62rem;
+  font-family: monospace;
+  color: #94a3b8;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
 }
 
 .bp-grid {
@@ -524,7 +568,91 @@ tr:hover {
   margin-top: 2px;
 }
 
-@media (max-width: 1050px) {
+.browser-filters {
+  display: flex;
+  gap: 6px;
+}
+
+/* Races Drawer & Builder */
+.roster-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.race-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.race-item {
+  background: #080d16;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+}
+
+.race-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.race-meta {
+  font-family: monospace;
+  font-size: 0.63rem;
+  color: var(--muted);
+}
+
+.race-builder {
+  background: #080d16;
+  border: 1px solid var(--border);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.builder-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.builder-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.67rem;
+  color: var(--muted);
+}
+
+.lrt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 10px;
+}
+
+.lrt-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.66rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+@media (max-width: 1100px) {
   .empires-bar, .map-legend {
     display: none;
   }
