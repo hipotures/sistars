@@ -22,6 +22,7 @@ import type {
   ReportsSnapshot,
   ScannerFieldSettings,
   SimConfig,
+  StarSystemView,
   TechCatalogView,
   TournamentResult,
 } from './types';
@@ -153,6 +154,7 @@ async function bootstrap(): Promise<void> {
         }
         break;
       case 'planetDetail':
+      case 'starSystem':
       case 'fleetDetail':
       case 'debrisDetail':
       case 'reportsSnapshot':
@@ -660,6 +662,8 @@ async function bootstrap(): Promise<void> {
     },
     getPlanetDetail: (index) =>
       requestWorker<PlanetView | null>((reqId) => ({ type: 'getPlanetDetail', reqId, index })),
+    getStarSystem: (index) =>
+      requestWorker<StarSystemView | null>((reqId) => ({ type: 'getStarSystem', reqId, index })),
     getFleetById: (id) =>
       requestWorker<FleetView | null>((reqId) => ({ type: 'getFleetById', reqId, id })),
     getDebrisDetail: (index) =>
@@ -915,7 +919,13 @@ async function bootstrap(): Promise<void> {
   window.addEventListener('pointerup', handlePointerEnd);
   window.addEventListener('pointercancel', handlePointerEnd);
 
-  canvas.addEventListener('dblclick', () => {
+  canvas.addEventListener('dblclick', (e) => {
+    const hit = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+    if (hit?.kind === 'planet') {
+      applySelection(hit);
+      void ui.openSystemView(hit.index);
+      return;
+    }
     renderer.resetCamera();
     scheduleRender();
   });

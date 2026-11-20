@@ -4,13 +4,14 @@ use crate::config::{
     NUM_TECH_FIELDS, SHIP_COST_SCALE,
 };
 use crate::galaxy::{generate_galaxy, GalaxyShape, GalaxySize};
+use crate::system_gen::{generate_star_system, PrimaryWorldInput};
 use crate::tech::{
     classic_races, starting_tech_for_traits, EmpireTechCache, HullSpec, LRT_ARM, LRT_BET, LRT_CE,
     LRT_GR, LRT_IFE, LRT_ISB, LRT_LSP, LRT_MA, LRT_OBRM, LRT_RS, LRT_TT, LRT_UR,
 };
 use crate::types::{
     CombatFx, DebrisField, EmpireStats, EmpireSummaryView, Fleet, HudSnapshot, JumpFx, PlanetView,
-    RaceDef, ReportsSnapshot, SimEvent, SimSnapshot, Wormhole,
+    RaceDef, ReportsSnapshot, SimEvent, SimSnapshot, StarSystemView, Wormhole,
 };
 
 const MAX_PLANET_NEIGHBORS: usize = 96;
@@ -2215,6 +2216,53 @@ impl Simulation {
             res: self.last_res[i],
             defense: self.defense[i],
         })
+    }
+
+    /// Lazily generates the deterministic star system anchored to planet `i` (< 0.5 ms, 0 RAM stored).
+    pub fn get_star_system(&self, i: usize) -> Option<StarSystemView> {
+        if i >= self.owner.len() {
+            return None;
+        }
+        let b = i * 3;
+        let emp_u8 = self.owner[i];
+        let (owner_color, terra_bonus, max_pop) = if emp_u8 > 0 {
+            let e = (emp_u8 - 1) as usize;
+            let emp = &self.empires[e];
+            let terra = (emp.tech_cache.terraform_ability / 100.0)
+                * if emp.race.lrt_mask & LRT_TT != 0 { 1.30 } else { 1.0 }
+                * if emp.race.prt == "PRT_CA" { 1.25 } else { 1.0 };
+            let eff_hab = (self.hab[i] + terra).min(1.15);
+            let prt_pop = match emp.race.prt.as_str() {
+                "PRT_HE" => 0.72,
+                "PRT_JOAT" => 1.18,
+                _ => 1.0,
+            };
+            let mp = eff_hab * 170.0 * (1.0 + emp.tech_lv[5] * 0.015) * prt_pop;
+            (emp.race.color.clone(), terra, mp.max(1.0))
+        } else {
+            ("#94a3b8".to_string(), 0.0, (self.hab[i] * 170.0).max(1.0))
+        };
+
+        let input = PrimaryWorldInput {
+            map_seed: self.current_map_seed,
+            planet_id: i + 1,
+            base_hab: self.hab[i],
+            terra_bonus,
+            iron_crust: self.min_crust[b],
+            bora_crust: self.min_crust[b + 1],
+            germ_crust: self.min_crust[b + 2],
+            owner: emp_u8,
+            owner_color,
+            pop_norm: if emp_u8 > 0 {
+                (self.pop[i] / max_pop).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            has_starbase: emp_u8 > 0 && (self.has_gate[i] != 0 || self.defense[i] >= 55.0),
+            has_stargate: self.has_gate[i] != 0,
+            has_jammer: self.planet_has_ecm_jammer(i),
+        };
+        Some(generate_star_system(&input))
     }
 
     pub fn take_hud_snapshot(&mut self) -> HudSnapshot {

@@ -1,5 +1,10 @@
 import { drawPowerChart } from './renderer';
 import type { PersistedSettings } from './settingsStorage';
+import {
+  exportPlanetTexturePng,
+  ProceduralBodyRenderer,
+  renderProceduralThumbnailTo2d,
+} from './systemRenderer';
 import type {
   DebrisFieldView,
   Doctrine,
@@ -14,6 +19,7 @@ import type {
   RangeContourMode,
   ReportsSnapshot,
   SimConfig,
+  StarSystemView,
   TechCatalogView,
   TournamentResult,
 } from './types';
@@ -44,6 +50,7 @@ export interface UiCallbacks {
   onHistoryStep: (delta: number) => void;
   onHistoryLive: () => void;
   getPlanetDetail: (index: number) => Promise<PlanetView | null>;
+  getStarSystem: (index: number) => Promise<StarSystemView | null>;
   getFleetById: (id: number) => Promise<FleetView | null>;
   getDebrisDetail: (index: number) => Promise<DebrisFieldView | null>;
   getReportsSnapshot: () => Promise<ReportsSnapshot>;
@@ -154,6 +161,14 @@ export class UiController {
   private activeContourMode: RangeContourMode = 'subtle';
   private lastNonZeroContourOpacity = 22;
 
+  // Procedural 3D globe (Inspector) & Star System View modal state
+  private readonly inspGlobeRenderer: ProceduralBodyRenderer;
+  private readonly sysPreviewRenderer: ProceduralBodyRenderer;
+  private activeInspSystem: StarSystemView | null = null;
+  private activeModalSystem: StarSystemView | null = null;
+  private activeModalSelection: 'star' | number = 0;
+  private modalReqSeq = 0;
+
   constructor(
     meta: EngineMeta,
     catalog: TechCatalogView,
@@ -167,6 +182,12 @@ export class UiController {
 
     this.customRaces = this.loadCustomRaces();
     this.selectedRaceIds = new Set(this.catalog.classicRaces.map((r) => r.id));
+    this.inspGlobeRenderer = new ProceduralBodyRenderer(
+      getEl<HTMLCanvasElement>('inspPlanetCanvas'),
+    );
+    this.sysPreviewRenderer = new ProceduralBodyRenderer(
+      getEl<HTMLCanvasElement>('sysPreviewCanvas'),
+    );
 
     this.initStaticControls();
     this.bindEvents();
@@ -226,8 +247,11 @@ export class UiController {
     this.selection = sel;
     if (!sel) {
       getEl('planetInspector').style.display = 'none';
+      getEl('inspGlobeWrap').style.display = 'none';
+      this.inspGlobeRenderer.stop();
+      this.activeInspSystem = null;
     } else if (this.lastHud) {
-      this.updateInspector(this.lastHud);
+      void this.updateInspector(this.lastHud);
     }
   }
 
@@ -550,6 +574,31 @@ export class UiController {
     getEl('btnReset').addEventListener('click', () => this.callbacks.onReset());
     getEl('btnCloseInspector').addEventListener('click', () => this.callbacks.onSelectObject(null));
 
+    // Procedural Planet Inspector -> System View modal events
+    getEl('btnOpenSystemView').addEventListener('click', () => {
+      if (this.selection?.kind === 'planet') {
+        void this.openSystemView(this.selection.index);
+      }
+    });
+    getEl('btnCloseSystemModal').addEventListener('click', () => this.closeSystemView());
+    getEl('systemModal').addEventListener('click', (e) => {
+      if (e.target === getEl('systemModal')) {
+        this.closeSystemView();
+      }
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && getEl('systemModal').style.display !== 'none') {
+        this.closeSystemView();
+      }
+    });
+    getEl('btnExportPlanetPng').addEventListener('click', () => {
+      const sys = this.activeModalSystem;
+      if (!sys || this.activeModalSelection === 'star') return;
+      const body = sys.bodies[this.activeModalSelection];
+      if (!body) return;
+      exportPlanetTexturePng(body, sys.star);
+    });
+
     // Tech drawer tabs
     document.querySelectorAll<HTMLButtonElement>('[data-tech-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -854,6 +903,131 @@ export class UiController {
     v.style.color = color;
   }
 
+  public async openSystemView(planetIdx: number): Promise<void> {
+    const seq = ++this.modalReqSeq;
+    const sys =
+      this.activeInspSystem && this.activeInspSystem.planetId === planetIdx + 1
+        ? this.activeInspSystem
+        : await this.callbacks.getStarSystem(planetIdx);
+    if (seq !== this.modalReqSeq || !sys) return;
+
+    this.activeModalSystem = sys;
+    this.activeModalSelection = sys.primaryIndex;
+    getEl('systemModal').style.display = 'flex';
+    getEl('sysModalTitle').textContent = `🌌 System #${sys.planetId} (${sys.bodies.length} bodies)`;
+    getEl('sysStarMeta').textContent =
+      `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M☉ • ${sys.star.luminositySolar.toFixed(2)} L☉`;
+
+    const strip = getEl('sysOrbitStrip');
+    strip.innerHTML = '';
+
+    // 1. Star card
+    const starCard = document.createElement('div');
+    starCard.className = 'sys-body-card';
+    starCard.dataset.sysItem = 'star';
+    starCard.innerHTML = `
+      <canvas class="sys-body-thumb" width="96" height="96"></canvas>
+      <div class="sys-body-name">${sys.star.spectralClass} Star</div>
+      <div class="sys-body-sub">${Math.round(sys.star.tempK)} K</div>
+    `;
+    const starCanvas = starCard.querySelector<HTMLCanvasElement>('canvas');
+    if (starCanvas) {
+      renderProceduralThumbnailTo2d(starCanvas, { kind: 'star', star: sys.star });
+    }
+    starCard.addEventListener('click', () => this.selectModalItem('star'));
+    strip.appendChild(starCard);
+
+    // 2. Orbiting planets in ascending AU order
+    sys.bodies.forEach((body, idx) => {
+      const isPrimary = idx === sys.primaryIndex;
+      const card = document.createElement('div');
+      card.className = `sys-body-card${isPrimary ? ' primary' : ''}`;
+      card.dataset.sysItem = String(idx);
+      const ls = body.liveState;
+      const icons =
+        (ls?.hasStargate ? '🌀' : '') +
+        (ls?.hasJammer ? '📡' : '') +
+        (ls?.hasStarbase ? '🛡' : '');
+      card.innerHTML = `
+        <canvas class="sys-body-thumb" width="96" height="96"></canvas>
+        <div class="sys-body-name" title="${body.name}">${isPrimary ? '★ ' : ''}${body.name.replace(/^System #\d+\s*/, '')}</div>
+        <div class="sys-body-sub">${body.orbitAu.toFixed(2)} AU ${icons}</div>
+      `;
+      const c = card.querySelector<HTMLCanvasElement>('canvas');
+      if (c) {
+        renderProceduralThumbnailTo2d(c, { kind: 'body', body, star: sys.star });
+      }
+      card.addEventListener('click', () => this.selectModalItem(idx));
+      strip.appendChild(card);
+    });
+
+    this.selectModalItem(sys.primaryIndex);
+  }
+
+  public closeSystemView(): void {
+    getEl('systemModal').style.display = 'none';
+    this.sysPreviewRenderer.stop();
+    this.activeModalSystem = null;
+  }
+
+  private selectModalItem(which: 'star' | number): void {
+    const sys = this.activeModalSystem;
+    if (!sys) return;
+    this.activeModalSelection = which;
+
+    getEl('sysOrbitStrip')
+      .querySelectorAll<HTMLElement>('.sys-body-card')
+      .forEach((el) => {
+        const key = el.dataset.sysItem;
+        el.classList.toggle('selected', key === String(which));
+      });
+
+    const statsEl = getEl('sysBodyStats');
+    const exportBtn = getEl('btnExportPlanetPng');
+
+    if (which === 'star') {
+      getEl('sysSelectedLabel').textContent = `Host Star • ${sys.star.spectralClass}`;
+      exportBtn.style.display = 'none';
+      this.sysPreviewRenderer.setTarget({ kind: 'star', star: sys.star }, true);
+      statsEl.innerHTML = `
+        <div class="insp-stat"><span>Spectral Class</span><b>${sys.star.spectralClass}</b></div>
+        <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(sys.star.tempK)} K</b></div>
+        <div class="insp-stat"><span>Mass</span><b>${sys.star.massSolar.toFixed(2)} M☉</b></div>
+        <div class="insp-stat"><span>Radius</span><b>${sys.star.radiusSolar.toFixed(2)} R☉</b></div>
+        <div class="insp-stat"><span>Luminosity</span><b>${sys.star.luminositySolar.toFixed(3)} L☉</b></div>
+        <div class="insp-stat"><span>System Bodies</span><b>${sys.bodies.length} planets</b></div>
+      `;
+      return;
+    }
+
+    const body = sys.bodies[which];
+    if (!body) return;
+    const isPrimary = which === sys.primaryIndex;
+    const ls = body.liveState;
+    getEl('sysSelectedLabel').textContent = `${body.name}${isPrimary ? ' (Primary World)' : ''}`;
+    exportBtn.style.display = 'inline-block';
+    this.sysPreviewRenderer.setTarget({ kind: 'body', body, star: sys.star }, true);
+
+    const liveCells = ls
+      ? `
+        <div class="insp-stat"><span>Gravity / Rad</span><b>${ls.gravG.toFixed(2)} g • ${Math.round(ls.radMr)} mR</b></div>
+        <div class="insp-stat"><span>Colony / Terra</span><b style="color:${ls.ownerColor}">${ls.owner > 0 ? `${Math.round(ls.popNorm * 100)}% pop` : 'Uninhabited'}${ls.terraPct > 0.5 ? ` · +${Math.round(ls.terraPct)}% terra` : ''}</b></div>
+        <div class="insp-stat"><span>Orbital Infra</span><b>${ls.hasStargate ? '🌀 Gate ' : ''}${ls.hasJammer ? '📡 ECM ' : ''}${ls.hasStarbase ? '🛡 Base' : !ls.hasStargate && !ls.hasJammer ? 'None' : ''}</b></div>
+      `
+      : '';
+
+    statsEl.innerHTML = `
+      <div class="insp-stat"><span>Classification</span><b>${body.bodyType}</b></div>
+      <div class="insp-stat"><span>Orbit Distance</span><b>${body.orbitAu.toFixed(2)} AU</b></div>
+      <div class="insp-stat"><span>Radius</span><b>${body.radiusEarth.toFixed(2)} R⊕</b></div>
+      <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(body.tempK)} K (${Math.round(body.tempK - 273.15)}°C)</b></div>
+      <div class="insp-stat"><span>Hydrosphere / Ice</span><b>${Math.round(body.waterPct * 100)}% water · ${Math.round(body.icePct * 100)}% ice</b></div>
+      <div class="insp-stat"><span>Atmo / Clouds</span><b>${Math.round(body.atmoDensity * 100)}% atmo · ${Math.round(body.cloudPct * 100)}% clouds</b></div>
+      <div class="insp-stat"><span>Moons / Rings</span><b>${body.moonsCount} moons · ${body.hasRings ? 'Ringed' : 'No rings'}</b></div>
+      ${liveCells}
+    `;
+  }
+
   private async updateInspector(hud: HudSnapshot): Promise<void> {
     const sel = this.selection;
     const reqSeq = ++this.inspectorReqSeq;
@@ -861,22 +1035,50 @@ export class UiController {
     const minWrap = getEl('inspMineralsWrap');
     if (!sel) {
       insp.style.display = 'none';
+      getEl('inspGlobeWrap').style.display = 'none';
+      this.inspGlobeRenderer.stop();
       return;
     }
 
     if (sel.kind === 'planet') {
       if (sel.index < 0 || sel.index >= hud.planetCount) {
         insp.style.display = 'none';
+        getEl('inspGlobeWrap').style.display = 'none';
+        this.inspGlobeRenderer.stop();
         return;
       }
-      const pl = await this.callbacks.getPlanetDetail(sel.index);
+      const [pl, sys] = await Promise.all([
+        this.callbacks.getPlanetDetail(sel.index),
+        this.callbacks.getStarSystem(sel.index),
+      ]);
       if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       if (!pl) {
         insp.style.display = 'none';
+        getEl('inspGlobeWrap').style.display = 'none';
+        this.inspGlobeRenderer.stop();
         return;
       }
       insp.style.display = 'flex';
       minWrap.style.display = 'flex';
+      if (sys) {
+        this.activeInspSystem = sys;
+        const primary = sys.bodies[sys.primaryIndex];
+        getEl('inspGlobeWrap').style.display = 'block';
+        getEl('inspStarBadge').textContent = `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)}K`;
+        getEl('inspBodyTypeBadge').textContent = primary ? `${primary.bodyType} • ${Math.round(primary.tempK)}K` : '';
+        const ls = primary?.liveState;
+        const badges: string[] = [];
+        if (ls?.hasStargate) badges.push('<span class="insp-badge" title="Active Stargate">🌀</span>');
+        if (ls?.hasJammer) badges.push('<span class="insp-badge" title="Active ECM Jammer">📡</span>');
+        if (ls?.hasStarbase) badges.push('<span class="insp-badge" title="Orbital Starbase">🛡</span>');
+        getEl('inspOrbitBadges').innerHTML = badges.join('');
+        if (primary) {
+          this.inspGlobeRenderer.setTarget({ kind: 'body', body: primary, star: sys.star }, true);
+        }
+      } else {
+        getEl('inspGlobeWrap').style.display = 'none';
+        this.inspGlobeRenderer.stop();
+      }
       const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
       insp.style.borderLeftColor = emp ? emp.color : '#64748b';
       getEl('inspTitle').textContent = `System #${pl.id}`;
@@ -902,6 +1104,8 @@ export class UiController {
     }
 
     if (sel.kind === 'fleet') {
+      getEl('inspGlobeWrap').style.display = 'none';
+      this.inspGlobeRenderer.stop();
       const fl = await this.callbacks.getFleetById(sel.id);
       if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       if (!fl) {
@@ -942,9 +1146,11 @@ export class UiController {
       const tachPct = emp ? Math.round(emp.loadout.tachyonReductionPct * 100) : 0;
       const jamPct = emp ? Math.round(emp.loadout.torpedoJammingPct * 100) : 0;
       this.setInspCell(5, 'EW (Cloak/Tach/Jam)', `${cloakPct}% / ${tachPct}% / ${jamPct}%`);
-      this.setInspCell(5, 'Drive / Weapon', emp ? `${emp.loadout.engine}` : '—');
       return;
     }
+
+    getEl('inspGlobeWrap').style.display = 'none';
+    this.inspGlobeRenderer.stop();
 
     if (sel.kind === 'wormhole') {
       const wh = hud.wormholes[sel.index];
