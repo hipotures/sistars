@@ -219,11 +219,11 @@ fn vs_signal(
 
 @fragment
 fn fs_signal(in: SignalVertOut) -> SignalFragOut {
-  let d2 = dot(in.uv, in.uv);
-  if (d2 >= 1.0 || in.empIdx < -0.5) {
+  let d = length(in.uv);
+  if (d >= 1.0 || in.empIdx < -0.5) {
     discard;
   }
-  let s = max(0.0, 1.0 - d2);
+  let s = max(0.0, 1.0 - d);
   let emp = u32(round(in.empIdx));
 
   var f0 = vec4<f32>(0.0);
@@ -289,9 +289,8 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
 
   for (var i: u32 = 0u; i < 6u; i = i + 1u) {
     let enabled = (fieldCfg.empireMask & (1u << i)) != 0u;
-    let rVal = select(0.0, max(0.0, raw[i]), enabled);
-    // Smooth saturation compression: merges overlapping planets of the same race cleanly
-    let sVal = 1.0 - exp(-rVal * 1.4);
+    // Direct linear cone signal [0..1] from max-blended Pass 1 (no saturation)
+    let sVal = select(0.0, clamp(raw[i], 0.0, 1.0), enabled);
     sig[i] = sVal;
     gradX[i] = dpdx(sVal);
     gradY[i] = dpdy(sVal);
@@ -315,7 +314,7 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
     }
   }
 
-  const THRESH: f32 = 0.035;
+  const THRESH: f32 = 0.015;
 
   let g1 = max(length(vec2<f32>(gradX[top1Idx], gradY[top1Idx])), 1e-5);
   let g2 = max(length(vec2<f32>(gradX[top2Idx], gradY[top2Idx])), 1e-5);
@@ -325,19 +324,22 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
   let inside1 = smoothstep(-0.75, 0.75, dist1Px);
   let inside2 = smoothstep(-0.75, 0.75, dist2Px);
 
-  // Fill strictly from top1 (zero RGB color mixing between empires)
+  // Fill strictly from top1 (zero RGB mixing) with concave radial glow around planets
   let top1Col = empireColor(f32(top1Idx + 1u));
-  var fillA = inside1 * (0.045 + 0.145 * pow(clamp(top1Val, 0.0, 1.0), 0.85));
+  let baseTint = smoothstep(0.0, 0.08, top1Val) * 0.05;
+  let radialGlow = pow(top1Val, 2.2) * 0.48;
+  var fillA = inside1 * clamp(baseTint + radialGlow, 0.0, 0.65);
 
-  // Equilibrium line (A = B): clean dark gap of constant screen width
+  // Equilibrium line (A = B): clean dark gap of constant screen width (guarded on flat regions)
   if (fieldCfg.eqMode == 0u && top2Val > 0.001) {
-    let eqGrad = max(
-      length(vec2<f32>(gradX[top1Idx] - gradX[top2Idx], gradY[top1Idx] - gradY[top2Idx])),
-      1e-5,
+    let eqGradLen = length(
+      vec2<f32>(gradX[top1Idx] - gradX[top2Idx], gradY[top1Idx] - gradY[top2Idx]),
     );
-    let eqDistPx = (top1Val - top2Val) / eqGrad;
-    let gapMask = smoothstep(0.85, 2.05, eqDistPx);
-    fillA = fillA * mix(1.0, gapMask, inside2);
+    if (eqGradLen >= 1e-5) {
+      let eqDistPx = (top1Val - top2Val) / eqGradLen;
+      let gapMask = smoothstep(0.85, 2.05, eqDistPx);
+      fillA = fillA * mix(1.0, gapMask, inside2);
+    }
   }
 
   var outRgb = top1Col;
@@ -661,16 +663,16 @@ const ALPHA_BLEND: GPUBlendState = {
   },
 };
 
-const ADDITIVE_BLEND: GPUBlendState = {
+const MAX_BLEND: GPUBlendState = {
   color: {
     srcFactor: 'one',
     dstFactor: 'one',
-    operation: 'add',
+    operation: 'max',
   },
   alpha: {
     srcFactor: 'one',
     dstFactor: 'one',
-    operation: 'add',
+    operation: 'max',
   },
 };
 
@@ -930,8 +932,8 @@ export class WebGpuGalaxyBackend {
         module: signalMod,
         entryPoint: 'fs_signal',
         targets: [
-          { format: 'rgba16float', blend: ADDITIVE_BLEND },
-          { format: 'rgba16float', blend: ADDITIVE_BLEND },
+          { format: 'rgba16float', blend: MAX_BLEND },
+          { format: 'rgba16float', blend: MAX_BLEND },
         ],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
