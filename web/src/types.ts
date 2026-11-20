@@ -200,6 +200,8 @@ export interface FleetView {
   maxPower: number;
   hunting: boolean;
   usedWh: boolean;
+  steerX: number;
+  steerY: number;
 }
 
 export interface WormholeView {

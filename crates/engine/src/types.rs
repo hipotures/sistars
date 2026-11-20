@@ -119,6 +119,8 @@ pub struct Fleet {
     pub max_power: f32,
     pub hunting: bool,
     pub used_wh: bool,
+    pub steer_x: f32,
+    pub steer_y: f32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

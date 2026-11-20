@@ -1264,17 +1264,20 @@ impl Simulation {
                 }
             }
 
-            // Cruiser interception using UniformGrid (only queries nearby cells instead of all fleets!)
+            // Cruiser interception using UniformGrid (stable per-fleet role so Cruisers don't zigzag!)
+            let intercept_roll =
+                ((self.fleets[f_idx].id.wrapping_mul(2654435761)) >> 24) as f32 / 256.0;
             if self.fleets[f_idx].fleet_type == FleetClass::Cruiser
-                && self.next_rand() < self.empires[e].race.doctrine.intercept_bias
+                && intercept_roll < self.empires[e].race.doctrine.intercept_bias
             {
                 let tc_scan = self.empires[e].tech_cache.scanner_range;
-                let scan_max = (self.cfg.scanner_range * 0.65 + tc_scan * 0.45)
+                let scan_max = ((self.cfg.scanner_range * 0.65 + tc_scan * 0.45)
                     * if self.empires[e].race.prt == "PRT_SS" {
                         1.25
                     } else {
                         1.0
-                    };
+                    })
+                .min(180.0);
                 let fx = self.fleets[f_idx].x;
                 let fy = self.fleets[f_idx].y;
                 let f_pow = self.fleets[f_idx].power;
@@ -1309,6 +1312,8 @@ impl Simulation {
                     self.fleets[f_idx].hunting = true;
                 }
             }
+            self.fleets[f_idx].steer_x = tx;
+            self.fleets[f_idx].steer_y = ty;
 
             // Debris salvage using UniformGrid
             let fx = self.fleets[f_idx].x;
@@ -1442,7 +1447,9 @@ impl Simulation {
                 let dy = ty - fy;
                 let dist_sq = dx * dx + dy * dy;
                 if dist_sq > 0.01 {
-                    let inv_d = step_dist / dist_sq.sqrt();
+                    let dist = dist_sq.sqrt();
+                    let move_dist = step_dist.min(dist);
+                    let inv_d = move_dist / dist;
                     self.fleets[f_idx].x += dx * inv_d;
                     self.fleets[f_idx].y += dy * inv_d;
                 }
@@ -1692,6 +1699,8 @@ impl Simulation {
             max_power: power,
             hunting: false,
             used_wh: jumped_gate,
+            steer_x: self.pos_x[target_idx],
+            steer_y: self.pos_y[target_idx],
         });
     }
 
@@ -1788,8 +1797,8 @@ impl Simulation {
             let flags = (if fl.hunting { 1 } else { 0 }) | (if fl.used_wh { 2 } else { 0 });
             self.fleet_render_buf.push(fl.x);
             self.fleet_render_buf.push(fl.y);
-            self.fleet_render_buf.push(self.pos_x[fl.target]);
-            self.fleet_render_buf.push(self.pos_y[fl.target]);
+            self.fleet_render_buf.push(fl.steer_x);
+            self.fleet_render_buf.push(fl.steer_y);
             self.fleet_render_buf.push(fl.emp as f32);
             self.fleet_render_buf.push(type_code);
             self.fleet_render_buf.push(flags as f32);
