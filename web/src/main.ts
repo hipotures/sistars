@@ -30,6 +30,7 @@ async function bootstrap(): Promise<void> {
   const renderer = new GalaxyRenderer(canvas, meta.worldW, meta.worldH);
 
   let speed = 1;
+  let lastNonZeroSpeed = 1;
   let tickAccum = 0;
   let hoveredPlanet = -1;
   let lastSnap = engine.take_snapshot() as SimSnapshot;
@@ -93,6 +94,7 @@ async function bootstrap(): Promise<void> {
   const ui = new UiController(meta, catalog, config, {
     onSpeedChange: (newSpeed) => {
       speed = newSpeed;
+      if (newSpeed > 0) lastNonZeroSpeed = newSpeed;
       tickAccum = 0;
       if (newSpeed > 0 && historyViewIndex !== null) {
         historyViewIndex = null;
@@ -226,6 +228,27 @@ async function bootstrap(): Promise<void> {
   canvas.addEventListener('mousemove', (e) => {
     hoveredPlanet = renderer.findPlanetAt(e.clientX, e.clientY, activeSnap().planets, 20);
     canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space') return;
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    e.preventDefault();
+    if (speed > 0) {
+      speed = 0;
+      tickAccum = 0;
+      ui.setActiveSpeedButton(0);
+    } else {
+      speed = lastNonZeroSpeed;
+      tickAccum = 0;
+      ui.setActiveSpeedButton(speed);
+      if (historyViewIndex !== null) {
+        historyViewIndex = null;
+        ui.update(lastSnap, true);
+        syncHistoryBar();
+      }
+    }
   });
 
   ui.update(lastSnap, true);
