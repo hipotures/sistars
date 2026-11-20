@@ -89,8 +89,13 @@ struct EmpirePalette {
   colors: array<vec4<f32>, 17>,
 };
 
+struct EmpireRanges {
+  ranges: array<vec4<f32>, 17>, // .x = scannerRange (ly), .y = flightRange (ly)
+};
+
 @group(0) @binding(0) var<uniform> cam: CameraUniforms;
 @group(0) @binding(1) var<uniform> palette: EmpirePalette;
+@group(0) @binding(2) var<uniform> empRanges: EmpireRanges;
 
 var<private> QUAD: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
   vec2<f32>(-1.0, -1.0),
@@ -145,46 +150,137 @@ fn fs_main(in: BgOut) -> @location(0) vec4<f32> {
 }
 `;
 
-const PLANET_GLOW_WGSL =
+const TERRITORY_FIELD_WGSL =
   COMMON_WGSL +
   /* wgsl */ `
-struct GlowOut {
+struct FieldVertOut {
   @builtin(position) pos: vec4<f32>,
   @location(0) uv: vec2<f32>,
-  @location(1) color: vec3<f32>,
+  @location(1) owner: f32,
 };
 
-@vertex
-fn vs_main(
-  @builtin(vertex_index) vid: u32,
-  @location(0) worldPos: vec2<f32>,
-  @location(1) meta0: vec4<f32>, // [owner, factories, hab, hasGate]
-) -> GlowOut {
-  var out: GlowOut;
-  let owner = meta0.x;
-  if (owner < 0.5) {
-    out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+struct FieldFragOut {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+};
+
+fn buildFieldQuad(vid: u32, worldPos: vec2<f32>, owner: f32, rangeLy: f32) -> FieldVertOut {
+  var out: FieldVertOut;
+  let rad = rangeLy * cam.scale;
+  if (owner < 0.5 || rad < 1.5) {
+    out.pos = vec4<f32>(2.0, 2.0, 1.0, 1.0);
     out.uv = vec2<f32>(0.0);
-    out.color = vec3<f32>(0.0);
+    out.owner = 0.0;
     return out;
   }
   let center = worldToScreen(worldPos);
-  let rad = (24.0 + sqrt(max(0.0, meta0.y)) * 2.2) * cam.scale;
   let corner = QUAD[vid];
   out.pos = screenToClip(center + corner * rad);
   out.uv = corner;
-  out.color = empireColor(owner);
+  out.owner = owner;
   return out;
 }
 
+@vertex
+fn vs_scanner(
+  @builtin(vertex_index) vid: u32,
+  @location(0) worldPos: vec2<f32>,
+  @location(1) meta0: vec4<f32>,
+) -> FieldVertOut {
+  let idx = u32(clamp(round(meta0.x), 0.0, 16.0));
+  return buildFieldQuad(vid, worldPos, meta0.x, empRanges.ranges[idx].x);
+}
+
+@vertex
+fn vs_flight(
+  @builtin(vertex_index) vid: u32,
+  @location(0) worldPos: vec2<f32>,
+  @location(1) meta0: vec4<f32>,
+) -> FieldVertOut {
+  let idx = u32(clamp(round(meta0.x), 0.0, 16.0));
+  return buildFieldQuad(vid, worldPos, meta0.x, empRanges.ranges[idx].y);
+}
+
 @fragment
-fn fs_main(in: GlowOut) -> @location(0) vec4<f32> {
+fn fs_field(in: FieldVertOut) -> FieldFragOut {
   let d = length(in.uv);
   if (d >= 1.0) {
     discard;
   }
-  let falloff = pow(1.0 - d, 1.85);
-  return vec4<f32>(in.color, falloff * 0.16);
+  var out: FieldFragOut;
+  out.color = vec4<f32>(in.owner / 255.0, 1.0 - d, 0.0, 1.0);
+  out.depth = d;
+  return out;
+}
+`;
+
+const TERRITORY_BORDER_WGSL =
+  COMMON_WGSL +
+  /* wgsl */ `
+@group(1) @binding(0) var scannerTex: texture_2d<f32>;
+@group(1) @binding(1) var flightTex: texture_2d<f32>;
+
+@vertex
+fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
+  var pos = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0),
+  );
+  return vec4<f32>(pos[vid], 0.0, 1.0);
+}
+
+fn loadOwner(tex: texture_2d<f32>, c: vec2<i32>, maxC: vec2<i32>) -> u32 {
+  let clamped = clamp(c, vec2<i32>(0, 0), maxC);
+  return u32(round(textureLoad(tex, clamped, 0).r * 255.0));
+}
+
+fn isEdge(tex: texture_2d<f32>, c: vec2<i32>, maxC: vec2<i32>, owner: u32) -> bool {
+  return loadOwner(tex, c + vec2<i32>(1, 0), maxC) != owner
+      || loadOwner(tex, c + vec2<i32>(-1, 0), maxC) != owner
+      || loadOwner(tex, c + vec2<i32>(0, 1), maxC) != owner
+      || loadOwner(tex, c + vec2<i32>(0, -1), maxC) != owner;
+}
+
+@fragment
+fn fs_border(@builtin(position) fragPos: vec4<f32>) -> @location(0) vec4<f32> {
+  let dims = vec2<i32>(textureDimensions(scannerTex));
+  let maxC = dims - vec2<i32>(1, 1);
+  let c = clamp(vec2<i32>(fragPos.xy * 0.5), vec2<i32>(0, 0), maxC);
+
+  var outRgb = vec3<f32>(0.0);
+  var outA = 0.0;
+
+  // 1. Real Scanner Zone: subtle translucent interior + crisp solid border
+  let sOwner = loadOwner(scannerTex, c, maxC);
+  if (sOwner > 0u) {
+    let col = empireColor(f32(sOwner));
+    if (isEdge(scannerTex, c, maxC, sOwner)) {
+      outRgb = col;
+      outA = 0.52;
+    } else {
+      outRgb = col;
+      outA = 0.055;
+    }
+  }
+
+  // 2. Real Flight / Fuel Range: clean dashed contour (overlaid cleanly)
+  let fOwner = loadOwner(flightTex, c, maxC);
+  if (fOwner > 0u && isEdge(flightTex, c, maxC, fOwner)) {
+    let dash = ((u32(fragPos.x) + u32(fragPos.y)) / 5u) & 1u;
+    if (dash == 1u) {
+      let fCol = empireColor(f32(fOwner));
+      let fA = 0.42;
+      let combA = fA + outA * (1.0 - fA);
+      outRgb = (fCol * fA + outRgb * outA * (1.0 - fA)) / max(0.001, combA);
+      outA = combA;
+    }
+  }
+
+  if (outA < 0.005) {
+    discard;
+  }
+  return vec4<f32>(outRgb, outA);
 }
 `;
 
@@ -460,19 +556,6 @@ const ALPHA_BLEND: GPUBlendState = {
   },
 };
 
-const ADDITIVE_BLEND: GPUBlendState = {
-  color: {
-    srcFactor: 'src-alpha',
-    dstFactor: 'one',
-    operation: 'add',
-  },
-  alpha: {
-    srcFactor: 'one',
-    dstFactor: 'one',
-    operation: 'add',
-  },
-};
-
 export class WebGpuGalaxyBackend {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
@@ -480,9 +563,12 @@ export class WebGpuGalaxyBackend {
 
   private readonly cameraUniformBuf: GPUBuffer;
   private readonly paletteUniformBuf: GPUBuffer;
+  private readonly rangesUniformBuf: GPUBuffer;
   private readonly cameraData = new Float32Array(12);
   private readonly paletteData = new Float32Array(17 * 4);
+  private readonly rangesData = new Float32Array(17 * 4);
   private readonly sharedBindGroup: GPUBindGroup;
+  private readonly fieldTexBindGroupLayout: GPUBindGroupLayout;
 
   private readonly bgStarsBuf: GPUBuffer;
   private readonly bgStarCount: number;
@@ -493,8 +579,18 @@ export class WebGpuGalaxyBackend {
   private readonly dynamicLinesGpuBuf: DynamicGpuBuffer;
   private dynamicLinesCpu = new Float32Array(1024 * 6);
 
+  // Half-res offscreen textures for Voronoi-merged scanner & flight range contours
+  private fieldW = 0;
+  private fieldH = 0;
+  private scannerFieldTex: GPUTexture | null = null;
+  private flightFieldTex: GPUTexture | null = null;
+  private fieldDepthTex: GPUTexture | null = null;
+  private fieldTexBindGroup: GPUBindGroup | null = null;
+
   private readonly bgStarsPipeline: GPURenderPipeline;
-  private readonly planetGlowPipeline: GPURenderPipeline;
+  private readonly scannerFieldPipeline: GPURenderPipeline;
+  private readonly flightFieldPipeline: GPURenderPipeline;
+  private readonly territoryBorderPipeline: GPURenderPipeline;
   private readonly planetCorePipeline: GPURenderPipeline;
   private readonly debrisPipeline: GPURenderPipeline;
   private readonly fleetLinesPipeline: GPURenderPipeline;
@@ -502,6 +598,7 @@ export class WebGpuGalaxyBackend {
   private readonly dynamicLinesPipeline: GPURenderPipeline;
 
   private lastEmpireColorsKey = '';
+  private lastRangesKey = '';
   private lastUploadedVersion = -1;
   private lastPlanetCount = 0;
   private lastFleetCount = 0;
@@ -563,6 +660,10 @@ export class WebGpuGalaxyBackend {
       size: 17 * 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.rangesUniformBuf = device.createBuffer({
+      size: 17 * 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     // Index 0 = neutral gray
     this.paletteData[0] = 0.58;
     this.paletteData[1] = 0.643;
@@ -581,6 +682,11 @@ export class WebGpuGalaxyBackend {
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: 'uniform' },
         },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' },
+        },
       ],
     });
 
@@ -589,11 +695,30 @@ export class WebGpuGalaxyBackend {
       entries: [
         { binding: 0, resource: { buffer: this.cameraUniformBuf } },
         { binding: 1, resource: { buffer: this.paletteUniformBuf } },
+        { binding: 2, resource: { buffer: this.rangesUniformBuf } },
+      ],
+    });
+
+    this.fieldTexBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: 'float' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: 'float' },
+        },
       ],
     });
 
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],
+    });
+    const borderPipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout, this.fieldTexBindGroupLayout],
     });
 
     // Static background stars buffer
@@ -640,28 +765,67 @@ export class WebGpuGalaxyBackend {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
-    // 2. Planet glow pipeline (additive soft territory aura)
-    const glowMod = device.createShaderModule({ code: PLANET_GLOW_WGSL });
-    this.planetGlowPipeline = device.createRenderPipeline({
-      layout: pipelineLayout,
-      vertex: {
-        module: glowMod,
-        entryPoint: 'vs_main',
-        buffers: [
-          {
-            arrayStride: 7 * 4,
-            stepMode: 'instance',
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x2' },
-              { shaderLocation: 1, offset: 8, format: 'float32x4' },
-            ],
-          },
+    // 2. Voronoi-merged territory field pipelines (real scanner range + real flight range)
+    const fieldMod = device.createShaderModule({ code: TERRITORY_FIELD_WGSL });
+    const fieldVertexBuffers: GPUVertexBufferLayout[] = [
+      {
+        arrayStride: 7 * 4,
+        stepMode: 'instance',
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x2' },
+          { shaderLocation: 1, offset: 8, format: 'float32x4' },
         ],
       },
+    ];
+    const fieldDepthStencil: GPUDepthStencilState = {
+      format: 'depth16unorm',
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+    };
+
+    this.scannerFieldPipeline = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module: fieldMod,
+        entryPoint: 'vs_scanner',
+        buffers: fieldVertexBuffers,
+      },
       fragment: {
-        module: glowMod,
-        entryPoint: 'fs_main',
-        targets: [{ format, blend: ADDITIVE_BLEND }],
+        module: fieldMod,
+        entryPoint: 'fs_field',
+        targets: [{ format: 'rgba8unorm' }],
+      },
+      depthStencil: fieldDepthStencil,
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+
+    this.flightFieldPipeline = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module: fieldMod,
+        entryPoint: 'vs_flight',
+        buffers: fieldVertexBuffers,
+      },
+      fragment: {
+        module: fieldMod,
+        entryPoint: 'fs_field',
+        targets: [{ format: 'rgba8unorm' }],
+      },
+      depthStencil: fieldDepthStencil,
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+
+    const borderMod = device.createShaderModule({ code: TERRITORY_BORDER_WGSL });
+    this.territoryBorderPipeline = device.createRenderPipeline({
+      layout: borderPipelineLayout,
+      vertex: {
+        module: borderMod,
+        entryPoint: 'vs_fullscreen',
+      },
+      fragment: {
+        module: borderMod,
+        entryPoint: 'fs_border',
+        targets: [{ format, blend: ALPHA_BLEND }],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
@@ -874,9 +1038,60 @@ export class WebGpuGalaxyBackend {
     return f / 6;
   }
 
+  private ensureRanges(empireRanges: [number, number][]): void {
+    const key = empireRanges.map((r) => `${Math.round(r[0])}:${Math.round(r[1])}`).join(',');
+    if (key === this.lastRangesKey) return;
+    this.lastRangesKey = key;
+    const maxEmp = Math.min(16, empireRanges.length);
+    for (let i = 0; i < maxEmp; i++) {
+      const off = (i + 1) * 4;
+      this.rangesData[off] = empireRanges[i][0];
+      this.rangesData[off + 1] = empireRanges[i][1];
+      this.rangesData[off + 2] = 0;
+      this.rangesData[off + 3] = 0;
+    }
+    this.device.queue.writeBuffer(this.rangesUniformBuf, 0, this.rangesData);
+  }
+
+  private ensureFieldTextures(targetW: number, targetH: number): void {
+    const fw = Math.max(1, Math.floor(targetW / 2));
+    const fh = Math.max(1, Math.floor(targetH / 2));
+    if (fw === this.fieldW && fh === this.fieldH && this.scannerFieldTex) return;
+
+    this.scannerFieldTex?.destroy();
+    this.flightFieldTex?.destroy();
+    this.fieldDepthTex?.destroy();
+
+    this.fieldW = fw;
+    this.fieldH = fh;
+    this.scannerFieldTex = this.device.createTexture({
+      size: [fw, fh],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.flightFieldTex = this.device.createTexture({
+      size: [fw, fh],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.fieldDepthTex = this.device.createTexture({
+      size: [fw, fh],
+      format: 'depth16unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.fieldTexBindGroup = this.device.createBindGroup({
+      layout: this.fieldTexBindGroupLayout,
+      entries: [
+        { binding: 0, resource: this.scannerFieldTex.createView() },
+        { binding: 1, resource: this.flightFieldTex.createView() },
+      ],
+    });
+  }
+
   public render(
     cam: CameraUniformData,
     empireColors: string[],
+    empireRanges: [number, number][],
     planetsBuf: Float32Array,
     fleetsBuf: Float32Array,
     debrisBuf: Float32Array,
@@ -885,7 +1100,7 @@ export class WebGpuGalaxyBackend {
     combatFx: CombatFxView[],
     dataVersion: number,
   ): void {
-    // 1. Upload camera uniform (48 bytes) & empire palette (cached)
+    // 1. Upload camera uniform (48 bytes), empire palette & real scanner/flight ranges
     this.cameraData[0] = cam.offX;
     this.cameraData[1] = cam.offY;
     this.cameraData[2] = cam.scale;
@@ -897,6 +1112,7 @@ export class WebGpuGalaxyBackend {
     this.cameraData[8] = cam.planetCount;
     this.device.queue.writeBuffer(this.cameraUniformBuf, 0, this.cameraData);
     this.ensurePalette(empireColors);
+    this.ensureRanges(empireRanges);
 
     // 2. Direct zero-copy uploads ONLY when simulation data version changed (0 MB upload during paused pan/zoom!)
     let planetCount = this.lastPlanetCount;
@@ -921,9 +1137,62 @@ export class WebGpuGalaxyBackend {
     const dBuf = debrisCount > 0 ? this.debrisGpuBuf.gpuBuffer : null;
     const dynLineVerts = this.buildDynamicLines(wormholes, jumpFx, combatFx);
 
-    // 3. Encode single render pass (1 draw call per layer)
+    // 3. Encode offscreen Voronoi territory passes + main render pass
+    const currentTex = this.context.getCurrentTexture();
+    this.ensureFieldTextures(currentTex.width, currentTex.height);
+
     const encoder = this.device.createCommandEncoder();
-    const view = this.context.getCurrentTexture().createView();
+
+    // Offscreen Pass A & B: real scanner zone & flight range fields (closest-planet Voronoi via depth16)
+    if (pBuf && planetCount > 0 && this.scannerFieldTex && this.flightFieldTex && this.fieldDepthTex) {
+      const depthView = this.fieldDepthTex.createView();
+
+      const scanPass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: this.scannerFieldTex.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'discard',
+        },
+      });
+      scanPass.setBindGroup(0, this.sharedBindGroup);
+      scanPass.setPipeline(this.scannerFieldPipeline);
+      scanPass.setVertexBuffer(0, pBuf);
+      scanPass.draw(6, planetCount);
+      scanPass.end();
+
+      const flightPass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: this.flightFieldTex.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'discard',
+        },
+      });
+      flightPass.setBindGroup(0, this.sharedBindGroup);
+      flightPass.setPipeline(this.flightFieldPipeline);
+      flightPass.setVertexBuffer(0, pBuf);
+      flightPass.draw(6, planetCount);
+      flightPass.end();
+    }
+
+    const view = currentTex.createView();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -944,11 +1213,11 @@ export class WebGpuGalaxyBackend {
       pass.draw(6, this.bgStarCount);
     }
 
-    // Layer 1: Empire territory glows
-    if (pBuf && planetCount > 0) {
-      pass.setPipeline(this.planetGlowPipeline);
-      pass.setVertexBuffer(0, pBuf);
-      pass.draw(6, planetCount);
+    // Layer 1: Merged Scanner Zone (solid) + Flight Range (dashed) territory contours
+    if (pBuf && planetCount > 0 && this.fieldTexBindGroup) {
+      pass.setPipeline(this.territoryBorderPipeline);
+      pass.setBindGroup(1, this.fieldTexBindGroup);
+      pass.draw(3);
     }
 
     // Layer 2: Dynamic lines (wormhole links, jump FX, combat lasers)
@@ -995,6 +1264,10 @@ export class WebGpuGalaxyBackend {
     this.bgStarsBuf.destroy();
     this.cameraUniformBuf.destroy();
     this.paletteUniformBuf.destroy();
+    this.rangesUniformBuf.destroy();
+    this.scannerFieldTex?.destroy();
+    this.flightFieldTex?.destroy();
+    this.fieldDepthTex?.destroy();
     this.device.destroy();
   }
 }

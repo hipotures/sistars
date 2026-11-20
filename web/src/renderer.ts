@@ -354,6 +354,10 @@ export class GalaxyRenderer {
     const denseFactor = this.getDenseFactor(planetCount);
     const invCrustNorm = 1.0 / (crustRichness * 4);
     const empColors = hud.empires.map((emp) => emp.color);
+    const empRanges: [number, number][] = hud.empires.map((emp) => [
+      emp.loadout.scannerRange * (emp.prt === 'PRT_SS' ? 1.25 : 1.0),
+      Math.max(emp.loadout.rangeCol, emp.loadout.rangeCruiser),
+    ]);
 
     if (this.gpuBackend) {
       this.gpuBackend.render(
@@ -369,6 +373,7 @@ export class GalaxyRenderer {
           planetCount,
         },
         empColors,
+        empRanges,
         planetsBuf,
         fleetsBuf,
         debrisBuf,

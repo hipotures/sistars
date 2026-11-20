@@ -85,6 +85,7 @@ pub struct EmpireLoadoutView {
     pub range_cruiser: f32,
     pub range_battleship: f32,
     pub range_bomber: f32,
+    pub scanner_range: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
