@@ -9,6 +9,43 @@ use crate::config::{
 use crate::types::{Doctrine, EmpireLoadoutView, RaceDef};
 
 const TECHS_JSON: &str = include_str!("../../../data/craig-stars/techs.json");
+const RULES_JSON: &str = include_str!("../../../data/craig-stars/rules.json");
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawEwRules {
+    #[serde(default = "default_tachyon_reduction")]
+    pub tachyon_cloak_reduction: f32,
+    #[serde(default = "default_tachyon_max_reduction")]
+    pub tachyon_max_cloak_reduction: f32,
+}
+
+fn default_tachyon_reduction() -> f32 {
+    0.05
+}
+
+fn default_tachyon_max_reduction() -> f32 {
+    0.81
+}
+
+/// Canonical Stars! piecewise conversion from cloak units to cloak percentage [0.0, 0.98]:
+/// - 0..=100   -> 0%..50%
+/// - 100..=300 -> 50%..75%
+/// - 300..=600 -> 75%..87.5%
+/// - >600      -> asymptotically up to 98% cap
+pub fn cloak_units_to_pct(units: f32) -> f32 {
+    if units <= 0.0 {
+        0.0
+    } else if units <= 100.0 {
+        units / 200.0
+    } else if units <= 300.0 {
+        0.50 + (units - 100.0) / 800.0
+    } else if units <= 600.0 {
+        0.75 + (units - 300.0) / 2400.0
+    } else {
+        (0.875 + (units - 600.0) / 6000.0).min(0.98)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 10 Primary Racial Traits (PRTs) & 14 Lesser Racial Traits (LRTs)
@@ -493,6 +530,12 @@ pub struct RawHullComponent {
     #[serde(default)]
     pub cloak_units: i32,
     #[serde(default)]
+    pub cloak_unarmed_only: bool,
+    #[serde(default)]
+    pub reduce_cloaking: bool,
+    #[serde(default)]
+    pub torpedo_jamming: f32,
+    #[serde(default)]
     pub safe_hull_mass: i64,
     #[serde(default)]
     pub safe_range: i64,
@@ -602,6 +645,7 @@ pub struct TechStore {
     pub planetaries: Vec<(u16, RawPlanetary)>,
     pub hull_components: Vec<(u16, RawHullComponent)>,
     pub hulls: Vec<(u16, RawHull)>,
+    pub ew_rules: RawEwRules,
 }
 
 static TECH_STORE: OnceLock<TechStore> = OnceLock::new();
@@ -656,6 +700,8 @@ impl TechStore {
     fn load() -> Self {
         let raw: RawTechFile =
             serde_json::from_str(TECHS_JSON).expect("Failed to parse data/craig-stars/techs.json");
+        let ew_rules: RawEwRules =
+            serde_json::from_str(RULES_JSON).expect("Failed to parse data/craig-stars/rules.json");
 
         let mut entries = Vec::with_capacity(240);
         let mut next_id = 0u16;
@@ -777,10 +823,22 @@ impl TechStore {
                 "TECH_CATEGORY_MINE_ROBOT" => format!("Mining {}/yr", item.mining_rate),
                 "TECH_CATEGORY_MINE_LAYER" => format!("Mines {}/yr", item.mine_laying_rate),
                 "TECH_CATEGORY_ELECTRICAL" => {
+                    let mut parts: Vec<String> = Vec::new();
                     if item.cloak_units > 0 {
-                        format!("Cloak {} units", item.cloak_units)
-                    } else {
+                        let pct = (cloak_units_to_pct(item.cloak_units as f32) * 100.0).round();
+                        let tag = if item.cloak_unarmed_only { " unarmed" } else { "" };
+                        parts.push(format!("Cloak {} ({:.0}%{})", item.cloak_units, pct, tag));
+                    }
+                    if item.reduce_cloaking {
+                        parts.push("Tachyon (-cloak)".to_string());
+                    }
+                    if item.torpedo_jamming > 0.0 {
+                        parts.push(format!("Jammer {:.0}%", item.torpedo_jamming * 100.0));
+                    }
+                    if parts.is_empty() {
                         format!("Mass {}kT", item.mass)
+                    } else {
+                        parts.join(" | ")
                     }
                 }
                 _ => {
@@ -818,6 +876,7 @@ impl TechStore {
             planetaries,
             hull_components,
             hulls,
+            ew_rules,
         }
     }
 
@@ -887,6 +946,7 @@ pub struct EmpireTechCache {
 
     pub weapon_name: String,
     pub weapon_power: f32,
+    pub weapon_is_torpedo: bool,
 
     pub bomb_name: String,
     pub bomb_power: f32,
@@ -901,6 +961,16 @@ pub struct EmpireTechCache {
     pub scanner_name: String,
     pub scanner_range: f32,
     pub scanner_pen: f32,
+
+    // Electronic Warfare (Cloak, Tachyon Detector, Torpedo Jammer & ECM Scanner Jamming)
+    pub cloak_units_armed: f32,
+    pub cloak_units_unarmed: f32,
+    pub cloak_armed_pct: f32,
+    pub cloak_unarmed_pct: f32,
+    pub tachyon_cloak_reduction: f32,
+    pub torpedo_jamming: f32,
+    pub ecm_jammer_strength: f32,
+    pub ecm_jammer_range: f32,
 
     pub defense_name: String,
     pub defense_coverage: f32,
@@ -1013,6 +1083,7 @@ impl EmpireTechCache {
         let mut engine_fuel_usage = 100.0f32;
         let mut weapon_name = "Laser".to_string();
         let mut weapon_power = 10.0f32;
+        let mut weapon_is_torpedo = false;
         let mut bomb_name = "Lady Finger Bomb".to_string();
         let mut bomb_power = 0.6f32;
         let mut bomb_smart = false;
@@ -1023,6 +1094,10 @@ impl EmpireTechCache {
         let mut scanner_name = "Bat Scanner".to_string();
         let mut scanner_range = 60.0f32;
         let mut scanner_pen = 0.0f32;
+        let mut best_cloak_armed = 0.0f32;
+        let mut best_cloak_unarmed = 0.0f32;
+        let mut has_tachyon = false;
+        let mut best_torpedo_jamming = 0.0f32;
         let mut defense_name = "SDI".to_string();
         let mut defense_coverage = 0.99f32;
         let mut terraform_name = "None".to_string();
@@ -1090,6 +1165,23 @@ impl EmpireTechCache {
             }
             mark(*id, &mut unlocked_bits, &mut unlocked_count);
 
+            // Electronic Warfare & hybrid component attributes (Electrical, Shield, Armor, Mechanical, etc.)
+            if item.cloak_units > 0 {
+                let u = item.cloak_units as f32;
+                if u > best_cloak_unarmed {
+                    best_cloak_unarmed = u;
+                }
+                if !item.cloak_unarmed_only && u > best_cloak_armed {
+                    best_cloak_armed = u;
+                }
+            }
+            if item.reduce_cloaking {
+                has_tachyon = true;
+            }
+            if item.torpedo_jamming > best_torpedo_jamming {
+                best_torpedo_jamming = item.torpedo_jamming;
+            }
+
             match item.tech.category.as_str() {
                 "TECH_CATEGORY_ENGINE" => {
                     // Prefer highest ideal_speed (cruise warp) and ramscoop free_speed on tie
@@ -1112,7 +1204,8 @@ impl EmpireTechCache {
                     }
                 }
                 "TECH_CATEGORY_BEAM_WEAPON" | "TECH_CATEGORY_TORPEDO" => {
-                    let eff_pow = if item.tech.category == "TECH_CATEGORY_TORPEDO" {
+                    let is_torp = item.tech.category == "TECH_CATEGORY_TORPEDO";
+                    let eff_pow = if is_torp {
                         (item.power as f32) * ((item.accuracy.max(35) as f32) / 100.0) * 1.35
                     } else {
                         item.power as f32 * (1.0 + (item.range as f32) * 0.15)
@@ -1120,6 +1213,7 @@ impl EmpireTechCache {
                     if eff_pow > weapon_power {
                         weapon_power = eff_pow;
                         weapon_name = item.tech.name.clone();
+                        weapon_is_torpedo = is_torp;
                     }
                 }
                 "TECH_CATEGORY_BOMB" => {
@@ -1365,6 +1459,38 @@ impl EmpireTechCache {
             false,
         );
 
+        // Resolve Electronic Warfare stats from unlocked components + racial traits + rules.json
+        let innate_ss_cloak = if !ignore_traits && prt == "PRT_SS" {
+            300.0 // Super Stealth innate 75% cloak baseline
+        } else {
+            0.0
+        };
+        let cloak_units_armed = best_cloak_armed + innate_ss_cloak;
+        let cloak_units_unarmed = best_cloak_unarmed.max(best_cloak_armed) + innate_ss_cloak;
+        let cloak_armed_pct = cloak_units_to_pct(cloak_units_armed);
+        let cloak_unarmed_pct = cloak_units_to_pct(cloak_units_unarmed);
+
+        // Tachyon Detector: scales from ~25% at initial unlock up to ~62% on late-game starbases/capitals
+        let tachyon_cloak_reduction = if has_tachyon {
+            let per_det = store.ew_rules.tachyon_cloak_reduction.clamp(0.01, 0.25);
+            let max_red = store.ew_rules.tachyon_max_cloak_reduction.clamp(0.25, 0.90);
+            let eff_detectors = (5.0 + (int_levels[4] - 6).max(0) as f32 * 0.65).min(18.0);
+            (1.0 - (1.0 - per_det).powf(eff_detectors)).min(max_red).min(0.65)
+        } else {
+            0.0
+        };
+
+        // Torpedo Jammer (capped at 75%) + Planetary ECM Scanner Jamming (unlocked from Jammer 20/30/50)
+        let torpedo_jamming = (best_torpedo_jamming * 1.35).min(0.75);
+        let (ecm_jammer_strength, ecm_jammer_range) = if best_torpedo_jamming >= 0.20 {
+            let ss_mult = if !ignore_traits && prt == "PRT_SS" { 1.25 } else { 1.0 };
+            let strength = (best_torpedo_jamming * 1.15 * ss_mult).min(0.85);
+            let range = (55.0 + best_torpedo_jamming * 130.0) * ss_mult;
+            (strength, range)
+        } else {
+            (0.0, 0.0)
+        };
+
         Self {
             unlocked_bits,
             unlocked_count,
@@ -1375,6 +1501,7 @@ impl EmpireTechCache {
             engine_fuel_usage,
             weapon_name,
             weapon_power,
+            weapon_is_torpedo,
             bomb_name,
             bomb_power,
             bomb_smart,
@@ -1385,6 +1512,14 @@ impl EmpireTechCache {
             scanner_name,
             scanner_range,
             scanner_pen,
+            cloak_units_armed,
+            cloak_units_unarmed,
+            cloak_armed_pct,
+            cloak_unarmed_pct,
+            tachyon_cloak_reduction,
+            torpedo_jamming,
+            ecm_jammer_strength,
+            ecm_jammer_range,
             defense_name,
             defense_coverage,
             terraform_name,
@@ -1433,6 +1568,12 @@ impl EmpireTechCache {
             range_battleship: self.range_battleship,
             range_bomber: self.range_bomber,
             scanner_range: self.scanner_range,
+            cloak_armed_pct: self.cloak_armed_pct,
+            cloak_unarmed_pct: self.cloak_unarmed_pct,
+            tachyon_reduction_pct: self.tachyon_cloak_reduction,
+            torpedo_jamming_pct: self.torpedo_jamming,
+            ecm_jammer_range: self.ecm_jammer_range,
+            ecm_jammer_strength: self.ecm_jammer_strength,
         }
     }
 }
@@ -1509,5 +1650,36 @@ mod tests {
         assert!(mid.range_col > low.range_col, "mid-game tech should expand ship range");
         assert!(max.range_battleship > 450.0, "late-game ramscoop capital range should span sectors");
         assert_eq!(classic_races().len(), 6);
+    }
+
+    #[test]
+    fn cloak_curve_and_electronic_warfare_resolution() {
+        assert_eq!(cloak_units_to_pct(0.0), 0.0);
+        assert!((cloak_units_to_pct(100.0) - 0.50).abs() < 1e-5);
+        assert!((cloak_units_to_pct(300.0) - 0.75).abs() < 1e-5);
+        assert!((cloak_units_to_pct(600.0) - 0.875).abs() < 1e-5);
+        assert!((cloak_units_to_pct(5000.0) - 0.98).abs() < 1e-5);
+
+        // PRT_SS starts with innate 75% cloak baseline
+        let ss_start = EmpireTechCache::resolve(&[0, 0, 0, 0, 5, 0], "PRT_SS", 0, false);
+        assert!(ss_start.cloak_armed_pct >= 0.75);
+        assert!(ss_start.cloak_unarmed_pct >= ss_start.cloak_armed_pct);
+
+        // Low tech has no Tachyon Detector or ECM jammer
+        let low = EmpireTechCache::resolve(&[0; 6], "PRT_JOAT", 0, false);
+        assert_eq!(low.tachyon_cloak_reduction, 0.0);
+        assert_eq!(low.ecm_jammer_strength, 0.0);
+
+        // Mid/high Electronics unlocks Jammer 20/30/50 for JOAT and Tachyon Detector for PRT_IS
+        let high_joat = EmpireTechCache::resolve(&[14, 14, 14, 14, 18, 14], "PRT_JOAT", 0, false);
+        assert_eq!(high_joat.tachyon_cloak_reduction, 0.0);
+        assert!(high_joat.torpedo_jamming > 0.30 && high_joat.torpedo_jamming <= 0.75);
+        assert!(high_joat.ecm_jammer_strength > 0.20 && high_joat.ecm_jammer_range > 80.0);
+
+        let high_is = EmpireTechCache::resolve(&[10, 10, 10, 10, 18, 10], "PRT_IS", 0, false);
+        assert!(high_is.tachyon_cloak_reduction > 0.35 && high_is.tachyon_cloak_reduction <= 0.65);
+
+        let sandbox = EmpireTechCache::resolve(&[14, 14, 14, 14, 18, 14], "PRT_JOAT", 0, true);
+        assert!(sandbox.tachyon_cloak_reduction > 0.35 && sandbox.tachyon_cloak_reduction <= 0.65);
     }
 }

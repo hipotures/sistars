@@ -368,9 +368,11 @@ export class GalaxyRenderer {
     const denseFactor = this.getDenseFactor(planetCount);
     const invCrustNorm = 1.0 / (crustRichness * 4);
     const empColors = hud.empires.map((emp) => emp.color);
-    const empRanges: [number, number][] = hud.empires.map((emp) => [
+    const empRanges: [number, number, number, number][] = hud.empires.map((emp) => [
       emp.loadout.scannerRange * (emp.prt === 'PRT_SS' ? 1.25 : 1.0),
       Math.max(emp.loadout.rangeCol, emp.loadout.rangeCruiser),
+      emp.loadout.ecmJammerRange,
+      emp.loadout.ecmJammerStrength,
     ]);
 
     if (this.gpuBackend) {
@@ -432,7 +434,7 @@ export class GalaxyRenderer {
     denseFactor: number,
     invCrustNorm: number,
     empColors: string[],
-    empRanges: [number, number][],
+    empRanges: [number, number, number, number][],
     fieldSettings: ScannerFieldSettings,
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
@@ -521,7 +523,7 @@ export class GalaxyRenderer {
       const owner = planetsBuf[off + 2];
       const factories = planetsBuf[off + 3];
       const hab = planetsBuf[off + 4];
-      const hasGate = planetsBuf[off + 5] > 0.5;
+      const hasGate = (Math.round(planetsBuf[off + 5]) & 1) !== 0;
       const crustSum = planetsBuf[off + 6];
 
       if (fastDotMode && owner === 0) {

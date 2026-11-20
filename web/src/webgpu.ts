@@ -90,7 +90,7 @@ struct EmpirePalette {
 };
 
 struct EmpireRanges {
-  ranges: array<vec4<f32>, 17>, // .x = scannerRange (ly), .y = flightRange (ly)
+  ranges: array<vec4<f32>, 17>, // .x = scannerRange, .y = flightRange, .z = ecmRange, .w = ecmStrength
 };
 
 struct FieldUniforms {
@@ -165,18 +165,20 @@ struct SignalVertOut {
   @builtin(position) pos: vec4<f32>,
   @location(0) uv: vec2<f32>,
   @location(1) empIdx: f32,
+  @location(2) strength: f32,
 };
 
 struct SignalFragOut {
-  @location(0) f0: vec4<f32>, // empires 0..3
-  @location(1) f1: vec4<f32>, // empires 4..5 (.rg), jammer reserved (.ba)
+  @location(0) f0: vec4<f32>, // empires 0..3 scanner
+  @location(1) f1: vec4<f32>, // empires 4..5 scanner (.rg), empires 4..5 jammer (.ba)
+  @location(2) j0: vec4<f32>, // empires 0..3 jammer
 };
 
 @vertex
 fn vs_signal(
   @builtin(vertex_index) vid: u32,
   @location(0) worldPos: vec2<f32>,
-  @location(1) meta0: vec4<f32>, // [owner, factories, hab, hasGate]
+  @location(1) meta0: vec4<f32>, // [owner, factories, hab, flags(bit0=gate, bit1=ecm)]
 ) -> SignalVertOut {
   var out: SignalVertOut;
   let ownerU = u32(round(meta0.x));
@@ -184,6 +186,7 @@ fn vs_signal(
     out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
     out.uv = vec2<f32>(0.0);
     out.empIdx = -1.0;
+    out.strength = 0.0;
     return out;
   }
 
@@ -192,6 +195,7 @@ fn vs_signal(
     out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
     out.uv = vec2<f32>(0.0);
     out.empIdx = -1.0;
+    out.strength = 0.0;
     return out;
   }
 
@@ -207,6 +211,7 @@ fn vs_signal(
     out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
     out.uv = vec2<f32>(0.0);
     out.empIdx = -1.0;
+    out.strength = 0.0;
     return out;
   }
 
@@ -214,6 +219,52 @@ fn vs_signal(
   out.pos = screenToClip(center + corner * rad);
   out.uv = corner;
   out.empIdx = f32(empIdx);
+  out.strength = 1.0;
+  return out;
+}
+
+@vertex
+fn vs_jammer(
+  @builtin(vertex_index) vid: u32,
+  @location(0) worldPos: vec2<f32>,
+  @location(1) meta0: vec4<f32>, // [owner, factories, hab, flags(bit0=gate, bit1=ecm)]
+) -> SignalVertOut {
+  var out: SignalVertOut;
+  let ownerU = u32(round(meta0.x));
+  let flags = u32(round(meta0.w));
+  if (ownerU == 0u || ownerU > 6u || (flags & 2u) == 0u) {
+    out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(0.0);
+    out.empIdx = -1.0;
+    out.strength = 0.0;
+    return out;
+  }
+
+  let empIdx = ownerU - 1u;
+  let ecmRange = empRanges.ranges[ownerU].z;
+  let ecmStrength = empRanges.ranges[ownerU].w;
+  let rad = ecmRange * cam.scale;
+  let center = worldToScreen(worldPos);
+  if (
+    ecmStrength <= 0.001 ||
+    rad < 1.5 ||
+    center.x + rad < 0.0 ||
+    center.x - rad > cam.viewportW ||
+    center.y + rad < 0.0 ||
+    center.y - rad > cam.viewportH
+  ) {
+    out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(0.0);
+    out.empIdx = -1.0;
+    out.strength = 0.0;
+    return out;
+  }
+
+  let corner = QUAD[vid];
+  out.pos = screenToClip(center + corner * rad);
+  out.uv = corner;
+  out.empIdx = f32(empIdx);
+  out.strength = ecmStrength;
   return out;
 }
 
@@ -241,11 +292,43 @@ fn fs_signal(in: SignalVertOut) -> SignalFragOut {
   } else if (emp == 5u) {
     f1.g = s;
   }
-  // f1.ba reserved for future jammer attenuation channel
 
   var out: SignalFragOut;
   out.f0 = f0;
   out.f1 = f1;
+  out.j0 = vec4<f32>(0.0);
+  return out;
+}
+
+@fragment
+fn fs_jammer(in: SignalVertOut) -> SignalFragOut {
+  let d = length(in.uv);
+  if (d >= 1.0 || in.empIdx < -0.5) {
+    discard;
+  }
+  let j = max(0.0, 1.0 - d) * in.strength;
+  let emp = u32(round(in.empIdx));
+
+  var f1 = vec4<f32>(0.0);
+  var j0 = vec4<f32>(0.0);
+  if (emp == 0u) {
+    j0.r = j;
+  } else if (emp == 1u) {
+    j0.g = j;
+  } else if (emp == 2u) {
+    j0.b = j;
+  } else if (emp == 3u) {
+    j0.a = j;
+  } else if (emp == 4u) {
+    f1.b = j;
+  } else if (emp == 5u) {
+    f1.a = j;
+  }
+
+  var out: SignalFragOut;
+  out.f0 = vec4<f32>(0.0);
+  out.f1 = f1;
+  out.j0 = j0;
   return out;
 }
 `;
@@ -256,6 +339,7 @@ const SIGNAL_COMPOSITE_WGSL =
 @group(1) @binding(0) var signalTex0: texture_2d<f32>;
 @group(1) @binding(1) var signalTex1: texture_2d<f32>;
 @group(1) @binding(2) var fieldSampler: sampler;
+@group(1) @binding(3) var jamTex0: texture_2d<f32>;
 
 struct FullscreenOut {
   @builtin(position) pos: vec4<f32>,
@@ -278,10 +362,12 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> FullscreenOut {
 
 @fragment
 fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
-  // Sample 6 empire channels (raw1.ba reserved for jammer) in uniform control flow
+  // Sample 6 scanner channels + 6 faction-aware ECM jammer channels in uniform control flow
   let raw0 = textureSample(signalTex0, fieldSampler, in.uv);
   let raw1 = textureSample(signalTex1, fieldSampler, in.uv);
+  let jam0 = textureSample(jamTex0, fieldSampler, in.uv);
   var raw = array<f32, 6>(raw0.r, raw0.g, raw0.b, raw0.a, raw1.r, raw1.g);
+  var jam = array<f32, 6>(jam0.r, jam0.g, jam0.b, jam0.a, raw1.b, raw1.a);
 
   var sig: array<f32, 6>;
   var gradX: array<f32, 6>;
@@ -289,8 +375,14 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
 
   for (var i: u32 = 0u; i < 6u; i = i + 1u) {
     let enabled = (fieldCfg.empireMask & (1u << i)) != 0u;
-    // Direct linear cone signal [0..1] from max-blended Pass 1 (no saturation)
-    let sVal = select(0.0, clamp(raw[i], 0.0, 1.0), enabled);
+    // Faction-aware ECM: jammer of empire E never suppresses E, only enemy empires
+    var enemyJam: f32 = 0.0;
+    for (var j: u32 = 0u; j < 6u; j = j + 1u) {
+      if (j != i) {
+        enemyJam = max(enemyJam, jam[j]);
+      }
+    }
+    let sVal = select(0.0, max(0.0, clamp(raw[i], 0.0, 1.0) - enemyJam), enabled);
     sig[i] = sVal;
     gradX[i] = dpdx(sVal);
     gradY[i] = dpdy(sVal);
@@ -413,7 +505,7 @@ fn vs_main(
   let owner = meta0.x;
   let factories = meta0.y;
   let hab = meta0.z;
-  let hasGate = select(0.0, 1.0, owner > 0.5 && meta0.w > 0.5);
+  let hasGate = select(0.0, 1.0, owner > 0.5 && (u32(round(meta0.w)) & 1u) != 0u);
 
   var r: f32;
   var col: vec3<f32>;
@@ -704,15 +796,17 @@ export class WebGpuGalaxyBackend {
   private readonly dynamicLinesGpuBuf: DynamicGpuBuffer;
   private dynamicLinesCpu = new Float32Array(1024 * 6);
 
-  // Offscreen 2 x rgba16float signal field textures (6 empire channels + 2 reserved jammer channels)
+  // Offscreen rgba16float signal & faction-aware ECM jammer field textures
   private fieldW = 0;
   private fieldH = 0;
   private signalTex0: GPUTexture | null = null;
   private signalTex1: GPUTexture | null = null;
+  private jamTex0: GPUTexture | null = null;
   private fieldTexBindGroup: GPUBindGroup | null = null;
 
   private readonly bgStarsPipeline: GPURenderPipeline;
   private readonly signalFieldPipeline: GPURenderPipeline;
+  private readonly ecmJammerPipeline: GPURenderPipeline;
   private readonly signalCompositePipeline: GPURenderPipeline;
   private readonly planetCorePipeline: GPURenderPipeline;
   private readonly debrisPipeline: GPURenderPipeline;
@@ -856,6 +950,11 @@ export class WebGpuGalaxyBackend {
           visibility: GPUShaderStage.FRAGMENT,
           sampler: { type: 'filtering' },
         },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: 'float' },
+        },
       ],
     });
 
@@ -910,29 +1009,58 @@ export class WebGpuGalaxyBackend {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
-    // 2. Smooth 2-pass scanner signal field (MRT 2 x rgba16float + fullscreen composite & isolines)
+    // 2. Smooth 2-pass scanner signal + faction-aware ECM jammer field (MRT rgba16float)
     const signalMod = device.createShaderModule({ code: SIGNAL_FIELD_WGSL });
+    const signalVertexBuffers: GPUVertexBufferLayout[] = [
+      {
+        arrayStride: 7 * 4,
+        stepMode: 'instance',
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x2' },
+          { shaderLocation: 1, offset: 8, format: 'float32x4' },
+        ],
+      },
+    ];
     this.signalFieldPipeline = device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: {
         module: signalMod,
         entryPoint: 'vs_signal',
-        buffers: [
-          {
-            arrayStride: 7 * 4,
-            stepMode: 'instance',
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x2' },
-              { shaderLocation: 1, offset: 8, format: 'float32x4' },
-            ],
-          },
-        ],
+        buffers: signalVertexBuffers,
       },
       fragment: {
         module: signalMod,
         entryPoint: 'fs_signal',
         targets: [
           { format: 'rgba16float', blend: MAX_BLEND },
+          {
+            format: 'rgba16float',
+            blend: MAX_BLEND,
+            writeMask: GPUColorWrite.RED | GPUColorWrite.GREEN,
+          },
+          { format: 'rgba16float', writeMask: 0 },
+        ],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+    });
+
+    this.ecmJammerPipeline = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module: signalMod,
+        entryPoint: 'vs_jammer',
+        buffers: signalVertexBuffers,
+      },
+      fragment: {
+        module: signalMod,
+        entryPoint: 'fs_jammer',
+        targets: [
+          { format: 'rgba16float', writeMask: 0 },
+          {
+            format: 'rgba16float',
+            blend: MAX_BLEND,
+            writeMask: GPUColorWrite.BLUE | GPUColorWrite.ALPHA,
+          },
           { format: 'rgba16float', blend: MAX_BLEND },
         ],
       },
@@ -1162,8 +1290,10 @@ export class WebGpuGalaxyBackend {
     return f / 6;
   }
 
-  private ensureRanges(empireRanges: [number, number][]): void {
-    const key = empireRanges.map((r) => `${Math.round(r[0])}:${Math.round(r[1])}`).join(',');
+  private ensureRanges(empireRanges: [number, number, number, number][]): void {
+    const key = empireRanges
+      .map((r) => `${Math.round(r[0])}:${Math.round(r[1])}:${Math.round(r[2])}:${Math.round(r[3] * 100)}`)
+      .join(',');
     if (key === this.lastRangesKey) return;
     this.lastRangesKey = key;
     const maxEmp = Math.min(16, empireRanges.length);
@@ -1171,8 +1301,8 @@ export class WebGpuGalaxyBackend {
       const off = (i + 1) * 4;
       this.rangesData[off] = empireRanges[i][0];
       this.rangesData[off + 1] = empireRanges[i][1];
-      this.rangesData[off + 2] = 0;
-      this.rangesData[off + 3] = 0;
+      this.rangesData[off + 2] = empireRanges[i][2];
+      this.rangesData[off + 3] = empireRanges[i][3];
     }
     this.device.queue.writeBuffer(this.rangesUniformBuf, 0, this.rangesData);
   }
@@ -1181,10 +1311,13 @@ export class WebGpuGalaxyBackend {
     const maxDim = this.device.limits.maxTextureDimension2D;
     const fw = Math.max(1, Math.min(maxDim, Math.round(cssW)));
     const fh = Math.max(1, Math.min(maxDim, Math.round(cssH)));
-    if (fw === this.fieldW && fh === this.fieldH && this.signalTex0 && this.signalTex1) return;
+    if (fw === this.fieldW && fh === this.fieldH && this.signalTex0 && this.signalTex1 && this.jamTex0) {
+      return;
+    }
 
     this.signalTex0?.destroy();
     this.signalTex1?.destroy();
+    this.jamTex0?.destroy();
 
     this.fieldW = fw;
     this.fieldH = fh;
@@ -1198,12 +1331,18 @@ export class WebGpuGalaxyBackend {
       format: 'rgba16float',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
+    this.jamTex0 = this.device.createTexture({
+      size: [fw, fh],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
     this.fieldTexBindGroup = this.device.createBindGroup({
       layout: this.fieldTexBindGroupLayout,
       entries: [
         { binding: 0, resource: this.signalTex0.createView() },
         { binding: 1, resource: this.signalTex1.createView() },
         { binding: 2, resource: this.fieldSampler },
+        { binding: 3, resource: this.jamTex0.createView() },
       ],
     });
   }
@@ -1211,7 +1350,7 @@ export class WebGpuGalaxyBackend {
   public render(
     cam: CameraUniformData,
     empireColors: string[],
-    empireRanges: [number, number][],
+    empireRanges: [number, number, number, number][],
     planetsBuf: Float32Array,
     fleetsBuf: Float32Array,
     debrisBuf: Float32Array,
@@ -1278,8 +1417,16 @@ export class WebGpuGalaxyBackend {
 
     const encoder = this.device.createCommandEncoder();
 
-    // Pass 1: Accumulate smooth radial scanner signal fields into 2 x rgba16float targets
-    if (pBuf && planetCount > 0 && this.signalTex0 && this.signalTex1 && fieldSettings.empireMask !== 0) {
+    // Pass 1: Accumulate scanner signal cones + active ECM jammer cones into MRT rgba16float targets
+    if (
+      pBuf &&
+      planetCount > 0 &&
+      this.signalTex0 &&
+      this.signalTex1 &&
+      this.jamTex0 &&
+      fieldSettings.empireMask !== 0
+    ) {
+      const hasAnyJammer = empireRanges.some((r) => r[2] > 0 && r[3] > 0);
       const signalPass = encoder.beginRenderPass({
         colorAttachments: [
           {
@@ -1294,12 +1441,22 @@ export class WebGpuGalaxyBackend {
             loadOp: 'clear',
             storeOp: 'store',
           },
+          {
+            view: this.jamTex0.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
         ],
       });
       signalPass.setBindGroup(0, this.sharedBindGroup);
-      signalPass.setPipeline(this.signalFieldPipeline);
       signalPass.setVertexBuffer(0, pBuf);
+      signalPass.setPipeline(this.signalFieldPipeline);
       signalPass.draw(6, planetCount);
+      if (hasAnyJammer) {
+        signalPass.setPipeline(this.ecmJammerPipeline);
+        signalPass.draw(6, planetCount);
+      }
       signalPass.end();
     }
 
@@ -1379,6 +1536,7 @@ export class WebGpuGalaxyBackend {
     this.fieldUniformBuf.destroy();
     this.signalTex0?.destroy();
     this.signalTex1?.destroy();
+    this.jamTex0?.destroy();
     this.device.destroy();
   }
 }
