@@ -34,6 +34,7 @@ export interface UiCallbacks {
   onHistoryLive: () => void;
   getPlanetDetail: (index: number) => PlanetView | null;
   getReportsSnapshot: () => ReportsSnapshot;
+  getPowerHistory: () => number[][];
 }
 
 const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
@@ -115,6 +116,9 @@ export class UiController {
   private lastHud: HudSnapshot | null = null;
   private lastConfig: SimConfig;
   private lastHudSignature = '';
+  private lastEventsSignature = '';
+  private lastHudUpdateMs = 0;
+  private lastDrawerUpdateMs = 0;
 
   private customRaces: RaceDef[] = [];
   private selectedRaceIds: Set<string>;
@@ -238,15 +242,20 @@ export class UiController {
 
   public update(hud: HudSnapshot, forceDrawers = false): void {
     this.lastHud = hud;
-    getEl('hudYear').textContent = hud.year.toFixed(1);
-    this.updateEmpireHud(hud);
-    this.renderEvents(hud);
+    const now = performance.now();
 
-    if (this.selectedPlanet !== -1) {
-      this.updateInspector(hud);
+    if (forceDrawers || now - this.lastHudUpdateMs >= 100) {
+      this.lastHudUpdateMs = now;
+      getEl('hudYear').textContent = hud.year.toFixed(1);
+      this.updateEmpireHud(hud);
+      this.renderEvents(hud);
+      if (this.selectedPlanet !== -1) {
+        this.updateInspector(hud);
+      }
     }
 
-    if (forceDrawers || hud.ticks % 15 === 0) {
+    if (forceDrawers || now - this.lastDrawerUpdateMs >= 250) {
+      this.lastDrawerUpdateMs = now;
       this.renderOpenDrawers(hud);
     }
   }
@@ -625,6 +634,9 @@ export class UiController {
   }
 
   private renderEvents(hud: HudSnapshot): void {
+    const sig = hud.events.map((ev) => `${ev.year.toFixed(0)}:${ev.text}`).join('|');
+    if (sig === this.lastEventsSignature) return;
+    this.lastEventsSignature = sig;
     const container = getEl('eventLog');
     container.innerHTML = hud.events
       .map(
@@ -805,7 +817,8 @@ export class UiController {
   private renderPowerChart(hud: HudSnapshot): void {
     const canvas = getEl<HTMLCanvasElement>('powerCanvas');
     const colors = hud.empires.map((e) => e.color);
-    const maxVal = drawPowerChart(canvas, hud.powerHistory, colors);
+    const history = this.callbacks.getPowerHistory();
+    const maxVal = drawPowerChart(canvas, history, colors);
     getEl('maxResInfo').textContent = `Max: ${Math.round(maxVal)} Res/yr`;
   }
 
@@ -833,7 +846,8 @@ export class UiController {
     }));
 
     rows.sort((a, b) => (this.sortAsc ? a[this.sortKey] - b[this.sortKey] : b[this.sortKey] - a[this.sortKey]));
-    getEl('planetTableBody').innerHTML = rows
+    const visibleRows = rows.slice(0, 200);
+    getEl('planetTableBody').innerHTML = visibleRows
       .map((r) => {
         const col = r.owner > 0 ? (hud.empires[r.owner - 1]?.color ?? '#94a3b8') : '#475569';
         return `<tr data-planet-idx="${r.idx}">

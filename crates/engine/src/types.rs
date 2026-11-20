@@ -214,7 +214,6 @@ pub struct HudSnapshot {
     pub wormholes: Vec<Wormhole>,
     pub new_combat_fx: Vec<CombatFx>,
     pub new_jump_fx: Vec<JumpFx>,
-    pub power_history: Vec<Vec<f32>>,
     pub events: Vec<SimEvent>,
     pub planet_count: usize,
     pub fleet_count: usize,

@@ -519,9 +519,12 @@ impl Simulation {
         for gl in &mut self.gate_lists {
             gl.clear();
         }
+        let mut neutral_planets_count = 0usize;
         for i in 0..n {
             let emp = self.owner[i];
-            if emp > 0 {
+            if emp == 0 {
+                neutral_planets_count += 1;
+            } else {
                 let e = (emp - 1) as usize;
                 if e < num_emp {
                     self.p_counts[e] += 1;
@@ -802,7 +805,10 @@ impl Simulation {
 
                     let (col_i, _, col_g) = self.empires[e].ship_mineral_cost(FleetClass::Col);
                     let col_range = self.empires[e].ship_range(FleetClass::Col);
-                    if self.min_surf[base_idx] >= col_i && self.min_surf[base_idx + 2] >= col_g {
+                    if neutral_planets_count > 0
+                        && self.min_surf[base_idx] >= col_i
+                        && self.min_surf[base_idx + 2] >= col_g
+                    {
                         for &(j_u16, dist) in &self.planet_neighbors[i] {
                             if dist > col_range {
                                 break;
@@ -823,7 +829,7 @@ impl Simulation {
                                 }
                             }
                         }
-                        // Also check frontier targets reachable via a friendly Stargate relay
+                        // Check a bounded sample of friendly Stargate relays (O(1) even with 500+ gates)
                         if best_target.is_none()
                             && self.has_gate[i] != 0
                             && self.gate_lists[e].len() > 1
@@ -831,8 +837,12 @@ impl Simulation {
                             let xi = self.pos_x[i];
                             let yi = self.pos_y[i];
                             let gate_range_sq = gate_range * gate_range;
-                            for g_idx in 0..self.gate_lists[e].len() {
-                                let g = self.gate_lists[e][g_idx];
+                            let gl_len = self.gate_lists[e].len();
+                            let sample_count = gl_len.min(12);
+                            let stride = (gl_len / sample_count).max(1);
+                            let offset = (i + tick_usize) % gl_len;
+                            for s in 0..sample_count {
+                                let g = self.gate_lists[e][(offset + s * stride) % gl_len];
                                 if g == i {
                                     continue;
                                 }
@@ -841,7 +851,7 @@ impl Simulation {
                                 if dx * dx + dy * dy > gate_range_sq {
                                     continue;
                                 }
-                                for &(j_u16, dist) in self.planet_neighbors[g].iter().take(48) {
+                                for &(j_u16, dist) in self.planet_neighbors[g].iter().take(16) {
                                     if dist > col_range {
                                         break;
                                     }
@@ -949,7 +959,7 @@ impl Simulation {
                                 }
                             }
 
-                            // Check enemy targets via Stargate relay if none in direct range
+                            // Check a bounded sample of friendly Stargate relays (O(1) even with 500+ gates)
                             if best_target.is_none()
                                 && self.has_gate[i] != 0
                                 && self.gate_lists[e].len() > 1
@@ -957,8 +967,12 @@ impl Simulation {
                                 let xi = self.pos_x[i];
                                 let yi = self.pos_y[i];
                                 let gate_range_sq = gate_range * gate_range;
-                                for g_idx in 0..self.gate_lists[e].len() {
-                                    let g = self.gate_lists[e][g_idx];
+                                let gl_len = self.gate_lists[e].len();
+                                let sample_count = gl_len.min(12);
+                                let stride = (gl_len / sample_count).max(1);
+                                let offset = (i + tick_usize) % gl_len;
+                                for s in 0..sample_count {
+                                    let g = self.gate_lists[e][(offset + s * stride) % gl_len];
                                     if g == i {
                                         continue;
                                     }
@@ -967,7 +981,7 @@ impl Simulation {
                                     if dx * dx + dy * dy > gate_range_sq {
                                         continue;
                                     }
-                                    for &(j_u16, dist) in self.planet_neighbors[g].iter().take(48) {
+                                    for &(j_u16, dist) in self.planet_neighbors[g].iter().take(16) {
                                         if dist > ship_range {
                                             break;
                                         }
@@ -1572,24 +1586,24 @@ impl Simulation {
         let gate_range = self.empires[e].tech_cache.stargate_max_range.max(250.0);
 
         if self.has_gate[from_idx] != 0 && self.gate_lists[e].len() > 1 {
-            let mut best_gate: Option<usize> = None;
-            let mut best_dist =
+            // Find the closest friendly Stargate to the target via target's sorted neighbor list (O(1))
+            let direct_thresh =
                 (self.pos_x[target_idx] - start_x).hypot(self.pos_y[target_idx] - start_y) * 0.72;
             let gate_range_sq = gate_range * gate_range;
-            for &g_idx in &self.gate_lists[e] {
-                if g_idx == from_idx {
+            let mut best_gate: Option<usize> = None;
+            for &(cand_u16, dist_to_target) in &self.planet_neighbors[target_idx] {
+                if dist_to_target >= direct_thresh {
+                    break;
+                }
+                let g_idx = cand_u16 as usize;
+                if g_idx == from_idx || self.owner[g_idx] != emp_u8 || self.has_gate[g_idx] == 0 {
                     continue;
                 }
                 let jdx = self.pos_x[g_idx] - start_x;
                 let jdy = self.pos_y[g_idx] - start_y;
-                if jdx * jdx + jdy * jdy > gate_range_sq {
-                    continue;
-                }
-                let d = (self.pos_x[target_idx] - self.pos_x[g_idx])
-                    .hypot(self.pos_y[target_idx] - self.pos_y[g_idx]);
-                if d < best_dist {
-                    best_dist = d;
+                if jdx * jdx + jdy * jdy <= gate_range_sq {
                     best_gate = Some(g_idx);
+                    break;
                 }
             }
             if let Some(g_idx) = best_gate {
@@ -1821,7 +1835,6 @@ impl Simulation {
             wormholes: self.wormholes.clone(),
             new_combat_fx,
             new_jump_fx,
-            power_history: self.power_history.clone(),
             events: self.events.clone(),
             planet_count: self.owner.len(),
             fleet_count: self.fleets.len(),
@@ -1859,7 +1872,7 @@ impl Simulation {
             debris_fields: self.debris_fields.clone(),
             new_combat_fx: hud.new_combat_fx,
             new_jump_fx: hud.new_jump_fx,
-            power_history: hud.power_history,
+            power_history: self.power_history.clone(),
             events: hud.events,
             space_battles_count: hud.space_battles_count,
             invasions_count: hud.invasions_count,

@@ -390,6 +390,7 @@ async function bootstrap(): Promise<void> {
     },
     getPlanetDetail: (index) => engine.get_planet_detail(index) as PlanetView | null,
     getReportsSnapshot: () => engine.get_reports_snapshot() as ReportsSnapshot,
+    getPowerHistory: () => engine.get_power_history() as number[][],
     onLabAction: (action) => {
       if (action === 'copyjson') {
         const json = engine.export_state_json();
