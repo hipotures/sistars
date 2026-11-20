@@ -346,7 +346,11 @@ export type BodyType =
   | 'Volcanic'
   | 'Rock'
   | 'GasGiant'
-  | 'IceGiant';
+  | 'IceGiant'
+  | 'Dwarf'
+  | 'AsteroidBelt'
+  | 'KuiperBelt'
+  | 'Comet';
 
 export interface StarView {
   spectralClass: string;

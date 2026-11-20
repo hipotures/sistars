@@ -300,6 +300,10 @@ pub enum BodyType {
     Rock,
     GasGiant,
     IceGiant,
+    Dwarf,
+    AsteroidBelt,
+    KuiperBelt,
+    Comet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

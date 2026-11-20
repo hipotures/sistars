@@ -515,7 +515,7 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
         inner_orbits.push(cur_in);
     }
     inner_orbits.reverse();
-    let primary_index = inner_orbits.len();
+    let mut primary_index = inner_orbits.len();
     orbits.extend_from_slice(&inner_orbits);
     orbits.push(primary_orbit_au);
 
@@ -541,7 +541,7 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
     ];
 
     // 3. Instantiate all bodies along the accreted orbits
-    let mut bodies = Vec::with_capacity(orbits.len());
+    let mut bodies = Vec::with_capacity(orbits.len() + 3);
     for (idx, &orbit_au) in orbits.iter().enumerate() {
         let body_seed = rng.next_u32();
         let angle = rng.range(0.0, TAU);
@@ -620,9 +620,63 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
                 }),
             });
         } else {
-            // Companion accreted planet
+            // Companion accreted planet (or Dwarf / Plutoid on outer/tiny orbits)
             let eq_temp = (278.0 * lum_quarter / orbit_au.sqrt()).clamp(38.0, 1450.0);
             let beyond_frost = orbit_au >= frost_line_au * 0.92;
+            let is_outermost = idx + 1 == orbits.len();
+            let is_dwarf =
+                (is_outermost && beyond_frost && rng.next_f32() < 0.42)
+                    || (!beyond_frost && orbit_au > frost_line_au * 0.62 && rng.next_f32() < 0.16);
+
+            if is_dwarf {
+                let radius_earth = rng.range(0.16, 0.34);
+                let is_plutoid = eq_temp < 140.0;
+                let dwarf_ice = if is_plutoid {
+                    rng.range(0.45, 0.82)
+                } else {
+                    rng.range(0.08, 0.28)
+                };
+                let moons_n = if is_plutoid && rng.next_f32() < 0.45 { 1 } else { 0 };
+                let moons = generate_moons(
+                    &name,
+                    BodyType::Dwarf,
+                    eq_temp,
+                    false,
+                    0.0,
+                    orbit_au,
+                    frost_line_au,
+                    moons_n,
+                    &mut rng,
+                );
+                let actual_moons_count = moons.len() as u8;
+                bodies.push(SystemBodyView {
+                    name,
+                    orbit_au,
+                    orbit_angle_rad: angle,
+                    radius_earth,
+                    body_type: BodyType::Dwarf,
+                    temp_k: eq_temp,
+                    water_pct: 0.0,
+                    ice_pct: dwarf_ice,
+                    atmo_density: rng.range(0.0, 0.04),
+                    atmo_color_rgb: if is_plutoid {
+                        [0.72, 0.80, 0.92]
+                    } else {
+                        [0.68, 0.64, 0.60]
+                    },
+                    cloud_pct: 0.0,
+                    has_rings: false,
+                    ring_inner: 0.0,
+                    ring_outer: 0.0,
+                    ring_color_rgb: [0.7, 0.7, 0.7],
+                    moons_count: actual_moons_count,
+                    moons,
+                    seed: body_seed,
+                    live_state: None,
+                });
+                continue;
+            }
+
             let is_gas = beyond_frost && rng.next_f32() < 0.72;
             let radius_earth = if is_gas {
                 if orbit_au > frost_line_au * 2.2 {
@@ -693,6 +747,108 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
         }
     }
 
+    // 4. Optional intra-system astrophysical features: Main Asteroid Belt, Kuiper Belt & Comet
+    // 4a. Main Asteroid Belt (near frost line / rocky-to-giant transition)
+    if rng.next_f32() < 0.68 {
+        let mut insert_pos = None;
+        for i in 0..bodies.len().saturating_sub(1) {
+            let a = bodies[i].orbit_au;
+            let b = bodies[i + 1].orbit_au;
+            let is_rocky_a = !matches!(bodies[i].body_type, BodyType::GasGiant | BodyType::IceGiant);
+            let is_giant_b = matches!(bodies[i + 1].body_type, BodyType::GasGiant | BodyType::IceGiant);
+            if (is_rocky_a && is_giant_b) || (a < frost_line_au && b >= frost_line_au) {
+                insert_pos = Some((i + 1, (a + b) * 0.5));
+                break;
+            }
+        }
+        if let Some((pos, belt_au)) = insert_pos {
+            let eq_temp = (278.0 * lum_quarter / belt_au.sqrt()).clamp(60.0, 420.0);
+            bodies.insert(
+                pos,
+                SystemBodyView {
+                    name: "Main Belt".to_string(),
+                    orbit_au: belt_au,
+                    orbit_angle_rad: rng.range(0.0, TAU),
+                    radius_earth: 0.0,
+                    body_type: BodyType::AsteroidBelt,
+                    temp_k: eq_temp,
+                    water_pct: 0.0,
+                    ice_pct: 0.12,
+                    atmo_density: 0.0,
+                    atmo_color_rgb: [0.72, 0.66, 0.58],
+                    cloud_pct: 0.0,
+                    has_rings: false,
+                    ring_inner: 0.52,
+                    ring_outer: 0.92,
+                    ring_color_rgb: [0.76, 0.68, 0.58],
+                    moons_count: 0,
+                    moons: Vec::new(),
+                    seed: rng.next_u32(),
+                    live_state: None,
+                },
+            );
+            if pos <= primary_index {
+                primary_index += 1;
+            }
+        }
+    }
+
+    // 4b. Kuiper Belt (outer icy rim beyond the outermost planet)
+    if bodies.len() >= 5 && rng.next_f32() < 0.72 {
+        let outer_au = bodies.last().map(|b| b.orbit_au).unwrap_or(5.0) * rng.range(1.38, 1.65);
+        let eq_temp = (278.0 * lum_quarter / outer_au.sqrt()).clamp(28.0, 95.0);
+        bodies.push(SystemBodyView {
+            name: "Kuiper Belt".to_string(),
+            orbit_au: outer_au,
+            orbit_angle_rad: rng.range(0.0, TAU),
+            radius_earth: 0.0,
+            body_type: BodyType::KuiperBelt,
+            temp_k: eq_temp,
+            water_pct: 0.0,
+            ice_pct: 0.92,
+            atmo_density: 0.0,
+            atmo_color_rgb: [0.64, 0.84, 0.98],
+            cloud_pct: 0.0,
+            has_rings: false,
+            ring_inner: 0.48,
+            ring_outer: 0.95,
+            ring_color_rgb: [0.68, 0.86, 1.0],
+            moons_count: 0,
+            moons: Vec::new(),
+            seed: rng.next_u32(),
+            live_state: None,
+        });
+    }
+
+    // 4c. Rare eccentric Comet (~26% of systems)
+    if rng.next_f32() < 0.26 {
+        let comet_au = (bodies.last().map(|b| b.orbit_au).unwrap_or(6.0) * rng.range(1.18, 1.45))
+            .max(1.2);
+        let eq_temp = (278.0 * lum_quarter / comet_au.sqrt()).clamp(45.0, 260.0);
+        let code = format!("C/{}-{}", 2400 + (system_seed % 95), (system_seed % 26) + 1);
+        bodies.push(SystemBodyView {
+            name: format!("Comet {code}"),
+            orbit_au: comet_au,
+            orbit_angle_rad: rng.range(0.0, TAU),
+            radius_earth: rng.range(0.01, 0.03),
+            body_type: BodyType::Comet,
+            temp_k: eq_temp,
+            water_pct: 0.0,
+            ice_pct: 0.85,
+            atmo_density: 0.22,
+            atmo_color_rgb: [0.48, 0.82, 1.0],
+            cloud_pct: 0.0,
+            has_rings: false,
+            ring_inner: 0.0,
+            ring_outer: 0.0,
+            ring_color_rgb: [0.55, 0.82, 1.0],
+            moons_count: 0,
+            moons: Vec::new(),
+            seed: rng.next_u32(),
+            live_state: None,
+        });
+    }
+
     StarSystemView {
         planet_id: input.planet_id,
         system_seed,
@@ -733,7 +889,7 @@ mod tests {
         assert_eq!(a.system_seed, b.system_seed);
         assert_eq!(a.primary_index, b.primary_index);
         assert_eq!(a.bodies.len(), b.bodies.len());
-        assert!((4..=10).contains(&a.bodies.len()));
+        assert!((4..=13).contains(&a.bodies.len()));
         assert!(a.primary_index < a.bodies.len());
 
         // Strictly increasing orbits
@@ -775,5 +931,33 @@ mod tests {
         assert!(ls.has_starbase);
         assert!(ls.has_stargate);
         assert!(ls.has_jammer);
+    }
+
+    #[test]
+    fn generates_belts_dwarfs_and_comets_across_systems() {
+        let mut saw_belt = false;
+        let mut saw_kuiper = false;
+        let mut saw_dwarf = false;
+        let mut saw_comet = false;
+        for id in 1..=60 {
+            let sys = generate_star_system(&sample_input(id, 0.65, 0.0, 0.2));
+            assert!(sys.bodies[sys.primary_index].live_state.is_some());
+            for w in sys.bodies.windows(2) {
+                assert!(w[1].orbit_au > w[0].orbit_au);
+            }
+            for b in &sys.bodies {
+                match b.body_type {
+                    BodyType::AsteroidBelt => saw_belt = true,
+                    BodyType::KuiperBelt => saw_kuiper = true,
+                    BodyType::Dwarf => saw_dwarf = true,
+                    BodyType::Comet => saw_comet = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_belt, "expected Main Asteroid Belt in at least one system");
+        assert!(saw_kuiper, "expected Kuiper Belt in at least one system");
+        assert!(saw_dwarf, "expected Dwarf planet in at least one system");
+        assert!(saw_comet, "expected Comet in at least one system");
     }
 }
