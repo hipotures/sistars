@@ -3,9 +3,11 @@ import type {
   Doctrine,
   EngineMeta,
   FleetClass,
+  HudSnapshot,
+  PlanetView,
   RaceDef,
+  ReportsSnapshot,
   SimConfig,
-  SimSnapshot,
   TechCatalogView,
   TournamentResult,
 } from './types';
@@ -27,6 +29,8 @@ export interface UiCallbacks {
   onHistoryScrub: (index: number) => void;
   onHistoryStep: (delta: number) => void;
   onHistoryLive: () => void;
+  getPlanetDetail: (index: number) => PlanetView | null;
+  getReportsSnapshot: () => ReportsSnapshot;
 }
 
 const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
@@ -105,7 +109,7 @@ export class UiController {
   private sortKey: SortKey = 'res';
   private sortAsc = false;
   private selectedPlanet = -1;
-  private lastSnap: SimSnapshot | null = null;
+  private lastHud: HudSnapshot | null = null;
   private lastConfig: SimConfig;
   private lastHudSignature = '';
 
@@ -143,8 +147,8 @@ export class UiController {
     this.selectedPlanet = index;
     if (index === -1) {
       getEl('planetInspector').style.display = 'none';
-    } else if (this.lastSnap) {
-      this.updateInspector(this.lastSnap);
+    } else if (this.lastHud) {
+      this.updateInspector(this.lastHud);
     }
   }
 
@@ -210,10 +214,10 @@ export class UiController {
     getEl('perfEnt').textContent = `${planets}p / ${fleets}f`;
   }
 
-  public updateWinRateBar(res: TournamentResult, snap: SimSnapshot): void {
+  public updateWinRateBar(res: TournamentResult, hud: HudSnapshot): void {
     getEl('tourneyLabel').textContent = `🏆 Win-Rate (${res.numGames} maps):`;
     const bar = getEl('winrateBar');
-    bar.innerHTML = snap.empires
+    bar.innerHTML = hud.empires
       .map((emp, idx) => {
         const w = res.winRates[idx] ?? 0;
         const label = w >= 9 ? `${emp.name.slice(0, 3)} ${w}%` : w >= 5 ? `${w}%` : '';
@@ -222,34 +226,35 @@ export class UiController {
       .join('');
   }
 
-  public update(snap: SimSnapshot, forceDrawers = false): void {
-    this.lastSnap = snap;
-    getEl('hudYear').textContent = snap.year.toFixed(1);
-    this.updateEmpireHud(snap);
-    this.renderEvents(snap);
+  public update(hud: HudSnapshot, forceDrawers = false): void {
+    this.lastHud = hud;
+    getEl('hudYear').textContent = hud.year.toFixed(1);
+    this.updateEmpireHud(hud);
+    this.renderEvents(hud);
 
     if (this.selectedPlanet !== -1) {
-      this.updateInspector(snap);
+      this.updateInspector(hud);
     }
 
-    if (forceDrawers || snap.ticks % 15 === 0) {
-      this.renderOpenDrawers(snap);
+    if (forceDrawers || hud.ticks % 15 === 0) {
+      this.renderOpenDrawers(hud);
     }
   }
 
-  public renderOpenDrawers(snap: SimSnapshot): void {
-    this.lastSnap = snap;
+  public renderOpenDrawers(hud: HudSnapshot): void {
+    this.lastHud = hud;
     if (getEl('drawerTech').classList.contains('open')) {
-      if (this.activeTechTab === 'overview') this.renderTechOverview(snap);
-      else this.renderTechBrowser(snap);
+      if (this.activeTechTab === 'overview') this.renderTechOverview(hud);
+      else this.renderTechBrowser(hud);
     }
     if (getEl('drawerStats').classList.contains('open')) {
-      this.renderDNATable(snap);
-      this.renderPowerChart(snap);
+      this.renderDNATable(hud);
+      this.renderPowerChart(hud);
     }
     if (getEl('drawerReports').classList.contains('open')) {
-      this.renderPlanetTable(snap);
-      this.renderFleetTable(snap);
+      const rep = this.callbacks.getReportsSnapshot();
+      this.renderPlanetTable(hud, rep);
+      this.renderFleetTable(hud, rep);
     }
   }
 
@@ -366,13 +371,13 @@ export class UiController {
         getEl('techTabBrowser').classList.toggle('active', this.activeTechTab === 'browser');
         getEl('techOverviewPane').style.display = this.activeTechTab === 'overview' ? 'flex' : 'none';
         getEl('techBrowserPane').style.display = this.activeTechTab === 'browser' ? 'flex' : 'none';
-        if (this.lastSnap) this.renderOpenDrawers(this.lastSnap);
+        if (this.lastHud) this.renderOpenDrawers(this.lastHud);
       });
     });
 
     // Tech browser filters
     const reRenderBrowser = () => {
-      if (this.lastSnap) this.renderTechBrowser(this.lastSnap);
+      if (this.lastHud) this.renderTechBrowser(this.lastHud);
     };
     getEl('techSearch').addEventListener('input', reRenderBrowser);
     getEl('techCatFilter').addEventListener('change', reRenderBrowser);
@@ -476,7 +481,9 @@ export class UiController {
           this.sortKey = key;
           this.sortAsc = false;
         }
-        if (this.lastSnap) this.renderPlanetTable(this.lastSnap);
+        if (this.lastHud) {
+          this.renderPlanetTable(this.lastHud, this.callbacks.getReportsSnapshot());
+        }
       });
     });
 
@@ -560,7 +567,7 @@ export class UiController {
       else el.classList.remove('open');
       getEl(DRAWER_TAB_MAP[id]).classList.toggle('active', el.classList.contains('open'));
     }
-    if (this.lastSnap) this.renderOpenDrawers(this.lastSnap);
+    if (this.lastHud) this.renderOpenDrawers(this.lastHud);
   }
 
   private formatTechBadges(perkMask: number): string {
@@ -570,12 +577,12 @@ export class UiController {
       .join('');
   }
 
-  private updateEmpireHud(snap: SimSnapshot): void {
+  private updateEmpireHud(hud: HudSnapshot): void {
     const bar = getEl('empiresBar');
-    const sig = snap.empires.map((e) => `${e.id}:${e.color}`).join('|');
+    const sig = hud.empires.map((e) => `${e.id}:${e.color}`).join('|');
     if (sig !== this.lastHudSignature) {
       this.lastHudSignature = sig;
-      bar.innerHTML = snap.empires
+      bar.innerHTML = hud.empires
         .map(
           (emp, idx) => `<div class="emp-pill" style="border-top-color:${emp.color};">
             <div class="emp-row1">
@@ -591,8 +598,8 @@ export class UiController {
         .join('');
     }
 
-    for (let i = 0; i < snap.empires.length; i++) {
-      const emp = snap.empires[i];
+    for (let i = 0; i < hud.empires.length; i++) {
+      const emp = hud.empires[i];
       const statEl = document.getElementById(`hudStat_${i}`);
       const killEl = document.getElementById(`hudKill_${i}`);
       const badgeEl = document.getElementById(`hudTechB_${i}`);
@@ -602,9 +609,9 @@ export class UiController {
     }
   }
 
-  private renderEvents(snap: SimSnapshot): void {
+  private renderEvents(hud: HudSnapshot): void {
     const container = getEl('eventLog');
-    container.innerHTML = snap.events
+    container.innerHTML = hud.events
       .map(
         (ev) =>
           `<div class="log-item" style="border-right-color:${ev.color}"><b style="font-family:monospace;color:${ev.color}">[${ev.year.toFixed(0)}]</b> ${ev.text}</div>`,
@@ -612,16 +619,20 @@ export class UiController {
       .join('');
   }
 
-  private updateInspector(snap: SimSnapshot): void {
+  private updateInspector(hud: HudSnapshot): void {
     const i = this.selectedPlanet;
-    if (i < 0 || i >= snap.planets.length) {
+    if (i < 0 || i >= hud.planetCount) {
       getEl('planetInspector').style.display = 'none';
       return;
     }
-    const pl = snap.planets[i];
+    const pl = this.callbacks.getPlanetDetail(i);
+    if (!pl) {
+      getEl('planetInspector').style.display = 'none';
+      return;
+    }
     const insp = getEl('planetInspector');
     insp.style.display = 'flex';
-    const emp = pl.owner > 0 ? snap.empires[pl.owner - 1] : null;
+    const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
     insp.style.borderLeftColor = emp ? emp.color : '#64748b';
     getEl('inspTitle').textContent = `System #${pl.id}`;
     const ownerEl = getEl('inspOwner');
@@ -642,9 +653,9 @@ export class UiController {
     getEl('valGerm').textContent = `${Math.round(pl.germSurf)} (${Math.round(pl.germCrust)})`;
   }
 
-  private renderTechOverview(snap: SimSnapshot): void {
+  private renderTechOverview(hud: HudSnapshot): void {
     const maxLv = this.meta.maxTechLevel || 26;
-    getEl('techCardsContainer').innerHTML = snap.empires
+    getEl('techCardsContainer').innerHTML = hud.empires
       .map((emp) => {
         const rows = this.meta.techFields
           .map((tf) => {
@@ -683,7 +694,7 @@ export class UiController {
 
     getEl('breakthroughsContainer').innerHTML = this.meta.breakthroughs
       .map((bp) => {
-        const badges = snap.empires
+        const badges = hud.empires
           .map((emp) => {
             const has = (emp.perks & bp.bit) !== 0;
             return `<span title="${emp.name}" style="display:inline-block;width:9px;height:9px;margin-left:2px;border:1px solid ${emp.color};background:${has ? emp.color : 'transparent'};"></span>`;
@@ -700,7 +711,7 @@ export class UiController {
       .join('');
   }
 
-  private renderTechBrowser(snap: SimSnapshot): void {
+  private renderTechBrowser(hud: HudSnapshot): void {
     const q = getEl<HTMLInputElement>('techSearch').value.trim().toLowerCase();
     const cat = getEl<HTMLSelectElement>('techCatFilter').value;
     const status = getEl<HTMLSelectElement>('techStatusFilter').value;
@@ -710,7 +721,7 @@ export class UiController {
       if (q && !entry.name.toLowerCase().includes(q) && !entry.statsSummary.toLowerCase().includes(q)) {
         return false;
       }
-      const unlockedByAny = snap.empires.some((emp) => isTechUnlocked(emp.loadout.unlockedBits, entry.id));
+      const unlockedByAny = hud.empires.some((emp) => isTechUnlocked(emp.loadout.unlockedBits, entry.id));
       if (status === 'unlocked' && !unlockedByAny) return false;
       if (status === 'locked' && unlockedByAny) return false;
       return true;
@@ -728,7 +739,7 @@ export class UiController {
         const traitTxt = traits.length > 0 ? traits.join(' ') : 'All';
 
         const costTxt = `${entry.cost.ironium}/${entry.cost.boranium}/${entry.cost.germanium}/${entry.cost.resources}`;
-        const dots = snap.empires
+        const dots = hud.empires
           .map((emp) => {
             const has = isTechUnlocked(emp.loadout.unlockedBits, entry.id);
             return `<span title="${emp.name}" style="display:inline-block;width:8px;height:8px;margin-left:2px;border:1px solid ${emp.color};background:${has ? emp.color : 'transparent'};"></span>`;
@@ -748,9 +759,9 @@ export class UiController {
       .join('');
   }
 
-  private renderDNATable(snap: SimSnapshot): void {
-    getEl('dnaGenInfo').textContent = `DNA Generation: #${snap.dnaGeneration}`;
-    getEl('dnaTableBody').innerHTML = snap.empires
+  private renderDNATable(hud: HudSnapshot): void {
+    getEl('dnaGenInfo').textContent = `DNA Generation: #${hud.dnaGeneration}`;
+    getEl('dnaTableBody').innerHTML = hud.empires
       .map((emp) => {
         const d = emp.doctrine;
         let topF = 0;
@@ -776,17 +787,17 @@ export class UiController {
       .join('');
   }
 
-  private renderPowerChart(snap: SimSnapshot): void {
+  private renderPowerChart(hud: HudSnapshot): void {
     const canvas = getEl<HTMLCanvasElement>('powerCanvas');
-    const colors = snap.empires.map((e) => e.color);
-    const maxVal = drawPowerChart(canvas, snap.powerHistory, colors);
+    const colors = hud.empires.map((e) => e.color);
+    const maxVal = drawPowerChart(canvas, hud.powerHistory, colors);
     getEl('maxResInfo').textContent = `Max: ${Math.round(maxVal)} Res/yr`;
   }
 
-  private renderPlanetTable(snap: SimSnapshot): void {
-    const n = snap.planets.length;
+  private renderPlanetTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
+    const n = rep.planets.length;
     getEl('repBtnPlanets').textContent = `Planets (${n})`;
-    const rows = snap.planets.map((pl, idx) => ({
+    const rows = rep.planets.map((pl, idx) => ({
       idx,
       id: pl.id,
       owner: pl.owner,
@@ -809,7 +820,7 @@ export class UiController {
     rows.sort((a, b) => (this.sortAsc ? a[this.sortKey] - b[this.sortKey] : b[this.sortKey] - a[this.sortKey]));
     getEl('planetTableBody').innerHTML = rows
       .map((r) => {
-        const col = r.owner > 0 ? (snap.empires[r.owner - 1]?.color ?? '#94a3b8') : '#475569';
+        const col = r.owner > 0 ? (hud.empires[r.owner - 1]?.color ?? '#94a3b8') : '#475569';
         return `<tr data-planet-idx="${r.idx}">
           <td>#${r.id}</td>
           <td><span class="dot" style="background:${col}"></span></td>
@@ -827,18 +838,18 @@ export class UiController {
       .join('');
   }
 
-  private renderFleetTable(snap: SimSnapshot): void {
-    getEl('repBtnFleets').textContent = `Fleets in Flight (${snap.fleets.length})`;
+  private renderFleetTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
+    getEl('repBtnFleets').textContent = `Fleets in Flight (${rep.fleets.length})`;
     const minLetters = ['I', 'B', 'G'];
     const minCols = ['#60a5fa', '#34d399', '#fbbf24'];
 
-    const slice = snap.fleets.slice(-80).reverse();
+    const slice = rep.fleets.slice(-80).reverse();
     getEl('fleetTableBody').innerHTML = slice
       .map((fl) => {
-        const target = snap.planets[fl.target];
+        const target = rep.planets[fl.target];
         const dist = target ? Math.hypot(target.x - fl.x, target.y - fl.y) : 0;
         const eta = dist / this.lastConfig.fleetSpeed;
-        const empCol = snap.empires[fl.emp - 1]?.color ?? '#94a3b8';
+        const empCol = hud.empires[fl.emp - 1]?.color ?? '#94a3b8';
         const label =
           fl.type === 'freight'
             ? `■ Freight (${minLetters[fl.minType] ?? 'I'})`

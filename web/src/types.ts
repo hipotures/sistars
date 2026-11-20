@@ -244,6 +244,39 @@ export interface SimEventView {
   color: string;
 }
 
+export interface HudSnapshot {
+  year: number;
+  ticks: number;
+  mapSeed: number;
+  worldW: number;
+  worldH: number;
+  dnaGeneration: number;
+  empires: EmpireSummaryView[];
+  wormholes: WormholeView[];
+  newCombatFx: CombatFxView[];
+  newJumpFx: JumpFxView[];
+  powerHistory: number[][];
+  events: SimEventView[];
+  planetCount: number;
+  fleetCount: number;
+  spaceBattlesCount: number;
+  invasionsCount: number;
+  totalSalvaged: number;
+  gateJumpsCount: number;
+}
+
+export interface ReportsSnapshot {
+  planets: PlanetView[];
+  fleets: FleetView[];
+}
+
+export interface RenderFrame {
+  hud: HudSnapshot;
+  planetsBuf: Float32Array;
+  fleetsBuf: Float32Array;
+  debrisBuf: Float32Array;
+}
+
 export interface SimSnapshot {
   year: number;
   ticks: number;

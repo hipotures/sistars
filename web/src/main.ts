@@ -5,8 +5,11 @@ import { UiController } from './ui';
 import type {
   CoEvolutionResult,
   EngineMeta,
+  HudSnapshot,
+  PlanetView,
+  RenderFrame,
+  ReportsSnapshot,
   SimConfig,
-  SimSnapshot,
   TechCatalogView,
   TournamentResult,
 } from './types';
@@ -19,7 +22,7 @@ function randomSeed(): number {
 }
 
 async function bootstrap(): Promise<void> {
-  await initWasm();
+  const wasmExports = await initWasm();
 
   const engine = new WasmEngine(randomSeed());
   const meta = engine.get_metadata() as EngineMeta;
@@ -29,12 +32,26 @@ async function bootstrap(): Promise<void> {
   const canvas = document.getElementById('galaxyCanvas') as HTMLCanvasElement;
   const renderer = new GalaxyRenderer(canvas, meta.worldW, meta.worldH);
 
+  const buildZeroCopyViews = (): {
+    planetsBuf: Float32Array;
+    fleetsBuf: Float32Array;
+    debrisBuf: Float32Array;
+  } => {
+    const buf = wasmExports.memory.buffer;
+    return {
+      planetsBuf: new Float32Array(buf, engine.planets_render_ptr(), engine.planets_render_len()),
+      fleetsBuf: new Float32Array(buf, engine.fleets_render_ptr(), engine.fleets_render_len()),
+      debrisBuf: new Float32Array(buf, engine.debris_render_ptr(), engine.debris_render_len()),
+    };
+  };
+
   let speed = 1;
   let lastNonZeroSpeed = 1;
   let tickAccum = 0;
   let hoveredPlanet = -1;
-  let lastSnap = engine.take_snapshot() as SimSnapshot;
-  renderer.setWorldSize(lastSnap.worldW, lastSnap.worldH);
+  let lastHud = engine.take_hud_snapshot() as HudSnapshot;
+  let liveViews = buildZeroCopyViews();
+  renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
 
   // Debug Performance HUD & History Scrubber state
   let debugPerfEnabled = false;
@@ -45,31 +62,36 @@ async function bootstrap(): Promise<void> {
   let perfWindowStart = performance.now();
 
   let debugHistoryEnabled = false;
-  let historyBuffer: SimSnapshot[] = [];
-  let historyViewIndex: number | null = null; // null = Live
+  let historyBuffer: RenderFrame[] = [];
+  let historyViewIndex: number | null = null;
   let lastRecordedTick = -1;
 
-  const activeSnap = (): SimSnapshot => {
+  const activeFrame = (): RenderFrame => {
     if (historyViewIndex !== null && historyBuffer[historyViewIndex]) {
       return historyBuffer[historyViewIndex];
     }
-    return lastSnap;
+    return { hud: lastHud, ...liveViews };
   };
 
   const syncHistoryBar = (): void => {
     const total = historyBuffer.length;
     const isLive = historyViewIndex === null;
     const idx = isLive ? Math.max(0, total - 1) : historyViewIndex!;
-    const snap = activeSnap();
-    ui.updateHistoryBar(debugHistoryEnabled, idx, total, snap.year, isLive);
+    const frame = activeFrame();
+    ui.updateHistoryBar(debugHistoryEnabled, idx, total, frame.hud.year, isLive);
   };
 
-  const recordHistorySnapshot = (snap: SimSnapshot, force = false): void => {
+  const recordHistoryFrame = (hud: HudSnapshot, force = false): void => {
     if (!debugHistoryEnabled) return;
-    if (!force && snap.ticks - lastRecordedTick < HISTORY_SAMPLE_EVERY_TICKS) return;
-    lastRecordedTick = snap.ticks;
-    // Strip transient FX so replaying snapshots stays clean
-    const archived: SimSnapshot = { ...snap, newCombatFx: [], newJumpFx: [] };
+    if (!force && hud.ticks - lastRecordedTick < HISTORY_SAMPLE_EVERY_TICKS) return;
+    lastRecordedTick = hud.ticks;
+    // Copy compact typed arrays for replay buffer
+    const archived: RenderFrame = {
+      hud: { ...hud, newCombatFx: [], newJumpFx: [] },
+      planetsBuf: new Float32Array(liveViews.planetsBuf),
+      fleetsBuf: new Float32Array(liveViews.fleetsBuf),
+      debrisBuf: new Float32Array(liveViews.debrisBuf),
+    };
     historyBuffer.push(archived);
     if (historyBuffer.length > MAX_HISTORY_SNAPSHOTS) {
       historyBuffer.shift();
@@ -81,23 +103,24 @@ async function bootstrap(): Promise<void> {
     historyViewIndex = null;
     lastRecordedTick = -1;
     if (debugHistoryEnabled) {
-      recordHistorySnapshot(lastSnap, true);
+      recordHistoryFrame(lastHud, true);
     }
     syncHistoryBar();
   };
 
-  const refreshSnapshot = (clearVisualFx = false, resetHist = false): void => {
+  const refreshLiveState = (clearVisualFx = false, resetHist = false): void => {
     if (clearVisualFx) renderer.clearFx();
-    lastSnap = engine.take_snapshot() as SimSnapshot;
-    renderer.setWorldSize(lastSnap.worldW, lastSnap.worldH);
-    renderer.ingestFx(lastSnap);
+    lastHud = engine.take_hud_snapshot() as HudSnapshot;
+    liveViews = buildZeroCopyViews();
+    renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
+    renderer.ingestFx(lastHud);
     if (resetHist) {
       resetHistory();
     } else if (historyViewIndex === null) {
-      recordHistorySnapshot(lastSnap);
+      recordHistoryFrame(lastHud);
       syncHistoryBar();
     }
-    ui.update(activeSnap(), true);
+    ui.update(activeFrame().hud, true);
   };
 
   const ui = new UiController(meta, catalog, config, {
@@ -107,7 +130,7 @@ async function bootstrap(): Promise<void> {
       tickAccum = 0;
       if (newSpeed > 0 && historyViewIndex !== null) {
         historyViewIndex = null;
-        ui.update(lastSnap, true);
+        ui.update(lastHud, true);
         syncHistoryBar();
       }
     },
@@ -117,16 +140,17 @@ async function bootstrap(): Promise<void> {
       ui.setActiveSpeedButton(0);
       historyViewIndex = null;
       engine.step(1);
-      lastSnap = engine.take_snapshot() as SimSnapshot;
-      renderer.ingestFx(lastSnap);
-      recordHistorySnapshot(lastSnap, true);
-      ui.update(lastSnap, true);
+      lastHud = engine.take_hud_snapshot() as HudSnapshot;
+      liveViews = buildZeroCopyViews();
+      renderer.ingestFx(lastHud);
+      recordHistoryFrame(lastHud, true);
+      ui.update(lastHud, true);
       syncHistoryBar();
     },
     onReset: () => {
       ui.setSelectedPlanet(-1);
       engine.init(randomSeed());
-      refreshSnapshot(true, true);
+      refreshLiveState(true, true);
     },
     onParamChange: (key, value) => {
       const reset = engine.update_param(key, value, randomSeed());
@@ -134,9 +158,9 @@ async function bootstrap(): Promise<void> {
       ui.setConfig(config);
       if (reset) {
         ui.setSelectedPlanet(-1);
-        refreshSnapshot(true, true);
+        refreshLiveState(true, true);
       } else {
-        refreshSnapshot(false, false);
+        refreshLiveState(false, false);
       }
     },
     onGalaxyChange: (size, shape) => {
@@ -145,7 +169,7 @@ async function bootstrap(): Promise<void> {
         config = engine.get_config() as SimConfig;
         ui.setConfig(config);
         ui.setSelectedPlanet(-1);
-        refreshSnapshot(true, true);
+        refreshLiveState(true, true);
       }
     },
     onSelectPlanet: (index) => {
@@ -155,7 +179,7 @@ async function bootstrap(): Promise<void> {
       const ok = engine.set_races(races, randomSeed());
       if (ok) {
         ui.setSelectedPlanet(-1);
-        refreshSnapshot(true, true);
+        refreshLiveState(true, true);
       }
     },
     onDebugPerfToggle: (enabled) => {
@@ -165,8 +189,8 @@ async function bootstrap(): Promise<void> {
       perfWasmSum = 0;
       perfDrawSum = 0;
       perfWindowStart = performance.now();
-      const s = activeSnap();
-      ui.updatePerfHud(enabled, 0, 0, 0, 0, s.planets.length, s.fleets.length);
+      const f = activeFrame();
+      ui.updatePerfHud(enabled, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
     },
     onDebugHistoryToggle: (enabled) => {
       debugHistoryEnabled = enabled;
@@ -174,11 +198,11 @@ async function bootstrap(): Promise<void> {
         historyBuffer = [];
         historyViewIndex = null;
         lastRecordedTick = -1;
-        recordHistorySnapshot(lastSnap, true);
+        recordHistoryFrame(lastHud, true);
       } else {
         historyBuffer = [];
         historyViewIndex = null;
-        ui.update(lastSnap, true);
+        ui.update(lastHud, true);
       }
       syncHistoryBar();
     },
@@ -190,7 +214,7 @@ async function bootstrap(): Promise<void> {
       ui.setActiveSpeedButton(0);
       renderer.clearFx();
       historyViewIndex = clamped;
-      ui.update(activeSnap(), true);
+      ui.update(activeFrame().hud, true);
       syncHistoryBar();
     },
     onHistoryStep: (delta) => {
@@ -202,14 +226,16 @@ async function bootstrap(): Promise<void> {
       ui.setActiveSpeedButton(0);
       renderer.clearFx();
       historyViewIndex = next;
-      ui.update(activeSnap(), true);
+      ui.update(activeFrame().hud, true);
       syncHistoryBar();
     },
     onHistoryLive: () => {
       historyViewIndex = null;
-      ui.update(lastSnap, true);
+      ui.update(lastHud, true);
       syncHistoryBar();
     },
+    getPlanetDetail: (index) => engine.get_planet_detail(index) as PlanetView | null,
+    getReportsSnapshot: () => engine.get_reports_snapshot() as ReportsSnapshot,
     onLabAction: (action) => {
       if (action === 'copyjson') {
         const json = engine.export_state_json();
@@ -223,9 +249,9 @@ async function bootstrap(): Promise<void> {
         ui.setStatus(`🏆 Running ${numGames}-map Monte Carlo tournament...`);
         setTimeout(() => {
           const res = engine.run_tournament(numGames, 1200, randomSeed()) as TournamentResult;
-          refreshSnapshot(true, true);
-          ui.updateWinRateBar(res, lastSnap);
-          const summary = lastSnap.empires
+          refreshLiveState(true, true);
+          ui.updateWinRateBar(res, lastHud);
+          const summary = lastHud.empires
             .map((e, i) => `${e.name.slice(0, 4)} ${res.winRates[i] ?? 0}%`)
             .join(' | ');
           ui.setStatus(`✓ Tournament (${res.numGames} maps): ${summary}`);
@@ -237,9 +263,9 @@ async function bootstrap(): Promise<void> {
         ui.setStatus('🧬 Co-evolution: training budgets, fleet classes & 6 tech fields...');
         setTimeout(() => {
           const res = engine.run_co_evolution(randomSeed(), randomSeed()) as CoEvolutionResult;
-          refreshSnapshot(true, true);
-          ui.updateWinRateBar(res.tournament, lastSnap);
-          const summary = lastSnap.empires
+          refreshLiveState(true, true);
+          ui.updateWinRateBar(res.tournament, lastHud);
+          const summary = lastHud.empires
             .map((e, i) => `${e.name.slice(0, 4)} ${res.tournament.winRates[i] ?? 0}%`)
             .join(' | ');
           ui.setStatus(`✓ Generation #${res.dnaGeneration}! ${summary}`);
@@ -285,7 +311,7 @@ async function bootstrap(): Promise<void> {
       }
       return;
     }
-    hoveredPlanet = renderer.findPlanetAt(e.clientX, e.clientY, activeSnap().planets, 20);
+    hoveredPlanet = renderer.findPlanetAt(e.clientX, e.clientY, activeFrame().planetsBuf, 20);
     canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
   });
 
@@ -293,7 +319,7 @@ async function bootstrap(): Promise<void> {
     if (!isDragging) return;
     isDragging = false;
     if (!dragMoved && e.target === canvas) {
-      const closest = renderer.findPlanetAt(e.clientX, e.clientY, activeSnap().planets, 22);
+      const closest = renderer.findPlanetAt(e.clientX, e.clientY, activeFrame().planetsBuf, 22);
       ui.setSelectedPlanet(closest);
     }
     canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
@@ -322,13 +348,13 @@ async function bootstrap(): Promise<void> {
       ui.setActiveSpeedButton(speed);
       if (historyViewIndex !== null) {
         historyViewIndex = null;
-        ui.update(lastSnap, true);
+        ui.update(lastHud, true);
         syncHistoryBar();
       }
     }
   });
 
-  ui.update(lastSnap, true);
+  ui.update(lastHud, true);
 
   const frame = (): void => {
     let stepsDone = 0;
@@ -341,19 +367,20 @@ async function bootstrap(): Promise<void> {
         tickAccum -= steps;
         const t0 = debugPerfEnabled ? performance.now() : 0;
         engine.step(steps);
-        lastSnap = engine.take_snapshot() as SimSnapshot;
+        lastHud = engine.take_hud_snapshot() as HudSnapshot;
+        liveViews = buildZeroCopyViews();
         if (debugPerfEnabled) wasmMs = performance.now() - t0;
         stepsDone = steps;
-        renderer.ingestFx(lastSnap);
-        recordHistorySnapshot(lastSnap);
-        ui.update(lastSnap, false);
+        renderer.ingestFx(lastHud);
+        recordHistoryFrame(lastHud);
+        ui.update(lastHud, false);
         if (debugHistoryEnabled) syncHistoryBar();
       }
     }
 
-    const snap = activeSnap();
+    const cur = activeFrame();
     const d0 = debugPerfEnabled ? performance.now() : 0;
-    renderer.draw(snap, config.crustRichness, ui.getSelectedPlanet(), hoveredPlanet);
+    renderer.draw(cur, config.crustRichness, ui.getSelectedPlanet(), hoveredPlanet);
 
     if (debugPerfEnabled) {
       const drawMs = performance.now() - d0;
@@ -372,8 +399,8 @@ async function bootstrap(): Promise<void> {
           perfTicks / sec,
           perfWasmSum / perfFrames,
           perfDrawSum / perfFrames,
-          snap.planets.length,
-          snap.fleets.length,
+          cur.hud.planetCount,
+          cur.hud.fleetCount,
         );
         perfFrames = 0;
         perfTicks = 0;
