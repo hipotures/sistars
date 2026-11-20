@@ -1,4 +1,4 @@
-import type { CombatFxView, JumpFxView, WormholeView } from './types';
+import type { CombatFxView, JumpFxView, ScannerFieldSettings, WormholeView } from './types';
 
 export interface CameraUniformData {
   offX: number;
@@ -93,9 +93,17 @@ struct EmpireRanges {
   ranges: array<vec4<f32>, 17>, // .x = scannerRange (ly), .y = flightRange (ly)
 };
 
+struct FieldUniforms {
+  empireMask: u32,     // bit i (0..15) => empire (i + 1) enabled
+  eqMode: u32,         // 0 = gap, 1 = none
+  contourMode: u32,    // 0 = hidden, 1 = outer, 2 = subtle, 3 = full
+  contourOpacity: f32, // 0.0 .. 0.80
+};
+
 @group(0) @binding(0) var<uniform> cam: CameraUniforms;
 @group(0) @binding(1) var<uniform> palette: EmpirePalette;
 @group(0) @binding(2) var<uniform> empRanges: EmpireRanges;
+@group(0) @binding(3) var<uniform> fieldCfg: FieldUniforms;
 
 var<private> QUAD: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
   vec2<f32>(-1.0, -1.0),
@@ -150,134 +158,231 @@ fn fs_main(in: BgOut) -> @location(0) vec4<f32> {
 }
 `;
 
-const TERRITORY_FIELD_WGSL =
+const SIGNAL_FIELD_WGSL =
   COMMON_WGSL +
   /* wgsl */ `
-struct FieldVertOut {
+struct SignalVertOut {
   @builtin(position) pos: vec4<f32>,
   @location(0) uv: vec2<f32>,
-  @location(1) owner: f32,
+  @location(1) empIdx: f32,
 };
 
-struct FieldFragOut {
-  @location(0) color: vec4<f32>,
-  @builtin(frag_depth) depth: f32,
+struct SignalFragOut {
+  @location(0) f0: vec4<f32>, // empires 0..3
+  @location(1) f1: vec4<f32>, // empires 4..5 (.rg), jammer reserved (.ba)
 };
 
-fn buildFieldQuad(vid: u32, worldPos: vec2<f32>, owner: f32, rangeLy: f32) -> FieldVertOut {
-  var out: FieldVertOut;
-  let rad = rangeLy * cam.scale;
-  if (owner < 0.5 || rad < 1.5) {
-    out.pos = vec4<f32>(2.0, 2.0, 1.0, 1.0);
+@vertex
+fn vs_signal(
+  @builtin(vertex_index) vid: u32,
+  @location(0) worldPos: vec2<f32>,
+  @location(1) meta0: vec4<f32>, // [owner, factories, hab, hasGate]
+) -> SignalVertOut {
+  var out: SignalVertOut;
+  let ownerU = u32(round(meta0.x));
+  if (ownerU == 0u || ownerU > 6u) {
+    out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
     out.uv = vec2<f32>(0.0);
-    out.owner = 0.0;
+    out.empIdx = -1.0;
     return out;
   }
+
+  let empIdx = ownerU - 1u;
+  if ((fieldCfg.empireMask & (1u << empIdx)) == 0u) {
+    out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(0.0);
+    out.empIdx = -1.0;
+    return out;
+  }
+
+  let rad = empRanges.ranges[ownerU].x * cam.scale;
   let center = worldToScreen(worldPos);
+  if (
+    rad < 1.5 ||
+    center.x + rad < 0.0 ||
+    center.x - rad > cam.viewportW ||
+    center.y + rad < 0.0 ||
+    center.y - rad > cam.viewportH
+  ) {
+    out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(0.0);
+    out.empIdx = -1.0;
+    return out;
+  }
+
   let corner = QUAD[vid];
   out.pos = screenToClip(center + corner * rad);
   out.uv = corner;
-  out.owner = owner;
+  out.empIdx = f32(empIdx);
   return out;
 }
 
-@vertex
-fn vs_scanner(
-  @builtin(vertex_index) vid: u32,
-  @location(0) worldPos: vec2<f32>,
-  @location(1) meta0: vec4<f32>,
-) -> FieldVertOut {
-  let idx = u32(clamp(round(meta0.x), 0.0, 16.0));
-  return buildFieldQuad(vid, worldPos, meta0.x, empRanges.ranges[idx].x);
-}
-
-@vertex
-fn vs_flight(
-  @builtin(vertex_index) vid: u32,
-  @location(0) worldPos: vec2<f32>,
-  @location(1) meta0: vec4<f32>,
-) -> FieldVertOut {
-  let idx = u32(clamp(round(meta0.x), 0.0, 16.0));
-  return buildFieldQuad(vid, worldPos, meta0.x, empRanges.ranges[idx].y);
-}
-
 @fragment
-fn fs_field(in: FieldVertOut) -> FieldFragOut {
-  let d = length(in.uv);
-  if (d >= 1.0) {
+fn fs_signal(in: SignalVertOut) -> SignalFragOut {
+  let d2 = dot(in.uv, in.uv);
+  if (d2 >= 1.0 || in.empIdx < -0.5) {
     discard;
   }
-  var out: FieldFragOut;
-  out.color = vec4<f32>(in.owner / 255.0, 1.0 - d, 0.0, 1.0);
-  out.depth = d;
+  let s = max(0.0, 1.0 - d2);
+  let emp = u32(round(in.empIdx));
+
+  var f0 = vec4<f32>(0.0);
+  var f1 = vec4<f32>(0.0);
+  if (emp == 0u) {
+    f0.r = s;
+  } else if (emp == 1u) {
+    f0.g = s;
+  } else if (emp == 2u) {
+    f0.b = s;
+  } else if (emp == 3u) {
+    f0.a = s;
+  } else if (emp == 4u) {
+    f1.r = s;
+  } else if (emp == 5u) {
+    f1.g = s;
+  }
+  // f1.ba reserved for future jammer attenuation channel
+
+  var out: SignalFragOut;
+  out.f0 = f0;
+  out.f1 = f1;
   return out;
 }
 `;
 
-const TERRITORY_BORDER_WGSL =
+const SIGNAL_COMPOSITE_WGSL =
   COMMON_WGSL +
   /* wgsl */ `
-@group(1) @binding(0) var scannerTex: texture_2d<f32>;
-@group(1) @binding(1) var flightTex: texture_2d<f32>;
+@group(1) @binding(0) var signalTex0: texture_2d<f32>;
+@group(1) @binding(1) var signalTex1: texture_2d<f32>;
+@group(1) @binding(2) var fieldSampler: sampler;
+
+struct FullscreenOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
 
 @vertex
-fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
+fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> FullscreenOut {
   var pos = array<vec2<f32>, 3>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>( 3.0, -1.0),
     vec2<f32>(-1.0,  3.0),
   );
-  return vec4<f32>(pos[vid], 0.0, 1.0);
-}
-
-fn loadOwner(tex: texture_2d<f32>, c: vec2<i32>, maxC: vec2<i32>) -> u32 {
-  let clamped = clamp(c, vec2<i32>(0, 0), maxC);
-  return u32(round(textureLoad(tex, clamped, 0).r * 255.0));
-}
-
-fn isEdge(tex: texture_2d<f32>, c: vec2<i32>, maxC: vec2<i32>, owner: u32) -> bool {
-  return loadOwner(tex, c + vec2<i32>(1, 0), maxC) != owner
-      || loadOwner(tex, c + vec2<i32>(-1, 0), maxC) != owner
-      || loadOwner(tex, c + vec2<i32>(0, 1), maxC) != owner
-      || loadOwner(tex, c + vec2<i32>(0, -1), maxC) != owner;
+  let p = pos[vid];
+  var out: FullscreenOut;
+  out.pos = vec4<f32>(p, 0.0, 1.0);
+  out.uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+  return out;
 }
 
 @fragment
-fn fs_border(@builtin(position) fragPos: vec4<f32>) -> @location(0) vec4<f32> {
-  let dims = vec2<i32>(textureDimensions(scannerTex));
-  let maxC = dims - vec2<i32>(1, 1);
-  let c = clamp(vec2<i32>(fragPos.xy * 0.5), vec2<i32>(0, 0), maxC);
+fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
+  // Sample 6 empire channels (raw1.ba reserved for jammer) in uniform control flow
+  let raw0 = textureSample(signalTex0, fieldSampler, in.uv);
+  let raw1 = textureSample(signalTex1, fieldSampler, in.uv);
+  var raw = array<f32, 6>(raw0.r, raw0.g, raw0.b, raw0.a, raw1.r, raw1.g);
 
-  var outRgb = vec3<f32>(0.0);
-  var outA = 0.0;
+  var sig: array<f32, 6>;
+  var gradX: array<f32, 6>;
+  var gradY: array<f32, 6>;
 
-  // 1. Real Scanner Zone: subtle translucent interior + crisp solid border
-  let sOwner = loadOwner(scannerTex, c, maxC);
-  if (sOwner > 0u) {
-    let col = empireColor(f32(sOwner));
-    if (isEdge(scannerTex, c, maxC, sOwner)) {
-      outRgb = col;
-      outA = 0.52;
+  for (var i: u32 = 0u; i < 6u; i = i + 1u) {
+    let enabled = (fieldCfg.empireMask & (1u << i)) != 0u;
+    let rVal = select(0.0, max(0.0, raw[i]), enabled);
+    // Smooth saturation compression: merges overlapping planets of the same race cleanly
+    let sVal = 1.0 - exp(-rVal * 1.4);
+    sig[i] = sVal;
+    gradX[i] = dpdx(sVal);
+    gradY[i] = dpdy(sVal);
+  }
+
+  var top1Val: f32 = 0.0;
+  var top1Idx: u32 = 0u;
+  var top2Val: f32 = 0.0;
+  var top2Idx: u32 = 0u;
+
+  for (var i: u32 = 0u; i < 6u; i = i + 1u) {
+    let v = sig[i];
+    if (v > top1Val) {
+      top2Val = top1Val;
+      top2Idx = top1Idx;
+      top1Val = v;
+      top1Idx = i;
+    } else if (v > top2Val) {
+      top2Val = v;
+      top2Idx = i;
+    }
+  }
+
+  const THRESH: f32 = 0.035;
+
+  let g1 = max(length(vec2<f32>(gradX[top1Idx], gradY[top1Idx])), 1e-5);
+  let g2 = max(length(vec2<f32>(gradX[top2Idx], gradY[top2Idx])), 1e-5);
+  let dist1Px = (top1Val - THRESH) / g1;
+  let dist2Px = (top2Val - THRESH) / g2;
+
+  let inside1 = smoothstep(-0.75, 0.75, dist1Px);
+  let inside2 = smoothstep(-0.75, 0.75, dist2Px);
+
+  // Fill strictly from top1 (zero RGB color mixing between empires)
+  let top1Col = empireColor(f32(top1Idx + 1u));
+  var fillA = inside1 * (0.045 + 0.145 * pow(clamp(top1Val, 0.0, 1.0), 0.85));
+
+  // Equilibrium line (A = B): clean dark gap of constant screen width
+  if (fieldCfg.eqMode == 0u && top2Val > 0.001) {
+    let eqGrad = max(
+      length(vec2<f32>(gradX[top1Idx] - gradX[top2Idx], gradY[top1Idx] - gradY[top2Idx])),
+      1e-5,
+    );
+    let eqDistPx = (top1Val - top2Val) / eqGrad;
+    let gapMask = smoothstep(0.85, 2.05, eqDistPx);
+    fillA = fillA * mix(1.0, gapMask, inside2);
+  }
+
+  var outRgb = top1Col;
+  var outA = fillA;
+
+  // Antialiased ~1 px range contours
+  if (fieldCfg.contourMode != 0u && fieldCfg.contourOpacity > 0.001) {
+    if (fieldCfg.contourMode == 1u) {
+      // Outer only: draw contour only where zone meets empty space
+      let hasSig1 = smoothstep(0.003, 0.015, top1Val);
+      let line1 = (1.0 - smoothstep(0.42, 1.32, abs(dist1Px))) * hasSig1;
+      let outerMask = 1.0 - smoothstep(-0.5, 1.0, dist2Px);
+      let cA = line1 * outerMask * fieldCfg.contourOpacity;
+      if (cA > 0.001) {
+        let combA = cA + outA * (1.0 - cA);
+        outRgb = (top1Col * cA + outRgb * outA * (1.0 - cA)) / max(0.001, combA);
+        outA = combA;
+      }
     } else {
-      outRgb = col;
-      outA = 0.055;
+      // Subtle / Full everywhere: uniform isoline across entire perimeter for each enabled empire
+      var bestA: f32 = 0.0;
+      var bestCol = vec3<f32>(0.0);
+      for (var i: u32 = 0u; i < 6u; i = i + 1u) {
+        let v = sig[i];
+        if (v > 0.002) {
+          let g = max(length(vec2<f32>(gradX[i], gradY[i])), 1e-5);
+          let linePx = abs(v - THRESH) / g;
+          let hasSig = smoothstep(0.003, 0.015, v);
+          let stroke = (1.0 - smoothstep(0.42, 1.32, linePx)) * hasSig;
+          let cA = stroke * fieldCfg.contourOpacity;
+          if (cA > bestA + 0.001 || (abs(cA - bestA) <= 0.001 && i == top1Idx && cA > 0.0)) {
+            bestA = cA;
+            bestCol = empireColor(f32(i + 1u));
+          }
+        }
+      }
+      if (bestA > 0.001) {
+        let combA = bestA + outA * (1.0 - bestA);
+        outRgb = (bestCol * bestA + outRgb * outA * (1.0 - bestA)) / max(0.001, combA);
+        outA = combA;
+      }
     }
   }
 
-  // 2. Real Flight / Fuel Range: clean dashed contour (overlaid cleanly)
-  let fOwner = loadOwner(flightTex, c, maxC);
-  if (fOwner > 0u && isEdge(flightTex, c, maxC, fOwner)) {
-    let dash = ((u32(fragPos.x) + u32(fragPos.y)) / 5u) & 1u;
-    if (dash == 1u) {
-      let fCol = empireColor(f32(fOwner));
-      let fA = 0.42;
-      let combA = fA + outA * (1.0 - fA);
-      outRgb = (fCol * fA + outRgb * outA * (1.0 - fA)) / max(0.001, combA);
-      outA = combA;
-    }
-  }
-
-  if (outA < 0.005) {
+  if (outA < 0.003) {
     discard;
   }
   return vec4<f32>(outRgb, outA);
@@ -556,6 +661,19 @@ const ALPHA_BLEND: GPUBlendState = {
   },
 };
 
+const ADDITIVE_BLEND: GPUBlendState = {
+  color: {
+    srcFactor: 'one',
+    dstFactor: 'one',
+    operation: 'add',
+  },
+  alpha: {
+    srcFactor: 'one',
+    dstFactor: 'one',
+    operation: 'add',
+  },
+};
+
 export class WebGpuGalaxyBackend {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
@@ -564,11 +682,16 @@ export class WebGpuGalaxyBackend {
   private readonly cameraUniformBuf: GPUBuffer;
   private readonly paletteUniformBuf: GPUBuffer;
   private readonly rangesUniformBuf: GPUBuffer;
+  private readonly fieldUniformBuf: GPUBuffer;
   private readonly cameraData = new Float32Array(12);
   private readonly paletteData = new Float32Array(17 * 4);
   private readonly rangesData = new Float32Array(17 * 4);
+  private readonly fieldRawBuf = new ArrayBuffer(16);
+  private readonly fieldU32 = new Uint32Array(this.fieldRawBuf);
+  private readonly fieldF32 = new Float32Array(this.fieldRawBuf);
   private readonly sharedBindGroup: GPUBindGroup;
   private readonly fieldTexBindGroupLayout: GPUBindGroupLayout;
+  private readonly fieldSampler: GPUSampler;
 
   private readonly bgStarsBuf: GPUBuffer;
   private readonly bgStarCount: number;
@@ -579,18 +702,16 @@ export class WebGpuGalaxyBackend {
   private readonly dynamicLinesGpuBuf: DynamicGpuBuffer;
   private dynamicLinesCpu = new Float32Array(1024 * 6);
 
-  // Half-res offscreen textures for Voronoi-merged scanner & flight range contours
+  // Offscreen 2 x rgba16float signal field textures (6 empire channels + 2 reserved jammer channels)
   private fieldW = 0;
   private fieldH = 0;
-  private scannerFieldTex: GPUTexture | null = null;
-  private flightFieldTex: GPUTexture | null = null;
-  private fieldDepthTex: GPUTexture | null = null;
+  private signalTex0: GPUTexture | null = null;
+  private signalTex1: GPUTexture | null = null;
   private fieldTexBindGroup: GPUBindGroup | null = null;
 
   private readonly bgStarsPipeline: GPURenderPipeline;
-  private readonly scannerFieldPipeline: GPURenderPipeline;
-  private readonly flightFieldPipeline: GPURenderPipeline;
-  private readonly territoryBorderPipeline: GPURenderPipeline;
+  private readonly signalFieldPipeline: GPURenderPipeline;
+  private readonly signalCompositePipeline: GPURenderPipeline;
   private readonly planetCorePipeline: GPURenderPipeline;
   private readonly debrisPipeline: GPURenderPipeline;
   private readonly fleetLinesPipeline: GPURenderPipeline;
@@ -664,6 +785,10 @@ export class WebGpuGalaxyBackend {
       size: 17 * 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.fieldUniformBuf = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     // Index 0 = neutral gray
     this.paletteData[0] = 0.58;
     this.paletteData[1] = 0.643;
@@ -687,6 +812,11 @@ export class WebGpuGalaxyBackend {
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: 'uniform' },
         },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' },
+        },
       ],
     });
 
@@ -696,7 +826,15 @@ export class WebGpuGalaxyBackend {
         { binding: 0, resource: { buffer: this.cameraUniformBuf } },
         { binding: 1, resource: { buffer: this.paletteUniformBuf } },
         { binding: 2, resource: { buffer: this.rangesUniformBuf } },
+        { binding: 3, resource: { buffer: this.fieldUniformBuf } },
       ],
+    });
+
+    this.fieldSampler = device.createSampler({
+      minFilter: 'linear',
+      magFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
     });
 
     this.fieldTexBindGroupLayout = device.createBindGroupLayout({
@@ -711,13 +849,18 @@ export class WebGpuGalaxyBackend {
           visibility: GPUShaderStage.FRAGMENT,
           texture: { sampleType: 'float' },
         },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: 'filtering' },
+        },
       ],
     });
 
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],
     });
-    const borderPipelineLayout = device.createPipelineLayout({
+    const compositePipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout, this.fieldTexBindGroupLayout],
     });
 
@@ -765,66 +908,45 @@ export class WebGpuGalaxyBackend {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
-    // 2. Voronoi-merged territory field pipelines (real scanner range + real flight range)
-    const fieldMod = device.createShaderModule({ code: TERRITORY_FIELD_WGSL });
-    const fieldVertexBuffers: GPUVertexBufferLayout[] = [
-      {
-        arrayStride: 7 * 4,
-        stepMode: 'instance',
-        attributes: [
-          { shaderLocation: 0, offset: 0, format: 'float32x2' },
-          { shaderLocation: 1, offset: 8, format: 'float32x4' },
+    // 2. Smooth 2-pass scanner signal field (MRT 2 x rgba16float + fullscreen composite & isolines)
+    const signalMod = device.createShaderModule({ code: SIGNAL_FIELD_WGSL });
+    this.signalFieldPipeline = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module: signalMod,
+        entryPoint: 'vs_signal',
+        buffers: [
+          {
+            arrayStride: 7 * 4,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x2' },
+              { shaderLocation: 1, offset: 8, format: 'float32x4' },
+            ],
+          },
         ],
       },
-    ];
-    const fieldDepthStencil: GPUDepthStencilState = {
-      format: 'depth16unorm',
-      depthWriteEnabled: true,
-      depthCompare: 'less',
-    };
-
-    this.scannerFieldPipeline = device.createRenderPipeline({
-      layout: pipelineLayout,
-      vertex: {
-        module: fieldMod,
-        entryPoint: 'vs_scanner',
-        buffers: fieldVertexBuffers,
-      },
       fragment: {
-        module: fieldMod,
-        entryPoint: 'fs_field',
-        targets: [{ format: 'rgba8unorm' }],
+        module: signalMod,
+        entryPoint: 'fs_signal',
+        targets: [
+          { format: 'rgba16float', blend: ADDITIVE_BLEND },
+          { format: 'rgba16float', blend: ADDITIVE_BLEND },
+        ],
       },
-      depthStencil: fieldDepthStencil,
       primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
 
-    this.flightFieldPipeline = device.createRenderPipeline({
-      layout: pipelineLayout,
+    const compositeMod = device.createShaderModule({ code: SIGNAL_COMPOSITE_WGSL });
+    this.signalCompositePipeline = device.createRenderPipeline({
+      layout: compositePipelineLayout,
       vertex: {
-        module: fieldMod,
-        entryPoint: 'vs_flight',
-        buffers: fieldVertexBuffers,
-      },
-      fragment: {
-        module: fieldMod,
-        entryPoint: 'fs_field',
-        targets: [{ format: 'rgba8unorm' }],
-      },
-      depthStencil: fieldDepthStencil,
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-    });
-
-    const borderMod = device.createShaderModule({ code: TERRITORY_BORDER_WGSL });
-    this.territoryBorderPipeline = device.createRenderPipeline({
-      layout: borderPipelineLayout,
-      vertex: {
-        module: borderMod,
+        module: compositeMod,
         entryPoint: 'vs_fullscreen',
       },
       fragment: {
-        module: borderMod,
-        entryPoint: 'fs_border',
+        module: compositeMod,
+        entryPoint: 'fs_composite',
         targets: [{ format, blend: ALPHA_BLEND }],
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -1053,37 +1175,33 @@ export class WebGpuGalaxyBackend {
     this.device.queue.writeBuffer(this.rangesUniformBuf, 0, this.rangesData);
   }
 
-  private ensureFieldTextures(targetW: number, targetH: number): void {
-    const fw = Math.max(1, Math.floor(targetW / 2));
-    const fh = Math.max(1, Math.floor(targetH / 2));
-    if (fw === this.fieldW && fh === this.fieldH && this.scannerFieldTex) return;
+  private ensureFieldTextures(cssW: number, cssH: number): void {
+    const maxDim = this.device.limits.maxTextureDimension2D;
+    const fw = Math.max(1, Math.min(maxDim, Math.round(cssW)));
+    const fh = Math.max(1, Math.min(maxDim, Math.round(cssH)));
+    if (fw === this.fieldW && fh === this.fieldH && this.signalTex0 && this.signalTex1) return;
 
-    this.scannerFieldTex?.destroy();
-    this.flightFieldTex?.destroy();
-    this.fieldDepthTex?.destroy();
+    this.signalTex0?.destroy();
+    this.signalTex1?.destroy();
 
     this.fieldW = fw;
     this.fieldH = fh;
-    this.scannerFieldTex = this.device.createTexture({
+    this.signalTex0 = this.device.createTexture({
       size: [fw, fh],
-      format: 'rgba8unorm',
+      format: 'rgba16float',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    this.flightFieldTex = this.device.createTexture({
+    this.signalTex1 = this.device.createTexture({
       size: [fw, fh],
-      format: 'rgba8unorm',
+      format: 'rgba16float',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.fieldDepthTex = this.device.createTexture({
-      size: [fw, fh],
-      format: 'depth16unorm',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.fieldTexBindGroup = this.device.createBindGroup({
       layout: this.fieldTexBindGroupLayout,
       entries: [
-        { binding: 0, resource: this.scannerFieldTex.createView() },
-        { binding: 1, resource: this.flightFieldTex.createView() },
+        { binding: 0, resource: this.signalTex0.createView() },
+        { binding: 1, resource: this.signalTex1.createView() },
+        { binding: 2, resource: this.fieldSampler },
       ],
     });
   }
@@ -1099,8 +1217,9 @@ export class WebGpuGalaxyBackend {
     jumpFx: JumpFxView[],
     combatFx: CombatFxView[],
     dataVersion: number,
+    fieldSettings: ScannerFieldSettings,
   ): void {
-    // 1. Upload camera uniform (48 bytes), empire palette & real scanner/flight ranges
+    // 1. Upload camera uniform (48 bytes), empire palette, real ranges & scanner field config
     this.cameraData[0] = cam.offX;
     this.cameraData[1] = cam.offY;
     this.cameraData[2] = cam.scale;
@@ -1113,6 +1232,20 @@ export class WebGpuGalaxyBackend {
     this.device.queue.writeBuffer(this.cameraUniformBuf, 0, this.cameraData);
     this.ensurePalette(empireColors);
     this.ensureRanges(empireRanges);
+
+    const contourCode =
+      fieldSettings.contourMode === 'hidden'
+        ? 0
+        : fieldSettings.contourMode === 'outer'
+          ? 1
+          : fieldSettings.contourMode === 'subtle'
+            ? 2
+            : 3;
+    this.fieldU32[0] = fieldSettings.empireMask >>> 0;
+    this.fieldU32[1] = fieldSettings.equilibriumMode === 'gap' ? 0 : 1;
+    this.fieldU32[2] = contourCode;
+    this.fieldF32[3] = Math.max(0, Math.min(0.8, fieldSettings.contourOpacity));
+    this.device.queue.writeBuffer(this.fieldUniformBuf, 0, this.fieldRawBuf);
 
     // 2. Direct zero-copy uploads ONLY when simulation data version changed (0 MB upload during paused pan/zoom!)
     let planetCount = this.lastPlanetCount;
@@ -1137,59 +1270,35 @@ export class WebGpuGalaxyBackend {
     const dBuf = debrisCount > 0 ? this.debrisGpuBuf.gpuBuffer : null;
     const dynLineVerts = this.buildDynamicLines(wormholes, jumpFx, combatFx);
 
-    // 3. Encode offscreen Voronoi territory passes + main render pass
+    // 3. Encode Pass 1 (offscreen signal field MRT) + main render pass (Pass 2 composite + entities)
     const currentTex = this.context.getCurrentTexture();
-    this.ensureFieldTextures(currentTex.width, currentTex.height);
+    this.ensureFieldTextures(cam.viewportW, cam.viewportH);
 
     const encoder = this.device.createCommandEncoder();
 
-    // Offscreen Pass A & B: real scanner zone & flight range fields (closest-planet Voronoi via depth16)
-    if (pBuf && planetCount > 0 && this.scannerFieldTex && this.flightFieldTex && this.fieldDepthTex) {
-      const depthView = this.fieldDepthTex.createView();
-
-      const scanPass = encoder.beginRenderPass({
+    // Pass 1: Accumulate smooth radial scanner signal fields into 2 x rgba16float targets
+    if (pBuf && planetCount > 0 && this.signalTex0 && this.signalTex1 && fieldSettings.empireMask !== 0) {
+      const signalPass = encoder.beginRenderPass({
         colorAttachments: [
           {
-            view: this.scannerFieldTex.createView(),
+            view: this.signalTex0.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+          {
+            view: this.signalTex1.createView(),
             clearValue: { r: 0, g: 0, b: 0, a: 0 },
             loadOp: 'clear',
             storeOp: 'store',
           },
         ],
-        depthStencilAttachment: {
-          view: depthView,
-          depthClearValue: 1.0,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'discard',
-        },
       });
-      scanPass.setBindGroup(0, this.sharedBindGroup);
-      scanPass.setPipeline(this.scannerFieldPipeline);
-      scanPass.setVertexBuffer(0, pBuf);
-      scanPass.draw(6, planetCount);
-      scanPass.end();
-
-      const flightPass = encoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: this.flightFieldTex.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-        depthStencilAttachment: {
-          view: depthView,
-          depthClearValue: 1.0,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'discard',
-        },
-      });
-      flightPass.setBindGroup(0, this.sharedBindGroup);
-      flightPass.setPipeline(this.flightFieldPipeline);
-      flightPass.setVertexBuffer(0, pBuf);
-      flightPass.draw(6, planetCount);
-      flightPass.end();
+      signalPass.setBindGroup(0, this.sharedBindGroup);
+      signalPass.setPipeline(this.signalFieldPipeline);
+      signalPass.setVertexBuffer(0, pBuf);
+      signalPass.draw(6, planetCount);
+      signalPass.end();
     }
 
     const view = currentTex.createView();
@@ -1213,9 +1322,9 @@ export class WebGpuGalaxyBackend {
       pass.draw(6, this.bgStarCount);
     }
 
-    // Layer 1: Merged Scanner Zone (solid) + Flight Range (dashed) territory contours
-    if (pBuf && planetCount > 0 && this.fieldTexBindGroup) {
-      pass.setPipeline(this.territoryBorderPipeline);
+    // Layer 1 (Pass 2): Smooth signal field composite, equilibrium line & antialiased isolines
+    if (pBuf && planetCount > 0 && this.fieldTexBindGroup && fieldSettings.empireMask !== 0) {
+      pass.setPipeline(this.signalCompositePipeline);
       pass.setBindGroup(1, this.fieldTexBindGroup);
       pass.draw(3);
     }
@@ -1265,9 +1374,9 @@ export class WebGpuGalaxyBackend {
     this.cameraUniformBuf.destroy();
     this.paletteUniformBuf.destroy();
     this.rangesUniformBuf.destroy();
-    this.scannerFieldTex?.destroy();
-    this.flightFieldTex?.destroy();
-    this.fieldDepthTex?.destroy();
+    this.fieldUniformBuf.destroy();
+    this.signalTex0?.destroy();
+    this.signalTex1?.destroy();
     this.device.destroy();
   }
 }
