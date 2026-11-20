@@ -961,29 +961,29 @@ fn compute_hull_range(
     is_he_colonizer: bool,
 ) -> f32 {
     // Stars!-inspired operational fuel range scaled to the 1000x560 galaxy map:
-    // Early ships (~130-190 ly) must expand via stepping-stone worlds;
-    // mid-game hulls/tanks/Fuel Mizer reach ~260-420 ly;
-    // ramscoops, Fuel Generators, and Capital Ships project across the galaxy (550-1200 ly).
-    let eff_fuel = hull.fuel_capacity + fuel_tank_bonus * 0.35 + fuel_gen * 6.0;
-    let eff_mass = hull.mass + 24.0;
+    // Tech 0 ships (~75-95 ly radius) only reach immediate neighboring stars;
+    // mid-game hulls/tanks/Fuel Mizer reach ~160-260 ly;
+    // ramscoops, Fuel Generators, and Capital Ships project across sectors (450-850+ ly).
+    let eff_fuel = hull.fuel_capacity + fuel_tank_bonus * 0.25 + fuel_gen * 4.0;
+    let eff_mass = hull.mass + 30.0;
     let usage = engine_fuel_usage.max(35.0) * if lrt_mask & LRT_IFE != 0 { 0.85 } else { 1.0 };
     let base_ly =
-        65.0 + (eff_fuel / eff_mass).sqrt() * (engine_warp * 8.5) * (100.0 / usage).powf(0.55);
+        32.0 + (eff_fuel / eff_mass).sqrt() * (engine_warp * 5.2) * (100.0 / usage).powf(0.55);
 
-    // Ramscoops (free_speed >= 4) & HE Settler's Delight dramatically extend cruise range
+    // Ramscoops (free_speed >= 4) & HE Settler's Delight extend cruise range
     let ramscoop_mult = if is_he_colonizer {
-        1.45
-    } else if engine_free_speed >= 8 {
-        2.5
-    } else if engine_free_speed >= 6 {
-        1.9
-    } else if engine_free_speed >= 4 {
         1.35
+    } else if engine_free_speed >= 8 {
+        2.3
+    } else if engine_free_speed >= 6 {
+        1.75
+    } else if engine_free_speed >= 4 {
+        1.30
     } else {
         1.0
     };
 
-    (base_ly * ramscoop_mult).clamp(105.0, 1300.0)
+    (base_ly * ramscoop_mult).clamp(65.0, 1100.0)
 }
 
 impl EmpireTechCache {
@@ -1504,9 +1504,9 @@ mod tests {
         assert!(mid.stargate_name.is_some());
         assert!(max.weapon_power > mid.weapon_power);
         assert!(max.engine_warp >= 9.0);
-        assert!(low.range_col < 260.0, "early colonizer range should be local, got {}", low.range_col);
+        assert!(low.range_col < 110.0, "early colonizer range should be local (<110ly), got {}", low.range_col);
         assert!(mid.range_col > low.range_col, "mid-game tech should expand ship range");
-        assert!(max.range_battleship > 500.0, "late-game ramscoop capital range should span sectors");
+        assert!(max.range_battleship > 450.0, "late-game ramscoop capital range should span sectors");
         assert_eq!(classic_races().len(), 6);
     }
 }
