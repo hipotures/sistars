@@ -177,6 +177,19 @@ async function bootstrap(): Promise<void> {
   let hoveredTarget: HitTarget = null;
   let lastHud: HudSnapshot = firstFrame.hud;
   let liveSelectedFleet: FleetView | null = firstFrame.selectedFleet;
+  let dataVersion = 1;
+  let rafId: number | null = null;
+  let renderDirty = true;
+
+  const scheduleRender = (): void => {
+    renderDirty = true;
+    if (rafId === null) {
+      rafId = requestAnimationFrame(renderFrame);
+    }
+  };
+
+  window.addEventListener('resize', () => scheduleRender());
+  window.visualViewport?.addEventListener('resize', () => scheduleRender());
   let liveBacking: LiveBufferBacking = {
     planets: firstFrame.planets,
     fleets: firstFrame.fleets,
@@ -322,6 +335,7 @@ async function bootstrap(): Promise<void> {
     postToWorker({ type: 'setSelectedFleet', fleetId });
     if (fleetId === null) {
       liveSelectedFleet = null;
+      scheduleRender();
     } else {
       void requestWorker<FleetView | null>((reqId) => ({
         type: 'getFleetById',
@@ -330,6 +344,7 @@ async function bootstrap(): Promise<void> {
       })).then((fl) => {
         if (ui.getSelection()?.kind === 'fleet') {
           liveSelectedFleet = fl;
+          scheduleRender();
         }
       });
     }
@@ -339,13 +354,23 @@ async function bootstrap(): Promise<void> {
     onSpeedChange: (newSpeed) => {
       speed = newSpeed;
       if (newSpeed > 0) lastNonZeroSpeed = newSpeed;
+      if (newSpeed === 0) {
+        workerTps = 0;
+        workerWasmMs = 0;
+        if (debugPerfEnabled) {
+          const f = activeFrame();
+          ui.updatePerfHud(true, renderer.backendName, 0, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
+        }
+      }
       if (newSpeed > 0 && historyViewIndex !== null) {
         historyViewIndex = null;
+        dataVersion++;
         postToWorker({ type: 'setScrubIndex', index: null });
         ui.update(lastHud, true);
         syncHistoryBar();
       }
       postToWorker({ type: 'setSpeed', speed: newSpeed });
+      scheduleRender();
     },
     onStepTick: () => {
       speed = 0;
@@ -452,32 +477,42 @@ async function bootstrap(): Promise<void> {
       if (historyBuffer.length === 0) return;
       const clamped = Math.max(0, Math.min(historyBuffer.length - 1, index));
       speed = 0;
+      workerTps = 0;
+      workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
       postToWorker({ type: 'setPaused', paused: true });
       postToWorker({ type: 'setScrubIndex', index: clamped });
       renderer.clearFx();
       historyViewIndex = clamped;
+      dataVersion++;
       ui.update(activeFrame().hud, true);
       syncHistoryBar();
+      scheduleRender();
     },
     onHistoryStep: (delta) => {
       if (historyBuffer.length === 0) return;
       const current = historyViewIndex === null ? historyBuffer.length - 1 : historyViewIndex;
       const next = Math.max(0, Math.min(historyBuffer.length - 1, current + delta));
       speed = 0;
+      workerTps = 0;
+      workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
       postToWorker({ type: 'setPaused', paused: true });
       postToWorker({ type: 'setScrubIndex', index: next });
       renderer.clearFx();
       historyViewIndex = next;
+      dataVersion++;
       ui.update(activeFrame().hud, true);
       syncHistoryBar();
+      scheduleRender();
     },
     onHistoryLive: () => {
       historyViewIndex = null;
+      dataVersion++;
       postToWorker({ type: 'setScrubIndex', index: null });
       ui.update(lastHud, true);
       syncHistoryBar();
+      scheduleRender();
     },
     getPlanetDetail: (index) =>
       requestWorker<PlanetView | null>((reqId) => ({ type: 'getPlanetDetail', reqId, index })),
@@ -577,6 +612,7 @@ async function bootstrap(): Promise<void> {
     liveSelectedFleet = msg.selectedFleet;
     workerTps = msg.tps;
     workerWasmMs = msg.wasmMs;
+    dataVersion++;
 
     renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
     renderer.ingestFx(lastHud);
@@ -595,6 +631,7 @@ async function bootstrap(): Promise<void> {
     if (debugPerfEnabled) {
       perfUiSum += performance.now() - u0;
     }
+    scheduleRender();
   };
 
   // Camera zoom (wheel + 2-finger pinch), pan (mouse drag + 1-finger drag),
@@ -612,6 +649,7 @@ async function bootstrap(): Promise<void> {
       e.preventDefault();
       const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
       renderer.zoomAt(e.clientX, e.clientY, factor);
+      scheduleRender();
     },
     { passive: false },
   );
@@ -654,6 +692,7 @@ async function bootstrap(): Promise<void> {
         if (prevDist > 8 && nextDist > 8) {
           renderer.zoomAt(nextMidX, nextMidY, nextDist / prevDist);
         }
+        scheduleRender();
         return;
       }
 
@@ -669,6 +708,7 @@ async function bootstrap(): Promise<void> {
           dragStartX = e.clientX;
           dragStartY = e.clientY;
           canvas.style.cursor = 'grabbing';
+          scheduleRender();
         }
         activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         return;
@@ -679,8 +719,13 @@ async function bootstrap(): Promise<void> {
     }
 
     if (e.pointerType === 'mouse') {
-      hoveredTarget = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+      const nextHit = renderer.hitTest(e.clientX, e.clientY, activeFrame());
+      const changed =
+        hoveredTarget?.kind !== nextHit?.kind ||
+        (hoveredTarget && nextHit && hoveredTarget.index !== nextHit.index);
+      hoveredTarget = nextHit;
       canvas.style.cursor = hoveredTarget !== null ? 'pointer' : 'crosshair';
+      if (changed) scheduleRender();
     }
   });
 
@@ -728,6 +773,7 @@ async function bootstrap(): Promise<void> {
 
   canvas.addEventListener('dblclick', () => {
     renderer.resetCamera();
+    scheduleRender();
   });
 
   window.addEventListener('keydown', (e) => {
@@ -735,38 +781,54 @@ async function bootstrap(): Promise<void> {
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (e.code === 'Home' || e.key === '0') {
       renderer.resetCamera();
+      scheduleRender();
       return;
     }
     if (e.code !== 'Space') return;
     e.preventDefault();
     if (speed > 0) {
       speed = 0;
+      workerTps = 0;
+      workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
       postToWorker({ type: 'setSpeed', speed: 0 });
+      if (debugPerfEnabled) {
+        const f = activeFrame();
+        ui.updatePerfHud(true, renderer.backendName, 0, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
+      }
     } else {
       speed = lastNonZeroSpeed;
       ui.setActiveSpeedButton(speed);
       if (historyViewIndex !== null) {
         historyViewIndex = null;
+        dataVersion++;
         postToWorker({ type: 'setScrubIndex', index: null });
         ui.update(lastHud, true);
         syncHistoryBar();
       }
       postToWorker({ type: 'setSpeed', speed });
+      scheduleRender();
     }
   });
 
   ui.update(lastHud, true);
 
-  // Pure 60 FPS render loop on Main Thread (zero WASM blocking!)
+  // Demand-driven 60 FPS render loop on Main Thread:
+  // Stops completely (0% CPU & 0% GPU) when paused and idle!
   const renderFrame = (): void => {
+    rafId = null;
+    if (!renderDirty && !renderer.hasActiveFx) {
+      return;
+    }
+    renderDirty = false;
+
     const cur = activeFrame();
     const sel = ui.getSelection();
     const selectedFleet = sel?.kind === 'fleet' && historyViewIndex === null ? liveSelectedFleet : null;
 
     const measurePerf = debugPerfEnabled || debugTelemetryEnabled;
     const d0 = measurePerf ? performance.now() : 0;
-    renderer.draw(cur, config.crustRichness, sel, hoveredTarget, selectedFleet);
+    renderer.draw(cur, config.crustRichness, sel, hoveredTarget, selectedFleet, dataVersion);
 
     if (measurePerf) {
       perfDrawSum += performance.now() - d0;
@@ -803,10 +865,13 @@ async function bootstrap(): Promise<void> {
       }
     }
 
-    requestAnimationFrame(renderFrame);
+    // Keep animating only while ephemeral FX are fading out or another render was requested
+    if (renderer.hasActiveFx || renderDirty) {
+      rafId = requestAnimationFrame(renderFrame);
+    }
   };
 
-  requestAnimationFrame(renderFrame);
+  scheduleRender();
 }
 
 void bootstrap();
