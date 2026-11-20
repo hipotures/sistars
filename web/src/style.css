@@ -518,6 +518,14 @@ header.hud-top {
   gap: 8px;
 }
 
+.astro-sub {
+  font-size: 0.68em;
+  vertical-align: -0.22em;
+  line-height: 0;
+  font-weight: 400;
+  margin-left: 1px;
+}
+
 @media (max-width: 768px) {
   .sys-detail-split {
     grid-template-columns: 1fr;
