@@ -768,9 +768,10 @@ export class GalaxyRenderer {
       const fx = sx(selectedFleet.x);
       const fy = sy(selectedFleet.y);
       const tOff = selectedFleet.target * PLANET_STRIDE;
-      if (tOff + 1 < planetsBuf.length) {
-        const tx = sx(planetsBuf[tOff]);
-        const ty = sy(planetsBuf[tOff + 1]);
+      const hasSteer = selectedFleet.hunting && Number.isFinite(selectedFleet.steerX);
+      if (hasSteer || tOff + 1 < planetsBuf.length) {
+        const tx = sx(hasSteer ? selectedFleet.steerX : planetsBuf[tOff]);
+        const ty = sy(hasSteer ? selectedFleet.steerY : planetsBuf[tOff + 1]);
         ctx.beginPath();
         ctx.moveTo(fx, fy);
         ctx.lineTo(tx, ty);
