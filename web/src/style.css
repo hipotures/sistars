@@ -229,6 +229,36 @@ header.hud-top {
   text-align: right;
 }
 
+/* Debug Performance HUD */
+#perfHud {
+  position: absolute;
+  top: 68px;
+  right: 16px;
+  background: rgba(10, 15, 25, 0.88);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--green);
+  padding: 5px 10px;
+  display: none;
+  gap: 10px;
+  z-index: 16;
+  backdrop-filter: blur(6px);
+  font-family: monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.68rem;
+  color: var(--text);
+  pointer-events: none;
+}
+
+#perfHud.visible {
+  display: flex;
+}
+
+.perf-item b {
+  color: var(--muted);
+  font-weight: 700;
+  margin-right: 3px;
+}
+
 /* Planet Inspector */
 #planetInspector {
   position: absolute;

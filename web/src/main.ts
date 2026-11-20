@@ -36,7 +36,14 @@ async function bootstrap(): Promise<void> {
   let lastSnap = engine.take_snapshot() as SimSnapshot;
   renderer.setWorldSize(lastSnap.worldW, lastSnap.worldH);
 
-  // Debug History Scrubber state
+  // Debug Performance HUD & History Scrubber state
+  let debugPerfEnabled = false;
+  let perfFrames = 0;
+  let perfTicks = 0;
+  let perfWasmSum = 0;
+  let perfDrawSum = 0;
+  let perfWindowStart = performance.now();
+
   let debugHistoryEnabled = false;
   let historyBuffer: SimSnapshot[] = [];
   let historyViewIndex: number | null = null; // null = Live
@@ -150,6 +157,16 @@ async function bootstrap(): Promise<void> {
         ui.setSelectedPlanet(-1);
         refreshSnapshot(true, true);
       }
+    },
+    onDebugPerfToggle: (enabled) => {
+      debugPerfEnabled = enabled;
+      perfFrames = 0;
+      perfTicks = 0;
+      perfWasmSum = 0;
+      perfDrawSum = 0;
+      perfWindowStart = performance.now();
+      const s = activeSnap();
+      ui.updatePerfHud(enabled, 0, 0, 0, 0, s.planets.length, s.fleets.length);
     },
     onDebugHistoryToggle: (enabled) => {
       debugHistoryEnabled = enabled;
@@ -314,20 +331,58 @@ async function bootstrap(): Promise<void> {
   ui.update(lastSnap, true);
 
   const frame = (): void => {
+    let stepsDone = 0;
+    let wasmMs = 0;
+
     if (speed > 0 && historyViewIndex === null) {
       tickAccum += speed;
       const steps = Math.floor(tickAccum);
       if (steps > 0) {
         tickAccum -= steps;
+        const t0 = debugPerfEnabled ? performance.now() : 0;
         engine.step(steps);
         lastSnap = engine.take_snapshot() as SimSnapshot;
+        if (debugPerfEnabled) wasmMs = performance.now() - t0;
+        stepsDone = steps;
         renderer.ingestFx(lastSnap);
         recordHistorySnapshot(lastSnap);
         ui.update(lastSnap, false);
         if (debugHistoryEnabled) syncHistoryBar();
       }
     }
-    renderer.draw(activeSnap(), config.crustRichness, ui.getSelectedPlanet(), hoveredPlanet);
+
+    const snap = activeSnap();
+    const d0 = debugPerfEnabled ? performance.now() : 0;
+    renderer.draw(snap, config.crustRichness, ui.getSelectedPlanet(), hoveredPlanet);
+
+    if (debugPerfEnabled) {
+      const drawMs = performance.now() - d0;
+      perfFrames += 1;
+      perfTicks += stepsDone;
+      perfWasmSum += wasmMs;
+      perfDrawSum += drawMs;
+
+      const now = performance.now();
+      const elapsed = now - perfWindowStart;
+      if (elapsed >= 250) {
+        const sec = elapsed / 1000;
+        ui.updatePerfHud(
+          true,
+          perfFrames / sec,
+          perfTicks / sec,
+          perfWasmSum / perfFrames,
+          perfDrawSum / perfFrames,
+          snap.planets.length,
+          snap.fleets.length,
+        );
+        perfFrames = 0;
+        perfTicks = 0;
+        perfWasmSum = 0;
+        perfDrawSum = 0;
+        perfWindowStart = now;
+      }
+    }
+
     requestAnimationFrame(frame);
   };
 
