@@ -768,14 +768,20 @@ export class GalaxyRenderer {
       const fx = sx(selectedFleet.x);
       const fy = sy(selectedFleet.y);
       const tOff = selectedFleet.target * PLANET_STRIDE;
-      const hasSteer = selectedFleet.hunting && Number.isFinite(selectedFleet.steerX);
+      const hasSteer =
+        (selectedFleet.hunting || selectedFleet.whRoute >= 0) &&
+        Number.isFinite(selectedFleet.steerX);
       if (hasSteer || tOff + 1 < planetsBuf.length) {
         const tx = sx(hasSteer ? selectedFleet.steerX : planetsBuf[tOff]);
         const ty = sy(hasSteer ? selectedFleet.steerY : planetsBuf[tOff + 1]);
         ctx.beginPath();
         ctx.moveTo(fx, fy);
         ctx.lineTo(tx, ty);
-        ctx.strokeStyle = selectedFleet.hunting ? '#f87171' : '#ffffff';
+        ctx.strokeStyle = selectedFleet.hunting
+          ? '#f87171'
+          : selectedFleet.whRoute >= 0
+            ? '#e879f9'
+            : '#ffffff';
         ctx.lineWidth = 1.8;
         ctx.setLineDash([5, 4]);
         ctx.stroke();
