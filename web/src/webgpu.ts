@@ -360,19 +360,14 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> FullscreenOut {
   return out;
 }
 
-@fragment
-fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
-  // Sample 6 scanner channels + 6 faction-aware ECM jammer channels in uniform control flow
-  let raw0 = textureSample(signalTex0, fieldSampler, in.uv);
-  let raw1 = textureSample(signalTex1, fieldSampler, in.uv);
-  let jam0 = textureSample(jamTex0, fieldSampler, in.uv);
+fn sampleSignals(uv: vec2<f32>) -> array<f32, 6> {
+  let raw0 = textureSampleLevel(signalTex0, fieldSampler, uv, 0.0);
+  let raw1 = textureSampleLevel(signalTex1, fieldSampler, uv, 0.0);
+  let jam0 = textureSampleLevel(jamTex0, fieldSampler, uv, 0.0);
   var raw = array<f32, 6>(raw0.r, raw0.g, raw0.b, raw0.a, raw1.r, raw1.g);
   var jam = array<f32, 6>(jam0.r, jam0.g, jam0.b, jam0.a, raw1.b, raw1.a);
 
-  var sig: array<f32, 6>;
-  var gradX: array<f32, 6>;
-  var gradY: array<f32, 6>;
-
+  var out: array<f32, 6>;
   for (var i: u32 = 0u; i < 6u; i = i + 1u) {
     let enabled = (fieldCfg.empireMask & (1u << i)) != 0u;
     // Faction-aware ECM: jammer of empire E never suppresses E, only enemy empires
@@ -382,10 +377,31 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
         enemyJam = max(enemyJam, jam[j]);
       }
     }
-    let sVal = select(0.0, max(0.0, clamp(raw[i], 0.0, 1.0) - enemyJam), enabled);
-    sig[i] = sVal;
-    gradX[i] = dpdx(sVal);
-    gradY[i] = dpdy(sVal);
+    out[i] = select(0.0, max(0.0, clamp(raw[i], 0.0, 1.0) - enemyJam), enabled);
+  }
+  return out;
+}
+
+@fragment
+fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
+  // Central-difference gradients at 1.5 CSS px with linear filtering:
+  // eliminates f16 quantization stippling at high zoom and V-fold cancellation on A = B seams
+  const STEP_PX: f32 = 1.5;
+  let dxUv = vec2<f32>(STEP_PX / max(1.0, cam.viewportW), 0.0);
+  let dyUv = vec2<f32>(0.0, STEP_PX / max(1.0, cam.viewportH));
+
+  var sig = sampleSignals(in.uv);
+  var sigR = sampleSignals(in.uv + dxUv);
+  var sigL = sampleSignals(in.uv - dxUv);
+  var sigU = sampleSignals(in.uv + dyUv);
+  var sigD = sampleSignals(in.uv - dyUv);
+
+  var gradX: array<f32, 6>;
+  var gradY: array<f32, 6>;
+  let invSpan = 1.0 / (2.0 * STEP_PX);
+  for (var i: u32 = 0u; i < 6u; i = i + 1u) {
+    gradX[i] = (sigR[i] - sigL[i]) * invSpan;
+    gradY[i] = (sigU[i] - sigD[i]) * invSpan;
   }
 
   var top1Val: f32 = 0.0;
@@ -408,8 +424,8 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
 
   const THRESH: f32 = 0.015;
 
-  let g1 = max(length(vec2<f32>(gradX[top1Idx], gradY[top1Idx])), 1e-5);
-  let g2 = max(length(vec2<f32>(gradX[top2Idx], gradY[top2Idx])), 1e-5);
+  let g1 = max(length(vec2<f32>(gradX[top1Idx], gradY[top1Idx])), 1e-4);
+  let g2 = max(length(vec2<f32>(gradX[top2Idx], gradY[top2Idx])), 1e-4);
   let dist1Px = (top1Val - THRESH) / g1;
   let dist2Px = (top2Val - THRESH) / g2;
 
@@ -422,14 +438,16 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
   let radialGlow = pow(top1Val, 2.2) * 0.48;
   var fillA = inside1 * clamp(baseTint + radialGlow, 0.0, 0.65);
 
-  // Equilibrium line (A = B): clean dark gap of constant screen width (guarded on flat regions)
+  // Equilibrium line (A = B): central-difference gradient with fixed (top1Idx, top2Idx)
   if (fieldCfg.eqMode == 0u && top2Val > 0.001) {
-    let eqGradLen = length(
-      vec2<f32>(gradX[top1Idx] - gradX[top2Idx], gradY[top1Idx] - gradY[top2Idx]),
-    );
-    if (eqGradLen >= 1e-5) {
-      let eqDistPx = (top1Val - top2Val) / eqGradLen;
-      let gapMask = smoothstep(0.85, 2.05, eqDistPx);
+    let diffR = sigR[top1Idx] - sigR[top2Idx];
+    let diffL = sigL[top1Idx] - sigL[top2Idx];
+    let diffU = sigU[top1Idx] - sigU[top2Idx];
+    let diffD = sigD[top1Idx] - sigD[top2Idx];
+    let eqGradLen = length(vec2<f32>(diffR - diffL, diffU - diffD) * invSpan);
+    if (eqGradLen >= 1e-4) {
+      let eqDistPx = (top1Val - top2Val) / max(eqGradLen, 1e-4);
+      let gapMask = smoothstep(0.6, 1.8, eqDistPx);
       fillA = fillA * mix(1.0, gapMask, inside2);
     }
   }
@@ -437,7 +455,7 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
   var outRgb = top1Col;
   var outA = fillA;
 
-  // Antialiased ~1 px range contours
+  // Antialiased ~1 px range contours using the same smooth central-difference gradients
   if (fieldCfg.contourMode != 0u && fieldCfg.contourOpacity > 0.001) {
     if (fieldCfg.contourMode == 1u) {
       // Outer only: draw contour only where zone meets empty space
@@ -457,7 +475,7 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
       for (var i: u32 = 0u; i < 6u; i = i + 1u) {
         let v = sig[i];
         if (v > 0.002) {
-          let g = max(length(vec2<f32>(gradX[i], gradY[i])), 1e-5);
+          let g = max(length(vec2<f32>(gradX[i], gradY[i])), 1e-4);
           let linePx = abs(v - THRESH) / g;
           let hasSig = smoothstep(0.003, 0.015, v);
           let stroke = (1.0 - smoothstep(0.42, 1.32, linePx)) * hasSig;
