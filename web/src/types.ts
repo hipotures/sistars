@@ -97,7 +97,7 @@ export interface TechCatalogView {
   classicRaces: RaceDef[];
 }
 
-export type GalaxySize = 'small' | 'medium' | 'large' | 'huge';
+export type GalaxySize = 'small' | 'medium' | 'large' | 'huge' | 'colossal' | 'galactic';
 export type GalaxyShape = 'spiral' | 'random' | 'ring' | 'clusters' | 'elliptical';
 
 export interface SimConfig {
