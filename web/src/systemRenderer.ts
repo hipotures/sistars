@@ -79,12 +79,40 @@ float fbm(vec3 p) {
   return v;
 }
 
-float craters(vec3 p) {
-  float n1 = abs(snoise(p * 7.5));
-  float n2 = abs(snoise(p * 15.0 + vec3(4.1, -2.7, 8.3)));
-  float c1 = smoothstep(0.16, 0.02, n1);
-  float c2 = smoothstep(0.14, 0.02, n2) * 0.55;
-  return clamp(c1 + c2, 0.0, 1.0);
+vec3 hash33(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// 3D Worley / Voronoi impact craters: returns (darkFloor, brightRim)
+vec2 worleyCraterLayer(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  float minD = 1.0;
+  for (int z = -1; z <= 1; z++) {
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        vec3 nb = vec3(float(x), float(y), float(z));
+        vec3 rnd = hash33(i + nb);
+        vec3 diff = nb + rnd - f;
+        minD = min(minD, dot(diff, diff));
+      }
+    }
+  }
+  float d = sqrt(minD);
+  float floorDark = smoothstep(0.34, 0.12, d);
+  float rimBright = smoothstep(0.46, 0.35, d) * smoothstep(0.24, 0.35, d);
+  return vec2(floorDark, rimBright);
+}
+
+vec2 worleyCraters(vec3 p) {
+  vec2 c1 = worleyCraterLayer(p * 4.8);
+  vec2 c2 = worleyCraterLayer(p * 10.5 + vec3(7.1, -3.4, 5.2));
+  return vec2(
+    clamp(c1.x * 0.72 + c2.x * 0.48, 0.0, 1.0),
+    clamp(c1.y * 0.80 + c2.y * 0.55, 0.0, 1.0)
+  );
 }
 `;
 
@@ -162,18 +190,22 @@ SurfaceSample evalPlanetSurface(
     landMid = vec3(0.30, 0.22, 0.19);
     landHigh = vec3(0.42, 0.34, 0.30);
   } else if (bodyType == 5) { // Rock
-    landLow = mix(vec3(0.36, 0.36, 0.38), minTint, 0.35);
-    landMid = vec3(0.52, 0.50, 0.48);
-    landHigh = vec3(0.68, 0.66, 0.64);
+    landLow = mix(vec3(0.34, 0.34, 0.37), minTint, 0.30);
+    landMid = vec3(0.50, 0.49, 0.48);
+    landHigh = vec3(0.68, 0.67, 0.65);
+  } else if (bodyType == 8) { // Dwarf / Plutoid (high-contrast bright ice plains + dark tholins)
+    landLow = vec3(0.32, 0.21, 0.19);
+    landMid = vec3(0.66, 0.56, 0.48);
+    landHigh = vec3(0.90, 0.92, 0.96);
   }
 
   vec3 col = mix(landLow, landMid, smoothstep(0.38, 0.66, elev));
   col = mix(col, landHigh, smoothstep(0.68, 0.90, elev));
 
-  // Impact craters on low-atmosphere bodies
-  if (atmoDensity < 0.12) {
-    float cr = craters(n + seedOff * 0.25);
-    col *= (1.0 - cr * 0.32);
+  // Crisp 3D Worley impact craters (dark bowls + bright rims) on airless bodies
+  if (atmoDensity < 0.08) {
+    vec2 cr = worleyCraters(n + seedOff * 0.25);
+    col = col * (1.0 - cr.x * 0.34) + vec3(0.16, 0.16, 0.17) * cr.y;
   }
 
   // Ocean level & specular
@@ -292,6 +324,97 @@ void main() {
       col = photosphere * (0.48 + 0.65 * limb);
     }
     outColor = vec4(col, 1.0);
+    return;
+  }
+
+  // Asteroid Belt (9) & Kuiper Belt (10): tilted dust band + orbiting procedural rock/ice chunks
+  if (uBodyType == 9 || uBodyType == 10) {
+    bool isKuiper = uBodyType == 10;
+    vec3 col = bg;
+    // Tilted disk projection
+    vec2 dp = vec2(p.x * 0.88, p.y * 2.15 + p.x * 0.24);
+    float r = length(dp);
+    float ang = atan(dp.y, dp.x);
+    float innerR = isKuiper ? 0.38 : 0.42;
+    float outerR = isKuiper ? 0.94 : 0.90;
+    float band = smoothstep(innerR, innerR + 0.12, r) * (1.0 - smoothstep(outerR - 0.14, outerR, r));
+    if (band > 0.001) {
+      float dust = fbm(vec3(cos(ang - uTime * 0.08) * r * 4.5, sin(ang - uTime * 0.08) * r * 4.5, uSeed * 0.01)) * 0.5 + 0.5;
+      vec3 dustCol = isKuiper ? vec3(0.46, 0.72, 0.96) : vec3(0.72, 0.64, 0.54);
+      col += dustCol * uStarColor * band * (0.12 + 0.22 * dust);
+
+      // Multi-ring Keplerian asteroid / ice speckles
+      for (int layer = 0; layer < 3; layer++) {
+        float fl = float(layer);
+        float speed = 0.24 / (0.6 + fl * 0.35);
+        float aRot = ang - uTime * speed + fl * 2.1;
+        vec2 polarCell = vec2(aRot * (24.0 + fl * 14.0), r * (34.0 + fl * 16.0));
+        vec2 cid = floor(polarCell);
+        vec2 cf = fract(polarCell) - 0.5;
+        vec3 rnd = hash33(vec3(cid, uSeed * 0.01 + fl * 13.7));
+        vec2 off = (rnd.xy - 0.5) * 0.55;
+        float dist = length(cf - off);
+        float rockRad = mix(0.06, 0.20, rnd.z);
+        float rock = smoothstep(rockRad, rockRad * 0.35, dist) * step(0.58 - fl * 0.06, rnd.z);
+        vec3 rockCol = isKuiper ? mix(vec3(0.70, 0.88, 1.0), vec3(0.95, 0.98, 1.0), rnd.x)
+                                : mix(vec3(0.55, 0.50, 0.46), vec3(0.86, 0.78, 0.66), rnd.x);
+        col = mix(col, rockCol * uStarColor * (0.65 + 0.5 * rnd.y), rock * band);
+      }
+    }
+    // Faint central starlight point for spatial orientation
+    float starGlow = exp(-length(p) * 9.0) * 0.38;
+    col += uStarColor * starGlow;
+    outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    return;
+  }
+
+  // Comet (11): irregular dark icy nucleus + coma + curved dust tail + straight blue ion tail
+  if (uBodyType == 11) {
+    vec3 col = bg;
+    vec2 headPos = vec2(-0.32, 0.14);
+    vec2 q = p - headPos;
+
+    // Anti-solar tail coordinates (pointing down-right away from star)
+    vec2 ionDir = normalize(vec2(0.88, -0.46));
+    vec2 ionPerp = vec2(-ionDir.y, ionDir.x);
+    float along = dot(q, ionDir);
+    float across = dot(q, ionPerp);
+
+    if (along > -0.15) {
+      float tAlong = max(0.0, along);
+      // 1. Straight electric-blue ion tail
+      float ionWidth = 0.035 + tAlong * 0.11;
+      float ionNoise = 0.72 + 0.28 * snoise(vec3(along * 6.5 - uTime * 1.4, across * 14.0, uSeed * 0.01));
+      float ionMask = exp(-(across * across) / (ionWidth * ionWidth)) * exp(-tAlong * 1.25) * smoothstep(-0.04, 0.08, along);
+      col += vec3(0.28, 0.72, 1.0) * ionMask * ionNoise * 0.95;
+
+      // 2. Curved warm-white dust tail
+      float dustAcross = across - tAlong * tAlong * 0.24 - tAlong * 0.08;
+      float dustWidth = 0.06 + tAlong * 0.24;
+      float dustNoise = 0.75 + 0.25 * fbm(vec3(along * 4.0 - uTime * 0.45, dustAcross * 8.0, uSeed * 0.01));
+      float dustMask = exp(-(dustAcross * dustAcross) / (dustWidth * dustWidth)) * exp(-tAlong * 1.15) * smoothstep(-0.04, 0.06, along);
+      col += vec3(0.95, 0.90, 0.78) * uStarColor * dustMask * dustNoise * 0.72;
+    }
+
+    // Bright cyan-white coma around nucleus
+    float dHead = length(q);
+    float coma = exp(-dHead * 5.8) * 0.95 + exp(-dHead * 14.0) * 0.65;
+    col += mix(vec3(0.45, 0.85, 1.0), vec3(1.0, 0.98, 0.95), exp(-dHead * 9.0)) * coma;
+
+    // Irregular dark icy/rocky nucleus (noise-deformed silhouette)
+    float nucAngle = atan(q.y, q.x) + uTime * 0.4;
+    float nucRad = 0.115 + 0.025 * snoise(vec3(cos(nucAngle) * 2.2, sin(nucAngle) * 2.2, uSeed * 0.01));
+    if (dHead < nucRad) {
+      float z = sqrt(max(0.0, 1.0 - (dHead / nucRad) * (dHead / nucRad)));
+      vec3 nn = normalize(vec3(q / nucRad, z));
+      float nTex = fbm(nn * 6.0 + seedOff) * 0.5 + 0.5;
+      float ndl = smoothstep(-0.2, 0.85, dot(nn, normalize(vec3(-0.85, 0.42, 0.35))));
+      vec3 nucCol = mix(vec3(0.10, 0.12, 0.16), vec3(0.55, 0.68, 0.78), nTex) * (0.18 + 0.95 * ndl);
+      float edgeAA = smoothstep(nucRad, nucRad - 0.015, dHead);
+      col = mix(col, nucCol, edgeAA);
+    }
+
+    outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
     return;
   }
 
@@ -578,6 +701,14 @@ function bodyTypeToInt(t: BodyType): number {
       return 6;
     case 'IceGiant':
       return 7;
+    case 'Dwarf':
+      return 8;
+    case 'AsteroidBelt':
+      return 9;
+    case 'KuiperBelt':
+      return 10;
+    case 'Comet':
+      return 11;
   }
 }
 

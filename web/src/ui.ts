@@ -1014,7 +1014,11 @@ export class UiController {
 
     const body = sys.bodies[which.bodyIdx];
     if (!body) return;
-    exportBtn.style.display = 'inline-block';
+    const isSpecialNonSphere =
+      body.bodyType === 'AsteroidBelt' ||
+      body.bodyType === 'KuiperBelt' ||
+      body.bodyType === 'Comet';
+    exportBtn.style.display = isSpecialNonSphere ? 'none' : 'inline-block';
 
     // Populate Moons strip for the parent planet
     const moons = body.moons ?? [];
@@ -1066,6 +1070,31 @@ export class UiController {
     const ls = body.liveState;
     getEl('sysSelectedLabel').textContent = `${body.name}${isPrimary ? ' (Primary World)' : ''}`;
     this.sysPreviewRenderer.setTarget({ kind: 'body', body, star: sys.star }, true);
+
+    if (body.bodyType === 'AsteroidBelt' || body.bodyType === 'KuiperBelt') {
+      const isKuiper = body.bodyType === 'KuiperBelt';
+      statsEl.innerHTML = `
+        <div class="insp-stat"><span>Classification</span><b>${isKuiper ? 'Kuiper Belt' : 'Main Asteroid Belt'}</b></div>
+        <div class="insp-stat"><span>Mean Orbit</span><b>${body.orbitAu.toFixed(2)} AU</b></div>
+        <div class="insp-stat"><span>Composition</span><b>${isKuiper ? 'Water/Methane Ice & Rock' : 'Iron-Nickel & Silicates'}</b></div>
+        <div class="insp-stat"><span>Mean Temp</span><b>${Math.round(body.tempK)} K (${Math.round(body.tempK - 273.15)}°C)</b></div>
+        <div class="insp-stat"><span>Ice Fraction</span><b>${Math.round(body.icePct * 100)}%</b></div>
+        <div class="insp-stat"><span>Mining Yield</span><b>${isKuiper ? 'Volatiles / Low Metals' : 'Rich Fe / Bo / Ge'}</b></div>
+      `;
+      return;
+    }
+
+    if (body.bodyType === 'Comet') {
+      statsEl.innerHTML = `
+        <div class="insp-stat"><span>Classification</span><b>Eccentric Comet</b></div>
+        <div class="insp-stat"><span>Orbit Zone</span><b>${body.orbitAu.toFixed(2)} AU</b></div>
+        <div class="insp-stat"><span>Nucleus Radius</span><b>~${Math.round(body.radiusEarth * 6371)} km</b></div>
+        <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(body.tempK)} K (${Math.round(body.tempK - 273.15)}°C)</b></div>
+        <div class="insp-stat"><span>Volatile Ice</span><b>${Math.round(body.icePct * 100)}%</b></div>
+        <div class="insp-stat"><span>Activity</span><b>Dual Dust + Ion Tail</b></div>
+      `;
+      return;
+    }
 
     const liveCells = ls
       ? `
