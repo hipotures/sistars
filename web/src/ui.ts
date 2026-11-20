@@ -71,6 +71,15 @@ function shortPrt(prt: string): string {
   return prt.replace(/^PRT_/, '');
 }
 
+function formatCompact(n: number): string {
+  const v = Math.round(n);
+  if (v < 1000) return String(v);
+  if (v < 10_000) return `${(v / 1000).toFixed(1)}k`;
+  if (v < 1_000_000) return `${Math.round(v / 1000)}k`;
+  if (v < 10_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(v / 1_000_000)}M`;
+}
+
 function doctrinePreset(focus: string): Doctrine {
   const base: Doctrine = {
     facShare: 0.48,
@@ -656,13 +665,13 @@ export class UiController {
       this.lastHudSignature = sig;
       bar.innerHTML = hud.empires
         .map(
-          (emp, idx) => `<div class="emp-pill" style="border-top-color:${emp.color};">
+          (emp, idx) => `<div class="emp-pill" id="hudPill_${idx}" style="border-top-color:${emp.color};">
             <div class="emp-row1">
               <span style="color:${emp.color};">■ ${emp.name}</span>
               <span id="hudTechB_${idx}"></span>
             </div>
             <div class="emp-row2">
-              <span id="hudStat_${idx}">1 pl | 25 Res</span>
+              <span id="hudStat_${idx}">1p · 25R</span>
               <span id="hudKill_${idx}">💥0 🌀0</span>
             </div>
           </div>`,
@@ -672,12 +681,20 @@ export class UiController {
 
     for (let i = 0; i < hud.empires.length; i++) {
       const emp = hud.empires[i];
+      const pillEl = document.getElementById(`hudPill_${i}`);
       const statEl = document.getElementById(`hudStat_${i}`);
       const killEl = document.getElementById(`hudKill_${i}`);
       const badgeEl = document.getElementById(`hudTechB_${i}`);
-      if (statEl) statEl.textContent = `${emp.stats.planets} pl | ${Math.round(emp.stats.res)} Res`;
-      if (killEl) killEl.textContent = `💥${emp.doctrine.kills} 🌀${emp.stats.gates}`;
+      if (statEl) {
+        statEl.textContent = `${formatCompact(emp.stats.planets)}p · ${formatCompact(emp.stats.res)}R`;
+      }
+      if (killEl) {
+        killEl.textContent = `💥${formatCompact(emp.doctrine.kills)} 🌀${formatCompact(emp.stats.gates)}`;
+      }
       if (badgeEl) badgeEl.textContent = this.formatTechBadges(emp.perks);
+      if (pillEl) {
+        pillEl.title = `${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates`;
+      }
     }
   }
 
