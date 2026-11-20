@@ -15,11 +15,16 @@ type LabAction = 'tournament' | 'coevolve' | 'copyjson';
 
 export interface UiCallbacks {
   onSpeedChange: (speed: number) => void;
+  onStepTick: () => void;
   onReset: () => void;
   onParamChange: (key: string, value: number) => void;
   onLabAction: (action: LabAction) => void;
   onSelectPlanet: (index: number) => void;
   onLaunchRaces: (races: RaceDef[]) => void;
+  onDebugHistoryToggle: (enabled: boolean) => void;
+  onHistoryScrub: (index: number) => void;
+  onHistoryStep: (delta: number) => void;
+  onHistoryLive: () => void;
 }
 
 const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
@@ -148,6 +153,36 @@ export class UiController {
     getEl('statusMsgStats').textContent = text;
   }
 
+  public setActiveSpeedButton(speed: number): void {
+    document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => {
+      b.classList.toggle('active', Number(b.dataset.speed) === speed);
+    });
+  }
+
+  public updateHistoryBar(
+    enabled: boolean,
+    index: number,
+    total: number,
+    year: number,
+    isLive: boolean,
+  ): void {
+    const bar = getEl('historyBar');
+    bar.classList.toggle('visible', enabled);
+    if (!enabled) return;
+
+    const maxIdx = Math.max(0, total - 1);
+    const slider = getEl<HTMLInputElement>('historySlider');
+    slider.max = String(maxIdx);
+    slider.value = String(Math.min(index, maxIdx));
+
+    const badge = getEl('historyBadge');
+    badge.textContent = isLive ? 'DEBUG REC' : 'REPLAY';
+    badge.classList.toggle('paused', !isLive);
+
+    getEl('historyLabel').textContent = `Yr ${year.toFixed(1)} (${total > 0 ? index + 1 : 0}/${total})`;
+    getEl('btnHistLive').classList.toggle('active', isLive);
+  }
+
   public updateWinRateBar(res: TournamentResult, snap: SimSnapshot): void {
     getEl('tourneyLabel').textContent = `🏆 Win-Rate (${res.numGames} maps):`;
     const bar = getEl('winrateBar');
@@ -256,16 +291,27 @@ export class UiController {
   }
 
   private bindEvents(): void {
-    // Speed buttons
+    // Speed buttons & single-tick step
     document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const speed = Number(btn.dataset.speed ?? 1);
-        document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => {
-          b.classList.toggle('active', b === btn);
-        });
+        this.setActiveSpeedButton(speed);
         this.callbacks.onSpeedChange(speed);
       });
     });
+
+    getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
+
+    // Debug History Scrubber controls
+    getEl<HTMLInputElement>('p_debugHistory').addEventListener('change', (e) => {
+      this.callbacks.onDebugHistoryToggle((e.target as HTMLInputElement).checked);
+    });
+    getEl<HTMLInputElement>('historySlider').addEventListener('input', (e) => {
+      this.callbacks.onHistoryScrub(Number((e.target as HTMLInputElement).value));
+    });
+    getEl('btnHistPrev').addEventListener('click', () => this.callbacks.onHistoryStep(-1));
+    getEl('btnHistNext').addEventListener('click', () => this.callbacks.onHistoryStep(1));
+    getEl('btnHistLive').addEventListener('click', () => this.callbacks.onHistoryLive());
 
     // Drawers
     document.querySelectorAll<HTMLButtonElement>('[data-drawer]').forEach((btn) => {

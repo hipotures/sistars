@@ -179,6 +179,56 @@ header.hud-top {
   flex-shrink: 0;
 }
 
+/* Debug History Scrubber */
+#historyBar {
+  position: absolute;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(680px, 92vw);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--purple);
+  padding: 6px 10px;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  z-index: 18;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+
+#historyBar.visible {
+  display: flex;
+}
+
+.hist-badge {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--purple);
+  background: rgba(192, 132, 252, 0.14);
+  border: 1px solid rgba(192, 132, 252, 0.4);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.hist-badge.paused {
+  color: var(--yellow);
+  background: rgba(250, 204, 21, 0.14);
+  border-color: rgba(250, 204, 21, 0.45);
+}
+
+.hist-label {
+  font-family: monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.69rem;
+  color: var(--text);
+  white-space: nowrap;
+  min-width: 158px;
+  text-align: right;
+}
+
 /* Planet Inspector */
 #planetInspector {
   position: absolute;
