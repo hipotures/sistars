@@ -86,6 +86,15 @@ impl WasmEngine {
         needs_reset
     }
 
+    pub fn set_galaxy_options(&mut self, size: &str, shape: &str, new_seed: u32) -> bool {
+        if self.sim.set_galaxy_options(size, shape) {
+            self.sim.init(new_seed, false);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn take_snapshot(&mut self) -> JsValue {
         let snap = self.sim.take_snapshot();
         serde_wasm_bindgen::to_value(&snap).unwrap_or(JsValue::NULL)

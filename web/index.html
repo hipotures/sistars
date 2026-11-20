@@ -280,8 +280,26 @@
     <span>Sandbox Tech (ignore PRT / LRT restrictions)</span>
   </label>
 
-  <h3>2. Galaxy &amp; Wormholes</h3>
-  <div class="field"><div class="field-header"><span>Planet count</span><span class="val" id="v_planets">90</span></div><input type="range" id="p_planets" data-param="planets" min="30" max="200" step="10" value="90"></div>
+  <h3>2. Galaxy Generator &amp; Wormholes</h3>
+  <div class="field">
+    <div class="field-header"><span>Galaxy size</span></div>
+    <select id="p_galaxySize" class="select-input">
+      <option value="small" selected>Small (120 systems • 1000×650 ly)</option>
+      <option value="medium">Medium (250 systems • 1450×950 ly)</option>
+      <option value="large">Large (500 systems • 2000×1350 ly)</option>
+      <option value="huge">Huge (1000 systems • 2800×1900 ly)</option>
+    </select>
+  </div>
+  <div class="field">
+    <div class="field-header"><span>Galaxy shape</span></div>
+    <select id="p_galaxyShape" class="select-input">
+      <option value="spiral" selected>Spiral (Arms &amp; Core)</option>
+      <option value="random">Random (Uniform)</option>
+      <option value="ring">Ring (Hollow Core)</option>
+      <option value="clusters">Clusters (Archipelago)</option>
+      <option value="elliptical">Elliptical (Dense Bulge)</option>
+    </select>
+  </div>
   <div class="field"><div class="field-header"><span>Wormhole pairs</span><span class="val" id="v_wormholePairs">2</span></div><input type="range" id="p_wormholePairs" data-param="wormholePairs" min="0" max="5" step="1" value="2"></div>
   <div class="field"><div class="field-header"><span>Crust richness I/B/G (kT)</span><span class="val" id="v_crustRichness">800</span></div><input type="range" id="p_crustRichness" data-param="crustRichness" min="300" max="2500" step="100" value="800"></div>
 

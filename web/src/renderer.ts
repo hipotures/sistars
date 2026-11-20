@@ -26,8 +26,8 @@ function hexToRgbTuple(hex: string): string {
 export class GalaxyRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly worldW: number;
-  private readonly worldH: number;
+  private worldW: number;
+  private worldH: number;
   private readonly bgStars: BgStar[];
   private combatFx: CombatFxView[] = [];
   private jumpFx: JumpFxView[] = [];
@@ -78,6 +78,14 @@ export class GalaxyRenderer {
       if (this.jumpFx.length > 25) {
         this.jumpFx.splice(0, this.jumpFx.length - 25);
       }
+    }
+  }
+
+  public setWorldSize(worldW: number, worldH: number): void {
+    if (this.worldW !== worldW || this.worldH !== worldH) {
+      this.worldW = worldW;
+      this.worldH = worldH;
+      this.resetCamera();
     }
   }
 
@@ -236,11 +244,14 @@ export class GalaxyRenderer {
     }
 
     // Planets
+    const denseFactor = snap.planets.length >= 450 ? 0.72 : snap.planets.length >= 220 ? 0.85 : 1.0;
     for (let i = 0; i < snap.planets.length; i++) {
       const pl = snap.planets[i];
       const px = sx(pl.x);
       const py = sy(pl.y);
-      const r = pl.owner > 0 ? Math.min(13, 4 + Math.sqrt(pl.factories) * 0.45) : 3 + pl.hab * 2.5;
+      const r =
+        (pl.owner > 0 ? Math.min(13, 4 + Math.sqrt(pl.factories) * 0.45) : 3 + pl.hab * 2.5) *
+        denseFactor;
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       if (pl.owner > 0) {
