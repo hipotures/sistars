@@ -1,4 +1,7 @@
 import type { CombatFxView, FleetView, HudSnapshot, JumpFxView, MapSelection, RenderFrame } from './types';
+import { WebGpuGalaxyBackend } from './webgpu';
+
+export type RenderBackendName = 'WebGPU' | 'Canvas2D';
 
 export type HitTarget =
   | { kind: 'planet'; index: number }
@@ -10,6 +13,8 @@ export type HitTarget =
 export const PLANET_STRIDE = 7; // [x, y, owner, factories, hab, hasGate, crustSum]
 export const FLEET_STRIDE = 7;  // [x, y, targetX, targetY, emp, typeCode, flags]
 export const DEBRIS_STRIDE = 2; // [x, y]
+
+const MAX_VISIBLE_PLANET_LABELS = 250;
 
 interface BgStar {
   x: number;
@@ -36,7 +41,11 @@ function hexToRgbTuple(hex: string): string {
 
 export class GalaxyRenderer {
   private readonly canvas: HTMLCanvasElement;
-  private readonly ctx: CanvasRenderingContext2D;
+  private readonly overlayCanvas: HTMLCanvasElement;
+  private readonly overlayCtx: CanvasRenderingContext2D;
+  private fallbackCtx: CanvasRenderingContext2D | null = null;
+  private gpuBackend: WebGpuGalaxyBackend | null = null;
+
   private worldW: number;
   private worldH: number;
   private readonly bgStars: BgStar[];
@@ -47,13 +56,33 @@ export class GalaxyRenderer {
   private panX = 0;
   private panY = 0;
 
-  constructor(canvas: HTMLCanvasElement, worldW: number, worldH: number) {
+  // Reusable scratch buffer for visible planet label culling (avoids per-frame allocation)
+  private readonly visiblePlanetIndices = new Int32Array(MAX_VISIBLE_PLANET_LABELS);
+
+  public static async create(
+    canvas: HTMLCanvasElement,
+    overlayCanvas: HTMLCanvasElement,
+    worldW: number,
+    worldH: number,
+  ): Promise<GalaxyRenderer> {
+    const renderer = new GalaxyRenderer(canvas, overlayCanvas, worldW, worldH);
+    await renderer.initBackend();
+    return renderer;
+  }
+
+  private constructor(
+    canvas: HTMLCanvasElement,
+    overlayCanvas: HTMLCanvasElement,
+    worldW: number,
+    worldH: number,
+  ) {
     this.canvas = canvas;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Failed to acquire 2D canvas context');
+    this.overlayCanvas = overlayCanvas;
+    const octx = overlayCanvas.getContext('2d');
+    if (!octx) {
+      throw new Error('Failed to acquire 2D overlay canvas context');
     }
-    this.ctx = ctx;
+    this.overlayCtx = octx;
     this.worldW = worldW;
     this.worldH = worldH;
 
@@ -68,9 +97,39 @@ export class GalaxyRenderer {
     window.addEventListener('resize', () => this.resize());
   }
 
+  private async initBackend(): Promise<void> {
+    const gpu = await WebGpuGalaxyBackend.create(this.canvas, this.bgStars, () => {
+      // Automatic fallback if WebGPU device is lost at runtime
+      this.gpuBackend = null;
+      this.ensureCanvas2dFallback();
+    });
+    if (gpu) {
+      this.gpuBackend = gpu;
+    } else {
+      this.ensureCanvas2dFallback();
+    }
+  }
+
+  private ensureCanvas2dFallback(): void {
+    if (this.fallbackCtx) return;
+    const ctx = this.canvas.getContext('2d');
+    if (ctx) {
+      this.fallbackCtx = ctx;
+    }
+  }
+
+  public get backendName(): RenderBackendName {
+    return this.gpuBackend ? 'WebGPU' : 'Canvas2D';
+  }
+
   public resize(): void {
-    this.canvas.width = window.innerWidth;
-    this.canvas.height = window.innerHeight;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.overlayCanvas.width = w;
+    this.overlayCanvas.height = h;
+    this.gpuBackend?.reconfigure();
   }
 
   public clearFx(): void {
@@ -161,13 +220,15 @@ export class GalaxyRenderer {
     let best: HitTarget = null;
     let bestScore = Infinity;
 
-    // 1. Planets (18px radius)
+    // 1. Planets (18px radius, fast AABB reject for 100k+ stars)
     const planetCount = Math.floor(frame.planetsBuf.length / PLANET_STRIDE);
     for (let i = 0; i < planetCount; i++) {
       const off = i * PLANET_STRIDE;
-      const px = offX + frame.planetsBuf[off] * scale;
-      const py = offY + frame.planetsBuf[off + 1] * scale;
-      const d = Math.hypot(px - mx, py - my);
+      const dx = offX + frame.planetsBuf[off] * scale - mx;
+      if (dx < -18 || dx > 18) continue;
+      const dy = offY + frame.planetsBuf[off + 1] * scale - my;
+      if (dy < -18 || dy > 18) continue;
+      const d = Math.hypot(dx, dy);
       if (d <= 18 && d < bestScore) {
         bestScore = d;
         best = { kind: 'planet', index: i };
@@ -178,9 +239,11 @@ export class GalaxyRenderer {
     const fleetCount = Math.floor(frame.fleetsBuf.length / FLEET_STRIDE);
     for (let i = 0; i < fleetCount; i++) {
       const off = i * FLEET_STRIDE;
-      const fx = offX + frame.fleetsBuf[off] * scale;
-      const fy = offY + frame.fleetsBuf[off + 1] * scale;
-      const d = Math.hypot(fx - mx, fy - my);
+      const dx = offX + frame.fleetsBuf[off] * scale - mx;
+      if (dx < -14 || dx > 14) continue;
+      const dy = offY + frame.fleetsBuf[off + 1] * scale - my;
+      if (dy < -14 || dy > 14) continue;
+      const d = Math.hypot(dx, dy);
       if (d <= 14 && d - 3 < bestScore) {
         bestScore = d - 3;
         best = { kind: 'fleet', index: i };
@@ -235,6 +298,20 @@ export class GalaxyRenderer {
     return sprite;
   }
 
+  private getDenseFactor(planetCount: number): number {
+    return planetCount >= 5000
+      ? 0.55
+      : planetCount >= 450
+        ? 0.72
+        : planetCount >= 220
+          ? 0.85
+          : 1.0;
+  }
+
+  private planetRadius(owner: number, factories: number, hab: number, denseFactor: number): number {
+    return (owner > 0 ? Math.min(13, 4 + Math.sqrt(factories) * 0.45) : 3 + hab * 2.5) * denseFactor;
+  }
+
   public draw(
     frame: RenderFrame,
     crustRichness: number,
@@ -243,13 +320,68 @@ export class GalaxyRenderer {
     selectedFleet: FleetView | null,
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
-    const selectedPlanet = selection?.kind === 'planet' ? selection.index : -1;
-    const hoveredPlanet = hovered?.kind === 'planet' ? hovered.index : -1;
-    const selectedWormhole = selection?.kind === 'wormhole' ? selection.index : -1;
-    const hoveredWormhole = hovered?.kind === 'wormhole' ? hovered.index : -1;
-    const selectedDebris = selection?.kind === 'debris' ? selection.index : -1;
-    const hoveredDebris = hovered?.kind === 'debris' ? hovered.index : -1;
-    const ctx = this.ctx;
+    const transform = this.getTransform();
+    const planetCount = Math.floor(planetsBuf.length / PLANET_STRIDE);
+    const denseFactor = this.getDenseFactor(planetCount);
+    const invCrustNorm = 1.0 / (crustRichness * 4);
+    const empColors = hud.empires.map((emp) => emp.color);
+
+    if (this.gpuBackend) {
+      this.gpuBackend.render(
+        {
+          offX: transform.offX,
+          offY: transform.offY,
+          scale: transform.scale,
+          zoom: this.zoom,
+          viewportW: this.canvas.width,
+          viewportH: this.canvas.height,
+          denseFactor,
+          invCrustNorm,
+          planetCount,
+        },
+        empColors,
+        planetsBuf,
+        fleetsBuf,
+        debrisBuf,
+        hud.wormholes,
+        this.jumpFx,
+        this.combatFx,
+      );
+    } else if (this.fallbackCtx) {
+      this.drawCanvas2dBase(
+        this.fallbackCtx,
+        frame,
+        transform,
+        denseFactor,
+        invCrustNorm,
+        empColors,
+      );
+    }
+
+    // Lightweight 2D overlay: #ID labels (<= 250 visible planets), selection/hover outlines,
+    // fuel range circles, wormhole endpoints, combat rings, selected fleet trajectory, scale bar.
+    this.drawOverlay(frame, transform, denseFactor, selection, hovered, selectedFleet);
+
+    // Advance ephemeral FX TTLs once per frame
+    for (let i = this.jumpFx.length - 1; i >= 0; i--) {
+      this.jumpFx[i].ttl--;
+      if (this.jumpFx[i].ttl <= 0) this.jumpFx.splice(i, 1);
+    }
+    for (let i = this.combatFx.length - 1; i >= 0; i--) {
+      this.combatFx[i].ttl--;
+      if (this.combatFx[i].ttl <= 0) this.combatFx.splice(i, 1);
+    }
+  }
+
+  private drawCanvas2dBase(
+    ctx: CanvasRenderingContext2D,
+    frame: RenderFrame,
+    transform: ViewportTransform,
+    denseFactor: number,
+    invCrustNorm: number,
+    empColors: string[],
+  ): void {
+    const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
     const W = this.canvas.width;
     const H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
@@ -259,15 +391,13 @@ export class GalaxyRenderer {
       ctx.fillRect(s.x * W, s.y * H, s.r, s.r);
     }
 
-    const { scale, offX, offY } = this.getTransform();
+    const { scale, offX, offY } = transform;
     const sx = (x: number) => offX + x * scale;
     const sy = (y: number) => offY + y * scale;
-    const rgbCache = hud.empires.map((emp) => hexToRgbTuple(emp.color));
-    const glowSprites = rgbCache.map((rgb) => this.getGlowSprite(rgb));
-    const empColors = hud.empires.map((emp) => emp.color);
+    const glowSprites = hud.empires.map((emp) => this.getGlowSprite(hexToRgbTuple(emp.color)));
     const planetCount = Math.floor(planetsBuf.length / PLANET_STRIDE);
 
-    // Empire territory glows (pre-rendered offscreen sprite blits — zero per-frame createRadialGradient!)
+    // Empire territory glows
     for (let i = 0; i < planetCount; i++) {
       const off = i * PLANET_STRIDE;
       const owner = planetsBuf[off + 2];
@@ -281,78 +411,36 @@ export class GalaxyRenderer {
       ctx.drawImage(sprite, px - rad, py - rad, rad * 2, rad * 2);
     }
 
-    // Wormholes
+    // Wormhole links
     for (let i = 0; i < hud.wormholes.length; i++) {
       const wh = hud.wormholes[i];
-      const isSel = i === selectedWormhole;
-      const isHov = i === hoveredWormhole;
-      const x1 = sx(wh.x1);
-      const y1 = sy(wh.y1);
-      const x2 = sx(wh.x2);
-      const y2 = sy(wh.y2);
       ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.strokeStyle = isSel
-        ? 'rgba(240, 171, 252, 0.85)'
-        : isHov
-          ? 'rgba(240, 171, 252, 0.5)'
-          : 'rgba(217, 70, 239, 0.25)';
-      ctx.lineWidth = isSel ? 2.2 : 1.0;
+      ctx.moveTo(sx(wh.x1), sy(wh.y1));
+      ctx.lineTo(sx(wh.x2), sy(wh.y2));
+      ctx.strokeStyle = 'rgba(217, 70, 239, 0.25)';
+      ctx.lineWidth = 1.0;
       ctx.setLineDash([5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
-
-      for (const [wx, wy] of [
-        [x1, y1],
-        [x2, y2],
-      ]) {
-        ctx.beginPath();
-        ctx.arc(wx, wy, isSel ? 12 : 9, 0, Math.PI * 2);
-        ctx.strokeStyle = isSel ? '#ffffff' : '#d946ef';
-        ctx.lineWidth = isSel ? 2.0 : 1.6;
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(wx, wy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#f0abfc';
-        ctx.fill();
-      }
-      ctx.lineWidth = 1.0;
     }
 
     // Debris fields
     const debrisCount = Math.floor(debrisBuf.length / DEBRIS_STRIDE);
     if (debrisCount > 0) {
       ctx.setLineDash([2, 2]);
+      ctx.strokeStyle = 'rgba(192, 132, 252, 0.75)';
+      ctx.lineWidth = 1.0;
       for (let i = 0; i < debrisCount; i++) {
         const off = i * DEBRIS_STRIDE;
-        const isSel = i === selectedDebris;
-        const isHov = i === hoveredDebris;
-        ctx.strokeStyle = isSel
-          ? '#ffffff'
-          : isHov
-            ? '#e9d5ff'
-            : 'rgba(192, 132, 252, 0.75)';
-        ctx.lineWidth = isSel ? 2.0 : 1.0;
         ctx.beginPath();
-        ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), isSel ? 8 : 5, 0, Math.PI * 2);
+        ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), 5, 0, Math.PI * 2);
         ctx.stroke();
       }
       ctx.setLineDash([]);
-      ctx.lineWidth = 1.0;
     }
 
-    // Planets (fast fillRect LOD when drawing 10k-100k neutral stars zoomed out)
-    const denseFactor =
-      planetCount >= 5000
-        ? 0.55
-        : planetCount >= 450
-          ? 0.72
-          : planetCount >= 220
-            ? 0.85
-            : 1.0;
+    // Planets
     const fastDotMode = planetCount >= 5000 && this.zoom < 4.0;
-    const invCrustNorm = 1.0 / (crustRichness * 4);
     for (let i = 0; i < planetCount; i++) {
       const off = i * PLANET_STRIDE;
       const px = sx(planetsBuf[off]);
@@ -365,14 +453,13 @@ export class GalaxyRenderer {
       const hasGate = planetsBuf[off + 5] > 0.5;
       const crustSum = planetsBuf[off + 6];
 
-      if (fastDotMode && owner === 0 && i !== selectedPlanet && i !== hoveredPlanet) {
+      if (fastDotMode && owner === 0) {
         ctx.fillStyle = 'rgba(148, 163, 184, 0.55)';
         ctx.fillRect(px - 0.75, py - 0.75, 1.5, 1.5);
         continue;
       }
 
-      const r =
-        (owner > 0 ? Math.min(13, 4 + Math.sqrt(factories) * 0.45) : 3 + hab * 2.5) * denseFactor;
+      const r = this.planetRadius(owner, factories, hab, denseFactor);
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       if (owner > 0) {
@@ -391,50 +478,10 @@ export class GalaxyRenderer {
         ctx.stroke();
         ctx.lineWidth = 1.0;
       }
-
-      if (this.zoom >= 1.65) {
-        ctx.font = '10px monospace';
-        ctx.fillStyle = 'rgba(203, 213, 225, 0.72)';
-        ctx.fillText(`#${i + 1}`, px + r + 4, py + 3);
-      }
-
-      if (i === selectedPlanet || i === hoveredPlanet) {
-        ctx.beginPath();
-        ctx.arc(px, py, r + 7, 0, Math.PI * 2);
-        ctx.strokeStyle = i === selectedPlanet ? '#ffffff' : 'rgba(255,255,255,0.45)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.lineWidth = 1.0;
-
-        if (owner > 0) {
-          const emp = hud.empires[owner - 1];
-          if (emp) {
-            const rgb = rgbCache[owner - 1] ?? '56,189,248';
-            const colRad = emp.loadout.rangeCol * scale;
-            ctx.beginPath();
-            ctx.arc(px, py, colRad, 0, Math.PI * 2);
-            ctx.strokeStyle = `rgba(${rgb}, ${i === selectedPlanet ? 0.55 : 0.28})`;
-            ctx.setLineDash([6, 4]);
-            ctx.lineWidth = 1.2;
-            ctx.stroke();
-
-            const capRad = emp.loadout.rangeBattleship * scale;
-            if (Math.abs(capRad - colRad) > 12) {
-              ctx.beginPath();
-              ctx.arc(px, py, capRad, 0, Math.PI * 2);
-              ctx.strokeStyle = `rgba(${rgb}, ${i === selectedPlanet ? 0.30 : 0.14})`;
-              ctx.setLineDash([3, 5]);
-              ctx.lineWidth = 1.0;
-              ctx.stroke();
-            }
-            ctx.setLineDash([]);
-          }
-        }
-      }
     }
 
     // Jump FX
-    for (let i = this.jumpFx.length - 1; i >= 0; i--) {
+    for (let i = 0; i < this.jumpFx.length; i++) {
       const jx = this.jumpFx[i];
       ctx.beginPath();
       ctx.moveTo(sx(jx.x1), sy(jx.y1));
@@ -443,11 +490,9 @@ export class GalaxyRenderer {
       ctx.lineWidth = 2.0;
       ctx.stroke();
       ctx.lineWidth = 1.0;
-      jx.ttl--;
-      if (jx.ttl <= 0) this.jumpFx.splice(i, 1);
     }
 
-    // Fleets (flat Float32Array zero-copy loop)
+    // Fleets
     const fleetCount = Math.floor(fleetsBuf.length / FLEET_STRIDE);
     for (let i = 0; i < fleetCount; i++) {
       const off = i * FLEET_STRIDE;
@@ -473,7 +518,6 @@ export class GalaxyRenderer {
 
       ctx.fillStyle = empColors[emp - 1] ?? '#e2e8f0';
       if (fType === 2) {
-        // Battleship
         ctx.beginPath();
         ctx.moveTo(fx, fy - 5.5);
         ctx.lineTo(fx + 5.5, fy);
@@ -482,14 +526,12 @@ export class GalaxyRenderer {
         ctx.closePath();
         ctx.fill();
       } else if (fType === 3) {
-        // Bomber
         ctx.beginPath();
         ctx.arc(fx, fy, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = '#f87171';
         ctx.stroke();
       } else if (fType === 1) {
-        // Cruiser
         ctx.beginPath();
         ctx.moveTo(fx, fy - 5);
         ctx.lineTo(fx - 4.2, fy + 3.5);
@@ -497,18 +539,16 @@ export class GalaxyRenderer {
         ctx.closePath();
         ctx.fill();
       } else if (fType === 4) {
-        // Freighter
         ctx.fillRect(fx - 2.8, fy - 2.8, 5.6, 5.6);
       } else {
-        // Colonizer
         ctx.beginPath();
         ctx.arc(fx, fy, 3, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    // Combat FX
-    for (let i = this.combatFx.length - 1; i >= 0; i--) {
+    // Combat FX lasers
+    for (let i = 0; i < this.combatFx.length; i++) {
       const fx = this.combatFx[i];
       ctx.beginPath();
       ctx.moveTo(sx(fx.x1), sy(fx.y1));
@@ -516,19 +556,188 @@ export class GalaxyRenderer {
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2.0;
       ctx.stroke();
+      ctx.lineWidth = 1.0;
+    }
+  }
 
+  private drawOverlay(
+    frame: RenderFrame,
+    transform: ViewportTransform,
+    denseFactor: number,
+    selection: MapSelection,
+    hovered: HitTarget,
+    selectedFleet: FleetView | null,
+  ): void {
+    const ctx = this.overlayCtx;
+    const W = this.overlayCanvas.width;
+    const H = this.overlayCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const { hud, planetsBuf, debrisBuf } = frame;
+    const { scale, offX, offY } = transform;
+    const sx = (x: number) => offX + x * scale;
+    const sy = (y: number) => offY + y * scale;
+
+    const selectedPlanet = selection?.kind === 'planet' ? selection.index : -1;
+    const hoveredPlanet = hovered?.kind === 'planet' ? hovered.index : -1;
+    const selectedWormhole = selection?.kind === 'wormhole' ? selection.index : -1;
+    const hoveredWormhole = hovered?.kind === 'wormhole' ? hovered.index : -1;
+    const selectedDebris = selection?.kind === 'debris' ? selection.index : -1;
+    const hoveredDebris = hovered?.kind === 'debris' ? hovered.index : -1;
+
+    // 1. Wormhole portal rings & selection/hover highlight (<= 5 pairs, negligible cost)
+    for (let i = 0; i < hud.wormholes.length; i++) {
+      const wh = hud.wormholes[i];
+      const isSel = i === selectedWormhole;
+      const isHov = i === hoveredWormhole;
+      const x1 = sx(wh.x1);
+      const y1 = sy(wh.y1);
+      const x2 = sx(wh.x2);
+      const y2 = sy(wh.y2);
+
+      if (isSel || isHov) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.strokeStyle = isSel ? 'rgba(240, 171, 252, 0.85)' : 'rgba(240, 171, 252, 0.5)';
+        ctx.lineWidth = isSel ? 2.2 : 1.2;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      for (const [wx, wy] of [
+        [x1, y1],
+        [x2, y2],
+      ]) {
+        ctx.beginPath();
+        ctx.arc(wx, wy, isSel ? 12 : 9, 0, Math.PI * 2);
+        ctx.strokeStyle = isSel ? '#ffffff' : '#d946ef';
+        ctx.lineWidth = isSel ? 2.0 : 1.6;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(wx, wy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#f0abfc';
+        ctx.fill();
+      }
+      ctx.lineWidth = 1.0;
+    }
+
+    // 2. Combat explosion shockwave rings (<= 35 active)
+    for (let i = 0; i < this.combatFx.length; i++) {
+      const fx = this.combatFx[i];
       ctx.beginPath();
       ctx.arc(sx(fx.mx), sy(fx.my), (11 - fx.ttl) * 2.1, 0, Math.PI * 2);
       ctx.strokeStyle = fx.col;
       ctx.lineWidth = 1.6;
       ctx.stroke();
-      ctx.lineWidth = 1.0;
+    }
+    ctx.lineWidth = 1.0;
 
-      fx.ttl--;
-      if (fx.ttl <= 0) this.combatFx.splice(i, 1);
+    // 3. Planet #ID labels ONLY when visible planets in viewport <= 250 (early-abort at 251!)
+    const planetCount = Math.floor(planetsBuf.length / PLANET_STRIDE);
+    let visibleCount = 0;
+    let tooMany = false;
+    for (let i = 0; i < planetCount; i++) {
+      const off = i * PLANET_STRIDE;
+      const px = offX + planetsBuf[off] * scale;
+      if (px < 0 || px > W) continue;
+      const py = offY + planetsBuf[off + 1] * scale;
+      if (py < 0 || py > H) continue;
+      if (visibleCount >= MAX_VISIBLE_PLANET_LABELS) {
+        tooMany = true;
+        break;
+      }
+      this.visiblePlanetIndices[visibleCount++] = i;
     }
 
-    // Selected fleet live highlight & trajectory
+    if (!tooMany && visibleCount > 0) {
+      ctx.font = '10px monospace';
+      ctx.fillStyle = 'rgba(203, 213, 225, 0.72)';
+      for (let k = 0; k < visibleCount; k++) {
+        const i = this.visiblePlanetIndices[k];
+        const off = i * PLANET_STRIDE;
+        const px = offX + planetsBuf[off] * scale;
+        const py = offY + planetsBuf[off + 1] * scale;
+        const r = this.planetRadius(
+          planetsBuf[off + 2],
+          planetsBuf[off + 3],
+          planetsBuf[off + 4],
+          denseFactor,
+        );
+        ctx.fillText(`#${i + 1}`, px + r + 4, py + 3);
+      }
+    }
+
+    // 4. Selected & hovered planet rings + fuel range projection
+    const drawPlanetHighlight = (idx: number, isSelected: boolean): void => {
+      if (idx < 0 || idx >= planetCount) return;
+      const off = idx * PLANET_STRIDE;
+      const px = sx(planetsBuf[off]);
+      const py = sy(planetsBuf[off + 1]);
+      const owner = planetsBuf[off + 2];
+      const r = this.planetRadius(owner, planetsBuf[off + 3], planetsBuf[off + 4], denseFactor);
+
+      ctx.beginPath();
+      ctx.arc(px, py, r + 7, 0, Math.PI * 2);
+      ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.lineWidth = 1.0;
+
+      if (owner > 0) {
+        const emp = hud.empires[owner - 1];
+        if (emp) {
+          const rgb = hexToRgbTuple(emp.color);
+          const colRad = emp.loadout.rangeCol * scale;
+          ctx.beginPath();
+          ctx.arc(px, py, colRad, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(${rgb}, ${isSelected ? 0.55 : 0.28})`;
+          ctx.setLineDash([6, 4]);
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+
+          const capRad = emp.loadout.rangeBattleship * scale;
+          if (Math.abs(capRad - colRad) > 12) {
+            ctx.beginPath();
+            ctx.arc(px, py, capRad, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(${rgb}, ${isSelected ? 0.3 : 0.14})`;
+            ctx.setLineDash([3, 5]);
+            ctx.lineWidth = 1.0;
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        }
+      }
+    };
+
+    if (hoveredPlanet >= 0 && hoveredPlanet !== selectedPlanet) {
+      drawPlanetHighlight(hoveredPlanet, false);
+    }
+    if (selectedPlanet >= 0) {
+      drawPlanetHighlight(selectedPlanet, true);
+    }
+
+    // 5. Selected / hovered debris highlight
+    const debrisCount = Math.floor(debrisBuf.length / DEBRIS_STRIDE);
+    const drawDebrisHighlight = (idx: number, isSelected: boolean): void => {
+      if (idx < 0 || idx >= debrisCount) return;
+      const off = idx * DEBRIS_STRIDE;
+      ctx.beginPath();
+      ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), isSelected ? 8 : 6, 0, Math.PI * 2);
+      ctx.strokeStyle = isSelected ? '#ffffff' : '#e9d5ff';
+      ctx.lineWidth = isSelected ? 2.0 : 1.2;
+      ctx.stroke();
+      ctx.lineWidth = 1.0;
+    };
+    if (hoveredDebris >= 0 && hoveredDebris !== selectedDebris) {
+      drawDebrisHighlight(hoveredDebris, false);
+    }
+    if (selectedDebris >= 0) {
+      drawDebrisHighlight(selectedDebris, true);
+    }
+
+    // 6. Selected fleet live highlight & trajectory
     if (selectedFleet) {
       const fx = sx(selectedFleet.x);
       const fy = sy(selectedFleet.y);
@@ -553,11 +762,11 @@ export class GalaxyRenderer {
       ctx.lineWidth = 1.0;
     }
 
-    this.drawScaleBar(scale);
+    // 7. Cartographic scale bar
+    this.drawScaleBar(ctx, scale);
   }
 
-  private drawScaleBar(scale: number): void {
-    const ctx = this.ctx;
+  private drawScaleBar(ctx: CanvasRenderingContext2D, scale: number): void {
     const candidates = [10, 20, 25, 50, 100, 150, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
     let ly = 100;
     for (const c of candidates) {
