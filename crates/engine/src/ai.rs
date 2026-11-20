@@ -1,43 +1,47 @@
-use crate::config::{NUM_EMPIRES, NUM_TECH_FIELDS};
+use crate::config::NUM_TECH_FIELDS;
 use crate::sim::Simulation;
-use crate::types::{AutoBalanceResult, CoEvolutionResult, Doctrine, EmpireStats, TournamentResult};
+use crate::types::{CoEvolutionResult, Doctrine, TournamentResult};
 
 pub fn run_tournament(
     sim: &mut Simulation,
     num_games: u32,
     ticks_per_game: u32,
 ) -> TournamentResult {
-    let mut wins = [0u32; NUM_EMPIRES];
-    let mut total_res = [0.0f32; NUM_EMPIRES];
+    let num_emp = sim.empires.len();
+    let mut wins = vec![0u32; num_emp];
+    let mut total_res = vec![0.0f32; num_emp];
     let games = num_games.max(1);
 
     for g in 0..games {
         sim.init(80000u32.wrapping_add(g.wrapping_mul(7919)), true);
-        let mut st = [EmpireStats::default(); NUM_EMPIRES];
+        let mut st = Vec::new();
         for _ in 0..ticks_per_game {
             st = sim.step_tick(true);
         }
 
         let mut winner = 0usize;
-        if st[1].res > st[winner].res {
-            winner = 1;
-        }
-        if st[2].res > st[winner].res {
-            winner = 2;
+        for e in 1..num_emp {
+            if st[e].res > st[winner].res {
+                winner = e;
+            }
         }
         wins[winner] += 1;
-        for e in 0..NUM_EMPIRES {
+        for e in 0..num_emp {
             total_res[e] += st[e].res;
         }
     }
 
-    let w0 = ((wins[0] as f32 / games as f32) * 100.0).round() as u32;
-    let w1 = ((wins[1] as f32 / games as f32) * 100.0).round() as u32;
-    let w2 = 100u32.saturating_sub(w0 + w1);
-    let win_rates = [w0, w1, w2];
-
-    for e in 0..NUM_EMPIRES {
-        sim.doctrines[e].win_rate = win_rates[e];
+    let mut win_rates = vec![0u32; num_emp];
+    let mut sum_wr = 0u32;
+    for e in 0..num_emp {
+        if e + 1 == num_emp {
+            win_rates[e] = 100u32.saturating_sub(sum_wr);
+        } else {
+            let wr = ((wins[e] as f32 / games as f32) * 100.0).round() as u32;
+            win_rates[e] = wr.min(100u32.saturating_sub(sum_wr));
+            sum_wr += win_rates[e];
+        }
+        sim.empires[e].race.doctrine.win_rate = win_rates[e];
     }
 
     TournamentResult {
@@ -52,22 +56,18 @@ pub fn evaluate_empire_fitness(sim: &mut Simulation, emp_idx: usize, seeds: &[u3
     let mut score = 0.0f32;
     for &seed in seeds {
         sim.init(seed, true);
-        let mut st_mid = [EmpireStats::default(); NUM_EMPIRES];
-        let mut st_end = [EmpireStats::default(); NUM_EMPIRES];
-        for _ in 0..700 {
+        let mut st_mid = Vec::new();
+        let mut st_end = Vec::new();
+        for _ in 0..600 {
             st_mid = sim.step_tick(true);
         }
-        for _ in 0..700 {
+        for _ in 0..600 {
             st_end = sim.step_tick(true);
         }
-        let sum_end = st_end[0].res + st_end[1].res + st_end[2].res + 1.0;
+        let sum_end: f32 = st_end.iter().map(|s| s.res).sum::<f32>() + 1.0;
         let my_end = st_end[emp_idx].res;
-        let is_winner =
-            if my_end >= st_end[0].res && my_end >= st_end[1].res && my_end >= st_end[2].res {
-                1.0
-            } else {
-                0.0
-            };
+        let max_end = st_end.iter().map(|s| s.res).fold(0.0f32, f32::max);
+        let is_winner = if my_end >= max_end { 1.0 } else { 0.0 };
         score += (my_end / sum_end) * 1000.0 + is_winner * 350.0 + (st_mid[emp_idx].res * 0.05);
     }
     score / (seeds.len().max(1) as f32)
@@ -78,12 +78,11 @@ fn lcg_centered(state: &mut u32) -> f32 {
     (*state as f64 / 4294967296.0) as f32 - 0.5
 }
 
-pub fn mutate_dna(doc: &Doctrine, emp_idx: usize, rng_state: &mut u32) -> Doctrine {
+pub fn mutate_dna(doc: &Doctrine, rng_state: &mut u32) -> Doctrine {
     let mut copy = doc.clone();
     copy.fac_share = (copy.fac_share + lcg_centered(rng_state) * 0.12).clamp(0.28, 0.66);
     copy.ship_share = (copy.ship_share + lcg_centered(rng_state) * 0.12).clamp(0.14, 0.50);
-    let min_tech = if emp_idx == 2 { 0.15 } else { 0.06 };
-    copy.tech_share = (copy.tech_share + lcg_centered(rng_state) * 0.10).clamp(min_tech, 0.40);
+    copy.tech_share = (copy.tech_share + lcg_centered(rng_state) * 0.10).clamp(0.08, 0.40);
     let sum = copy.fac_share + copy.ship_share + copy.tech_share;
     if sum > 0.92 {
         let sc = 0.92 / sum;
@@ -116,55 +115,30 @@ pub fn mutate_dna(doc: &Doctrine, emp_idx: usize, rng_state: &mut u32) -> Doctri
 pub fn run_co_evolution(sim: &mut Simulation, seed: u32) -> CoEvolutionResult {
     let mut rng_state = if seed == 0 { 424242 } else { seed };
     let base = rng_state % 80000;
-    let seeds = [base, base + 1337, base + 4201];
+    let seeds = [base, base + 1337];
+    let num_emp = sim.empires.len();
 
-    for _round in 0..4 {
-        for emp_idx in 0..NUM_EMPIRES {
-            let mut best = sim.doctrines[emp_idx].clone();
+    for _round in 0..3 {
+        for emp_idx in 0..num_emp {
+            let mut best = sim.empires[emp_idx].race.doctrine.clone();
             let base_score = evaluate_empire_fitness(sim, emp_idx, &seeds);
             for _m in 0..2 {
-                let cand = mutate_dna(&best, emp_idx, &mut rng_state);
-                sim.doctrines[emp_idx] = cand.clone();
+                let cand = mutate_dna(&best, &mut rng_state);
+                sim.empires[emp_idx].race.doctrine = cand.clone();
                 if evaluate_empire_fitness(sim, emp_idx, &seeds) > base_score * 1.01 {
                     best = cand;
                     break;
                 } else {
-                    sim.doctrines[emp_idx] = best.clone();
+                    sim.empires[emp_idx].race.doctrine = best.clone();
                 }
             }
         }
         sim.dna_generation += 1;
     }
 
-    let tournament = run_tournament(sim, 24, 1350);
+    let tournament = run_tournament(sim, 18, 1200);
     CoEvolutionResult {
         dna_generation: sim.dna_generation,
-        tournament,
-    }
-}
-
-pub fn run_auto_balance(sim: &mut Simulation) -> AutoBalanceResult {
-    for _iter in 0..5 {
-        let res = run_tournament(sim, 15, 1350);
-        let r0 = res.total_res[0].max(10.0);
-        let r1 = res.total_res[1].max(10.0);
-        let r2 = res.total_res[2].max(10.0);
-        let avg = (r0 + r1 + r2) / 3.0;
-
-        sim.cfg.ind_weight =
-            (((sim.cfg.ind_weight * (avg / r0).powf(0.28)) * 100.0).round() / 100.0).clamp(0.6, 2.2);
-        sim.cfg.exp_weight =
-            (((sim.cfg.exp_weight * (avg / r1).powf(0.28)) * 100.0).round() / 100.0).clamp(0.6, 2.2);
-        sim.cfg.tech_weight =
-            (((sim.cfg.tech_weight * (avg / r2).powf(0.28)) * 100.0).round() / 100.0)
-                .clamp(0.6, 2.2);
-    }
-
-    let tournament = run_tournament(sim, 25, 1350);
-    AutoBalanceResult {
-        ind_weight: sim.cfg.ind_weight,
-        exp_weight: sim.cfg.exp_weight,
-        tech_weight: sim.cfg.tech_weight,
         tournament,
     }
 }
@@ -173,11 +147,13 @@ pub fn run_auto_balance(sim: &mut Simulation) -> AutoBalanceResult {
 mod tests {
     use super::*;
     use crate::config::SimConfig;
+    use crate::tech::classic_races;
 
     #[test]
-    fn tournament_returns_valid_win_rates() {
-        let mut sim = Simulation::new(SimConfig::default());
+    fn tournament_works_for_six_classic_races() {
+        let mut sim = Simulation::new(SimConfig::default(), classic_races());
         let res = run_tournament(&mut sim, 6, 400);
+        assert_eq!(res.wins.len(), 6);
         assert_eq!(res.wins.iter().sum::<u32>(), 6);
         assert_eq!(res.win_rates.iter().sum::<u32>(), 100);
     }

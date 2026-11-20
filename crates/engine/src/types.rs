@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::{FleetClass, NUM_EMPIRES, NUM_TECH_FIELDS};
+use crate::config::{FleetClass, NUM_TECH_FIELDS};
+use crate::tech::{CatalogEntry, LrtMeta, PrtMeta};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Doctrine {
-    pub name: String,
-    pub color: String,
     pub fac_share: f32,
     pub ship_share: f32,
     pub tech_share: f32,
@@ -18,72 +17,86 @@ pub struct Doctrine {
     pub bomber_share: f32,
     pub intercept_bias: f32,
     pub tech_alloc: [f32; NUM_TECH_FIELDS],
+    #[serde(default)]
     pub kills: u32,
+    #[serde(default)]
     pub gates: u32,
+    #[serde(default)]
     pub last_fit: i32,
+    #[serde(default)]
     pub win_rate: u32,
 }
 
-pub fn default_doctrines() -> [Doctrine; NUM_EMPIRES] {
-    [
-        Doctrine {
-            name: "🟢 Industry".to_string(),
-            color: "#4ade80".to_string(),
-            fac_share: 0.52,
-            ship_share: 0.22,
-            tech_share: 0.14,
-            col_pop_req: 0.35,
-            dist_exp: 1.4,
-            qual_exp: 1.7,
-            cruiser_share: 0.30,
-            bship_share: 0.45,
-            bomber_share: 0.25,
-            intercept_bias: 0.45,
-            tech_alloc: [0.22, 0.14, 0.14, 0.24, 0.10, 0.16],
-            kills: 0,
-            gates: 0,
-            last_fit: 0,
-            win_rate: 33,
-        },
-        Doctrine {
-            name: "🔵 Fleet".to_string(),
-            color: "#38bdf8".to_string(),
-            fac_share: 0.46,
-            ship_share: 0.28,
-            tech_share: 0.12,
-            col_pop_req: 0.28,
-            dist_exp: 1.9,
-            qual_exp: 1.2,
-            cruiser_share: 0.50,
-            bship_share: 0.30,
-            bomber_share: 0.20,
-            intercept_bias: 0.75,
-            tech_alloc: [0.14, 0.18, 0.26, 0.16, 0.16, 0.10],
-            kills: 0,
-            gates: 0,
-            last_fit: 0,
-            win_rate: 33,
-        },
-        Doctrine {
-            name: "🟡 Science".to_string(),
-            color: "#facc15".to_string(),
+impl Default for Doctrine {
+    fn default() -> Self {
+        Self {
             fac_share: 0.48,
-            ship_share: 0.22,
-            tech_share: 0.20,
-            col_pop_req: 0.34,
+            ship_share: 0.24,
+            tech_share: 0.16,
+            col_pop_req: 0.32,
             dist_exp: 1.5,
             qual_exp: 1.5,
-            cruiser_share: 0.30,
-            bship_share: 0.25,
-            bomber_share: 0.45,
+            cruiser_share: 0.40,
+            bship_share: 0.35,
+            bomber_share: 0.25,
             intercept_bias: 0.55,
-            tech_alloc: [0.24, 0.22, 0.16, 0.12, 0.14, 0.12],
+            tech_alloc: [0.17, 0.17, 0.17, 0.17, 0.16, 0.16],
             kills: 0,
             gates: 0,
             last_fit: 0,
-            win_rate: 34,
-        },
-    ]
+            win_rate: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RaceDef {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub prt: String,
+    #[serde(default)]
+    pub lrt_mask: u32,
+    #[serde(default)]
+    pub is_custom: bool,
+    #[serde(default)]
+    pub doctrine: Doctrine,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmpireLoadoutView {
+    pub unlocked_count: u16,
+    pub unlocked_bits: [u32; 8],
+    pub engine: String,
+    pub weapon: String,
+    pub bomb: String,
+    pub armor: String,
+    pub shield: String,
+    pub scanner: String,
+    pub defense: String,
+    pub terraform: String,
+    pub stargate: String,
+    pub cruiser_hull: String,
+    pub battleship_hull: String,
+    pub bomber_hull: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmpireSummaryView {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub prt: String,
+    pub lrt_mask: u32,
+    pub is_custom: bool,
+    pub stats: EmpireStats,
+    pub tech_lv: [f32; NUM_TECH_FIELDS],
+    pub perks: u8,
+    pub doctrine: Doctrine,
+    pub loadout: EmpireLoadoutView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,10 +107,10 @@ pub struct Fleet {
     pub y: f32,
     pub from: usize,
     pub target: usize,
-    pub emp: u8, // 1..=3
+    pub emp: u8, // 1..=empires.len()
     #[serde(rename = "type")]
     pub fleet_type: FleetClass,
-    pub min_type: u8, // 0=Iron, 1=Bora, 2=Germ
+    pub min_type: u8,
     pub power: f32,
     pub max_power: f32,
     pub hunting: bool,
@@ -191,17 +204,14 @@ pub struct SimSnapshot {
     pub ticks: u64,
     pub map_seed: u32,
     pub dna_generation: u32,
-    pub stats: [EmpireStats; NUM_EMPIRES],
-    pub tech_lv: [[f32; NUM_TECH_FIELDS]; NUM_EMPIRES],
-    pub perks: [u8; NUM_EMPIRES],
-    pub doctrines: [Doctrine; NUM_EMPIRES],
+    pub empires: Vec<EmpireSummaryView>,
     pub planets: Vec<PlanetView>,
     pub fleets: Vec<Fleet>,
     pub wormholes: Vec<Wormhole>,
     pub debris_fields: Vec<DebrisField>,
     pub new_combat_fx: Vec<CombatFx>,
     pub new_jump_fx: Vec<JumpFx>,
-    pub power_history: Vec<[f32; NUM_EMPIRES]>,
+    pub power_history: Vec<Vec<f32>>,
     pub events: Vec<SimEvent>,
     pub space_battles_count: u32,
     pub invasions_count: u32,
@@ -213,9 +223,9 @@ pub struct SimSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct TournamentResult {
     pub num_games: u32,
-    pub wins: [u32; NUM_EMPIRES],
-    pub win_rates: [u32; NUM_EMPIRES],
-    pub total_res: [f32; NUM_EMPIRES],
+    pub wins: Vec<u32>,
+    pub win_rates: Vec<u32>,
+    pub total_res: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,11 +235,11 @@ pub struct CoEvolutionResult {
     pub tournament: TournamentResult,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AutoBalanceResult {
-    pub ind_weight: f32,
-    pub exp_weight: f32,
-    pub tech_weight: f32,
-    pub tournament: TournamentResult,
+pub struct TechCatalogView {
+    pub entries: Vec<CatalogEntry>,
+    pub prts: Vec<PrtMeta>,
+    pub lrts: Vec<LrtMeta>,
+    pub classic_races: Vec<RaceDef>,
 }

@@ -13,6 +13,16 @@ interface ViewportTransform {
   offY: number;
 }
 
+function hexToRgbTuple(hex: string): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return '56,189,248';
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return '56,189,248';
+  return `${r},${g},${b}`;
+}
+
 export class GalaxyRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -116,7 +126,6 @@ export class GalaxyRenderer {
     const H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
 
-    // Background stars
     for (const s of this.bgStars) {
       ctx.fillStyle = `rgba(180, 210, 255, ${s.a})`;
       ctx.fillRect(s.x * W, s.y * H, s.r, s.r);
@@ -125,17 +134,19 @@ export class GalaxyRenderer {
     const { scale, offX, offY } = this.getTransform();
     const sx = (x: number) => offX + x * scale;
     const sy = (y: number) => offY + y * scale;
+    const rgbCache = snap.empires.map((emp) => hexToRgbTuple(emp.color));
 
     // Empire territory glows
     for (const pl of snap.planets) {
       if (pl.owner === 0) continue;
+      const eIdx = pl.owner - 1;
+      const rgb = rgbCache[eIdx] ?? '56,189,248';
       const px = sx(pl.x);
       const py = sy(pl.y);
       const rad = (24 + Math.sqrt(pl.factories) * 2.2) * scale;
       const grad = ctx.createRadialGradient(px, py, 2, px, py, rad);
-      const col = pl.owner === 1 ? '74,222,128' : pl.owner === 2 ? '56,189,248' : '250,204,21';
-      grad.addColorStop(0, `rgba(${col}, 0.14)`);
-      grad.addColorStop(1, `rgba(${col}, 0)`);
+      grad.addColorStop(0, `rgba(${rgb}, 0.14)`);
+      grad.addColorStop(1, `rgba(${rgb}, 0)`);
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(px, py, rad, 0, Math.PI * 2);
@@ -173,7 +184,7 @@ export class GalaxyRenderer {
       ctx.lineWidth = 1.0;
     }
 
-    // Salvageable debris fields
+    // Debris fields
     for (const deb of snap.debrisFields) {
       ctx.beginPath();
       ctx.arc(sx(deb.x), sy(deb.y), 5, 0, Math.PI * 2);
@@ -192,7 +203,7 @@ export class GalaxyRenderer {
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       if (pl.owner > 0) {
-        ctx.fillStyle = snap.doctrines[pl.owner - 1].color;
+        ctx.fillStyle = snap.empires[pl.owner - 1]?.color ?? '#94a3b8';
       } else {
         const sumC = pl.ironCrust + pl.boraCrust + pl.germCrust;
         const alpha = Math.min(1, 0.3 + (sumC / (crustRichness * 4)) * 0.7);
@@ -219,7 +230,7 @@ export class GalaxyRenderer {
       }
     }
 
-    // Wormhole / Stargate jump FX
+    // Jump FX
     for (let i = this.jumpFx.length - 1; i >= 0; i--) {
       const jx = this.jumpFx[i];
       ctx.beginPath();
@@ -233,7 +244,7 @@ export class GalaxyRenderer {
       if (jx.ttl <= 0) this.jumpFx.splice(i, 1);
     }
 
-    // Fleets & routes
+    // Fleets
     for (const fl of snap.fleets) {
       const target = snap.planets[fl.target];
       if (!target) continue;
@@ -250,7 +261,7 @@ export class GalaxyRenderer {
           : 'rgba(255,255,255,0.09)';
       ctx.stroke();
 
-      ctx.fillStyle = snap.doctrines[fl.emp - 1].color;
+      ctx.fillStyle = snap.empires[fl.emp - 1]?.color ?? '#e2e8f0';
       if (fl.type === 'battleship') {
         ctx.beginPath();
         ctx.moveTo(fx, fy - 5.5);
@@ -281,7 +292,7 @@ export class GalaxyRenderer {
       }
     }
 
-    // Space combat FX
+    // Combat FX
     for (let i = this.combatFx.length - 1; i >= 0; i--) {
       const fx = this.combatFx[i];
       ctx.beginPath();
@@ -304,7 +315,11 @@ export class GalaxyRenderer {
   }
 }
 
-export function drawPowerChart(canvas: HTMLCanvasElement, powerHistory: number[][]): number {
+export function drawPowerChart(
+  canvas: HTMLCanvasElement,
+  powerHistory: number[][],
+  colors: string[],
+): number {
   const ctx = canvas.getContext('2d');
   if (!ctx) return 50;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -312,17 +327,19 @@ export function drawPowerChart(canvas: HTMLCanvasElement, powerHistory: number[]
 
   let maxVal = 50;
   for (const pt of powerHistory) {
-    maxVal = Math.max(maxVal, pt[0], pt[1], pt[2]);
+    for (const val of pt) {
+      if (val > maxVal) maxVal = val;
+    }
   }
 
-  const colors = ['#4ade80', '#38bdf8', '#facc15'];
-  for (let emp = 0; emp < 3; emp++) {
+  for (let emp = 0; emp < colors.length; emp++) {
     ctx.beginPath();
     ctx.strokeStyle = colors[emp];
     ctx.lineWidth = 2;
     powerHistory.forEach((pt, idx) => {
+      const val = pt[emp] ?? 0;
       const x = (idx / (powerHistory.length - 1)) * (canvas.width - 16) + 8;
-      const y = canvas.height - 8 - (pt[emp] / maxVal) * (canvas.height - 16);
+      const y = canvas.height - 8 - (val / maxVal) * (canvas.height - 16);
       if (idx === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });

@@ -1,14 +1,17 @@
 import { drawPowerChart } from './renderer';
 import type {
+  Doctrine,
   EngineMeta,
   FleetClass,
+  RaceDef,
   SimConfig,
   SimSnapshot,
+  TechCatalogView,
   TournamentResult,
 } from './types';
 
 type SortKey = 'id' | 'owner' | 'gate' | 'hab' | 'pop' | 'fac' | 'iron' | 'bora' | 'germ' | 'res' | 'def';
-type LabAction = 'tournament' | 'coevolve' | 'autobalance' | 'copyjson';
+type LabAction = 'tournament' | 'coevolve' | 'copyjson';
 
 export interface UiCallbacks {
   onSpeedChange: (speed: number) => void;
@@ -16,7 +19,10 @@ export interface UiCallbacks {
   onParamChange: (key: string, value: number) => void;
   onLabAction: (action: LabAction) => void;
   onSelectPlanet: (index: number) => void;
+  onLaunchRaces: (races: RaceDef[]) => void;
 }
+
+const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
 
 const FLEET_LABELS: Record<FleetClass, string> = {
   col: '● Colonizer',
@@ -26,8 +32,9 @@ const FLEET_LABELS: Record<FleetClass, string> = {
   freight: '■ Freighter',
 };
 
-const DRAWER_IDS = ['drawerTech', 'drawerStats', 'drawerReports', 'drawerSettings'] as const;
+const DRAWER_IDS = ['drawerRaces', 'drawerTech', 'drawerStats', 'drawerReports', 'drawerSettings'] as const;
 const DRAWER_TAB_MAP: Record<(typeof DRAWER_IDS)[number], string> = {
+  drawerRaces: 'tabRaces',
   drawerTech: 'tabTech',
   drawerStats: 'tabStats',
   drawerReports: 'tabReports',
@@ -40,24 +47,87 @@ function getEl<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+function shortPrt(prt: string): string {
+  return prt.replace(/^PRT_/, '');
+}
+
+function doctrinePreset(focus: string): Doctrine {
+  const base: Doctrine = {
+    facShare: 0.48,
+    shipShare: 0.24,
+    techShare: 0.16,
+    colPopReq: 0.32,
+    distExp: 1.5,
+    qualExp: 1.5,
+    cruiserShare: 0.4,
+    bshipShare: 0.35,
+    bomberShare: 0.25,
+    interceptBias: 0.55,
+    techAlloc: [0.17, 0.17, 0.17, 0.17, 0.16, 0.16],
+    kills: 0,
+    gates: 0,
+    lastFit: 0,
+    winRate: 0,
+  };
+  if (focus === 'industry') {
+    return { ...base, facShare: 0.54, shipShare: 0.20, techShare: 0.14, bshipShare: 0.45, cruiserShare: 0.30, bomberShare: 0.25, techAlloc: [0.22, 0.14, 0.14, 0.24, 0.10, 0.16] };
+  }
+  if (focus === 'expansion') {
+    return { ...base, facShare: 0.46, shipShare: 0.28, techShare: 0.14, colPopReq: 0.25, distExp: 1.9, cruiserShare: 0.50, bshipShare: 0.30, bomberShare: 0.20, techAlloc: [0.14, 0.14, 0.28, 0.18, 0.14, 0.12] };
+  }
+  if (focus === 'warfare') {
+    return { ...base, facShare: 0.42, shipShare: 0.34, techShare: 0.14, cruiserShare: 0.30, bshipShare: 0.45, bomberShare: 0.25, interceptBias: 0.70, techAlloc: [0.16, 0.28, 0.16, 0.22, 0.10, 0.08] };
+  }
+  if (focus === 'science') {
+    return { ...base, facShare: 0.44, shipShare: 0.20, techShare: 0.26, cruiserShare: 0.30, bshipShare: 0.25, bomberShare: 0.45, techAlloc: [0.22, 0.20, 0.16, 0.14, 0.16, 0.12] };
+  }
+  return base;
+}
+
+function isTechUnlocked(bits: number[], techId: number): boolean {
+  const word = techId >>> 5;
+  const bit = techId & 31;
+  return ((bits[word] ?? 0) & (1 << bit)) !== 0;
+}
+
 export class UiController {
   private readonly meta: EngineMeta;
+  private readonly catalog: TechCatalogView;
   private readonly callbacks: UiCallbacks;
+
   private sortKey: SortKey = 'res';
   private sortAsc = false;
   private selectedPlanet = -1;
   private lastSnap: SimSnapshot | null = null;
   private lastConfig: SimConfig;
+  private lastHudSignature = '';
 
-  constructor(meta: EngineMeta, initialConfig: SimConfig, callbacks: UiCallbacks) {
+  private customRaces: RaceDef[] = [];
+  private selectedRaceIds: Set<string>;
+  private activeTechTab: 'overview' | 'browser' = 'overview';
+
+  constructor(
+    meta: EngineMeta,
+    catalog: TechCatalogView,
+    initialConfig: SimConfig,
+    callbacks: UiCallbacks,
+  ) {
     this.meta = meta;
+    this.catalog = catalog;
     this.lastConfig = initialConfig;
     this.callbacks = callbacks;
+
+    this.customRaces = this.loadCustomRaces();
+    this.selectedRaceIds = new Set(this.catalog.classicRaces.map((r) => r.id));
+
+    this.initStaticControls();
     this.bindEvents();
+    this.renderRaceRoster();
   }
 
   public setConfig(cfg: SimConfig): void {
     this.lastConfig = cfg;
+    getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = cfg.ignoreRacialTraits;
   }
 
   public setSelectedPlanet(index: number): void {
@@ -78,45 +148,22 @@ export class UiController {
     getEl('statusMsgStats').textContent = text;
   }
 
-  public updateWinRateBar(res: TournamentResult): void {
+  public updateWinRateBar(res: TournamentResult, snap: SimSnapshot): void {
     getEl('tourneyLabel').textContent = `🏆 Win-Rate (${res.numGames} maps):`;
-    const [w1, w2, w3] = res.winRates;
-    const b1 = getEl('wrBar1');
-    const b2 = getEl('wrBar2');
-    const b3 = getEl('wrBar3');
-    b1.style.width = `${w1}%`;
-    b1.textContent = w1 > 8 ? `🟢 ${w1}%` : '';
-    b2.style.width = `${w2}%`;
-    b2.textContent = w2 > 8 ? `🔵 ${w2}%` : '';
-    b3.style.width = `${w3}%`;
-    b3.textContent = w3 > 8 ? `🟡 ${w3}%` : '';
-  }
-
-  public syncWeightSliders(indWeight: number, expWeight: number, techWeight: number): void {
-    const pairs: [string, number][] = [
-      ['indWeight', indWeight],
-      ['expWeight', expWeight],
-      ['techWeight', techWeight],
-    ];
-    for (const [k, val] of pairs) {
-      getEl<HTMLInputElement>(`p_${k}`).value = String(val);
-      getEl(`v_${k}`).textContent = val.toFixed(2);
-    }
+    const bar = getEl('winrateBar');
+    bar.innerHTML = snap.empires
+      .map((emp, idx) => {
+        const w = res.winRates[idx] ?? 0;
+        const label = w >= 9 ? `${emp.name.slice(0, 3)} ${w}%` : w >= 5 ? `${w}%` : '';
+        return `<div class="wr-seg" style="width:${w}%;background:${emp.color};" title="${emp.name}: ${w}% (${res.wins[idx] ?? 0} wins)">${label}</div>`;
+      })
+      .join('');
   }
 
   public update(snap: SimSnapshot, forceDrawers = false): void {
     this.lastSnap = snap;
-
     getEl('hudYear').textContent = snap.year.toFixed(1);
-    for (let e = 0; e < 3; e++) {
-      const p = e + 1;
-      const st = snap.stats[e];
-      const doc = snap.doctrines[e];
-      getEl(`hudE${p}`).textContent = `${st.planets} pl | ${Math.round(st.res)} Res`;
-      getEl(`hudK${p}`).textContent = `💥${doc.kills} 🌀${st.gates}`;
-      getEl(`techB${p}`).textContent = this.formatTechBadges(snap.perks[e]);
-    }
-
+    this.updateEmpireHud(snap);
     this.renderEvents(snap);
 
     if (this.selectedPlanet !== -1) {
@@ -124,21 +171,16 @@ export class UiController {
     }
 
     if (forceDrawers || snap.ticks % 15 === 0) {
-      if (getEl('drawerTech').classList.contains('open')) this.renderTechDrawer(snap);
-      if (getEl('drawerStats').classList.contains('open')) {
-        this.renderDNATable(snap);
-        this.renderPowerChart(snap);
-      }
-      if (getEl('drawerReports').classList.contains('open')) {
-        this.renderPlanetTable(snap);
-        this.renderFleetTable(snap);
-      }
+      this.renderOpenDrawers(snap);
     }
   }
 
   public renderOpenDrawers(snap: SimSnapshot): void {
     this.lastSnap = snap;
-    if (getEl('drawerTech').classList.contains('open')) this.renderTechDrawer(snap);
+    if (getEl('drawerTech').classList.contains('open')) {
+      if (this.activeTechTab === 'overview') this.renderTechOverview(snap);
+      else this.renderTechBrowser(snap);
+    }
     if (getEl('drawerStats').classList.contains('open')) {
       this.renderDNATable(snap);
       this.renderPowerChart(snap);
@@ -147,6 +189,70 @@ export class UiController {
       this.renderPlanetTable(snap);
       this.renderFleetTable(snap);
     }
+  }
+
+  private loadCustomRaces(): RaceDef[] {
+    try {
+      const raw = localStorage.getItem(CUSTOM_RACES_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as RaceDef[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveCustomRaces(): void {
+    try {
+      localStorage.setItem(CUSTOM_RACES_STORAGE_KEY, JSON.stringify(this.customRaces));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  private allAvailableRaces(): RaceDef[] {
+    return [...this.catalog.classicRaces, ...this.customRaces];
+  }
+
+  private formatLrtCodes(mask: number): string {
+    if (mask === 0) return '—';
+    return this.catalog.lrts
+      .filter((l) => (mask & l.bit) !== 0)
+      .map((l) => l.code)
+      .join(',');
+  }
+
+  private initStaticControls(): void {
+    // Populate PRT select
+    const prtSelect = getEl<HTMLSelectElement>('crPrt');
+    prtSelect.innerHTML = this.catalog.prts
+      .map((p) => `<option value="${p.code}">${p.shortName} – ${p.name}</option>`)
+      .join('');
+    this.updatePrtDescription();
+
+    // Populate 14 LRT checkboxes
+    const lrtGrid = getEl('crLrtGrid');
+    lrtGrid.innerHTML = this.catalog.lrts
+      .map(
+        (l) => `<label class="lrt-check" title="${l.desc}">
+          <input type="checkbox" data-lrt-bit="${l.bit}" />
+          <span><b>${l.code}</b> – ${l.name}</span>
+        </label>`,
+      )
+      .join('');
+
+    // Populate Tech Browser categories
+    const cats = Array.from(new Set(this.catalog.entries.map((e) => e.categoryLabel))).sort();
+    const catSelect = getEl<HTMLSelectElement>('techCatFilter');
+    catSelect.innerHTML =
+      `<option value="all">All Categories (${this.catalog.entries.length})</option>` +
+      cats.map((c) => `<option value="${c}">${c}</option>`).join('');
+  }
+
+  private updatePrtDescription(): void {
+    const code = getEl<HTMLSelectElement>('crPrt').value;
+    const found = this.catalog.prts.find((p) => p.code === code);
+    getEl('crPrtDesc').textContent = found ? `${found.name}: ${found.desc}` : '';
   }
 
   private bindEvents(): void {
@@ -161,30 +267,121 @@ export class UiController {
       });
     });
 
-    // Drawer nav buttons & close buttons
+    // Drawers
     document.querySelectorAll<HTMLButtonElement>('[data-drawer]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const target = btn.dataset.drawer as (typeof DRAWER_IDS)[number];
-        this.toggleDrawer(target);
+        this.toggleDrawer(btn.dataset.drawer as (typeof DRAWER_IDS)[number]);
       });
     });
-
     document.querySelectorAll<HTMLButtonElement>('[data-close-drawer]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const target = btn.dataset.closeDrawer as (typeof DRAWER_IDS)[number];
-        this.toggleDrawer(target);
+        this.toggleDrawer(btn.dataset.closeDrawer as (typeof DRAWER_IDS)[number]);
       });
     });
 
-    // Reset button
     getEl('btnReset').addEventListener('click', () => this.callbacks.onReset());
+    getEl('btnCloseInspector').addEventListener('click', () => this.callbacks.onSelectPlanet(-1));
 
-    // Inspector close
-    getEl('btnCloseInspector').addEventListener('click', () => {
-      this.callbacks.onSelectPlanet(-1);
+    // Tech drawer tabs
+    document.querySelectorAll<HTMLButtonElement>('[data-tech-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.activeTechTab = btn.dataset.techTab === 'browser' ? 'browser' : 'overview';
+        getEl('techTabOverview').classList.toggle('active', this.activeTechTab === 'overview');
+        getEl('techTabBrowser').classList.toggle('active', this.activeTechTab === 'browser');
+        getEl('techOverviewPane').style.display = this.activeTechTab === 'overview' ? 'flex' : 'none';
+        getEl('techBrowserPane').style.display = this.activeTechTab === 'browser' ? 'flex' : 'none';
+        if (this.lastSnap) this.renderOpenDrawers(this.lastSnap);
+      });
     });
 
-    // Report tabs
+    // Tech browser filters
+    const reRenderBrowser = () => {
+      if (this.lastSnap) this.renderTechBrowser(this.lastSnap);
+    };
+    getEl('techSearch').addEventListener('input', reRenderBrowser);
+    getEl('techCatFilter').addEventListener('change', reRenderBrowser);
+    getEl('techStatusFilter').addEventListener('change', reRenderBrowser);
+
+    // Races drawer events
+    getEl('crPrt').addEventListener('change', () => this.updatePrtDescription());
+    getEl('btnSelectClassic6').addEventListener('click', () => {
+      this.selectedRaceIds = new Set(this.catalog.classicRaces.map((r) => r.id));
+      this.renderRaceRoster();
+    });
+    getEl('btnSelectAllRaces').addEventListener('click', () => {
+      this.selectedRaceIds = new Set(this.allAvailableRaces().slice(0, 16).map((r) => r.id));
+      this.renderRaceRoster();
+    });
+    getEl('btnLaunchRoster').addEventListener('click', () => {
+      const chosen = this.allAvailableRaces().filter((r) => this.selectedRaceIds.has(r.id));
+      if (chosen.length < 2 || chosen.length > 16) {
+        getEl('crStatus').textContent = 'Select between 2 and 16 races to launch.';
+        return;
+      }
+      getEl('crStatus').textContent = `Launched galaxy with ${chosen.length} empires!`;
+      this.callbacks.onLaunchRaces(chosen);
+    });
+
+    getEl('btnCreateRace').addEventListener('click', () => {
+      const name = getEl<HTMLInputElement>('crName').value.trim();
+      if (!name) {
+        getEl('crStatus').textContent = 'Please enter a race name.';
+        return;
+      }
+      const color = getEl<HTMLInputElement>('crColor').value;
+      const prt = getEl<HTMLSelectElement>('crPrt').value;
+      const focus = getEl<HTMLSelectElement>('crFocus').value;
+      let lrtMask = 0;
+      document.querySelectorAll<HTMLInputElement>('input[data-lrt-bit]').forEach((cb) => {
+        if (cb.checked) lrtMask |= Number(cb.dataset.lrtBit ?? 0);
+      });
+      const newRace: RaceDef = {
+        id: `custom_${Date.now()}`,
+        name,
+        color,
+        prt,
+        lrtMask,
+        isCustom: true,
+        doctrine: doctrinePreset(focus),
+      };
+      this.customRaces.push(newRace);
+      this.saveCustomRaces();
+      if (this.selectedRaceIds.size < 16) {
+        this.selectedRaceIds.add(newRace.id);
+      }
+      getEl<HTMLInputElement>('crName').value = '';
+      getEl('crStatus').textContent = `✓ Created "${name}" (${shortPrt(prt)}). Click Launch Galaxy to play!`;
+      this.renderRaceRoster();
+    });
+
+    getEl('raceRosterList').addEventListener('change', (e) => {
+      const target = e.target as HTMLInputElement;
+      if (!target.dataset.raceId) return;
+      const id = target.dataset.raceId;
+      if (target.checked) {
+        if (this.selectedRaceIds.size >= 16) {
+          target.checked = false;
+          getEl('crStatus').textContent = 'Maximum 16 empires per galaxy.';
+          return;
+        }
+        this.selectedRaceIds.add(id);
+      } else {
+        this.selectedRaceIds.delete(id);
+      }
+      this.updateRosterCount();
+    });
+
+    getEl('raceRosterList').addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-delete-race]');
+      if (!btn || !btn.dataset.deleteRace) return;
+      const id = btn.dataset.deleteRace;
+      this.customRaces = this.customRaces.filter((r) => r.id !== id);
+      this.selectedRaceIds.delete(id);
+      this.saveCustomRaces();
+      this.renderRaceRoster();
+    });
+
+    // Report tabs & sorting
     document.querySelectorAll<HTMLButtonElement>('[data-report]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const which = btn.dataset.report === 'fleets' ? 'fleets' : 'planets';
@@ -195,7 +392,6 @@ export class UiController {
       });
     });
 
-    // Sortable planet table headers
     document.querySelectorAll<HTMLTableCellElement>('th[data-sort]').forEach((th) => {
       th.addEventListener('click', () => {
         const key = th.dataset.sort as SortKey;
@@ -208,7 +404,6 @@ export class UiController {
       });
     });
 
-    // Planet table row click -> inspect planet
     getEl('planetTableBody').addEventListener('click', (e) => {
       const row = (e.target as HTMLElement).closest('tr');
       if (!row || !row.dataset.planetIdx) return;
@@ -219,12 +414,16 @@ export class UiController {
     // Lab actions
     document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const action = btn.dataset.action as LabAction;
-        this.callbacks.onLabAction(action);
+        this.callbacks.onLabAction(btn.dataset.action as LabAction);
       });
     });
 
-    // Settings sliders
+    // Settings sliders & sandbox checkbox
+    getEl<HTMLInputElement>('p_ignoreRacialTraits').addEventListener('change', (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      this.callbacks.onParamChange('ignoreRacialTraits', checked ? 1 : 0);
+    });
+
     document.querySelectorAll<HTMLInputElement>('input[data-param]').forEach((input) => {
       input.addEventListener('input', () => {
         const key = input.dataset.param!;
@@ -232,14 +431,42 @@ export class UiController {
         const label = getEl(`v_${key}`);
         if (key === 'sprawlPenalty' || key === 'aggroBias' || key === 'salvageRate') {
           label.textContent = `${num}%`;
-        } else if (key === 'indWeight' || key === 'expWeight' || key === 'techWeight') {
-          label.textContent = num.toFixed(2);
         } else {
           label.textContent = String(num);
         }
         this.callbacks.onParamChange(key, num);
       });
     });
+  }
+
+  private renderRaceRoster(): void {
+    const list = getEl('raceRosterList');
+    const races = this.allAvailableRaces();
+    list.innerHTML = races
+      .map((r) => {
+        const checked = this.selectedRaceIds.has(r.id) ? 'checked' : '';
+        const lrtTxt = this.formatLrtCodes(r.lrtMask);
+        const delBtn = r.isCustom
+          ? `<button class="insp-close" data-delete-race="${r.id}" title="Delete custom race">✕</button>`
+          : `<span style="font-size:0.6rem;color:var(--muted);">Classic</span>`;
+        return `<div class="race-item" style="border-left-color:${r.color};">
+          <label class="race-item-left">
+            <input type="checkbox" data-race-id="${r.id}" ${checked} />
+            <div>
+              <div style="color:${r.color};font-weight:700;">${r.name}</div>
+              <div class="race-meta">${shortPrt(r.prt)} | LRT: ${lrtTxt}</div>
+            </div>
+          </label>
+          ${delBtn}
+        </div>`;
+      })
+      .join('');
+    this.updateRosterCount();
+  }
+
+  private updateRosterCount(): void {
+    const count = this.selectedRaceIds.size;
+    getEl('rosterCountInfo').textContent = `Selected: ${count} / 16 races (min 2)`;
   }
 
   private toggleDrawer(targetId: (typeof DRAWER_IDS)[number]): void {
@@ -249,10 +476,7 @@ export class UiController {
       else el.classList.remove('open');
       getEl(DRAWER_TAB_MAP[id]).classList.toggle('active', el.classList.contains('open'));
     }
-
-    if (this.lastSnap) {
-      this.renderOpenDrawers(this.lastSnap);
-    }
+    if (this.lastSnap) this.renderOpenDrawers(this.lastSnap);
   }
 
   private formatTechBadges(perkMask: number): string {
@@ -260,6 +484,38 @@ export class UiController {
       .filter((bp) => (perkMask & bp.bit) !== 0)
       .map((bp) => bp.icon)
       .join('');
+  }
+
+  private updateEmpireHud(snap: SimSnapshot): void {
+    const bar = getEl('empiresBar');
+    const sig = snap.empires.map((e) => `${e.id}:${e.color}`).join('|');
+    if (sig !== this.lastHudSignature) {
+      this.lastHudSignature = sig;
+      bar.innerHTML = snap.empires
+        .map(
+          (emp, idx) => `<div class="emp-pill" style="border-top-color:${emp.color};">
+            <div class="emp-row1">
+              <span style="color:${emp.color};">■ ${emp.name}</span>
+              <span id="hudTechB_${idx}"></span>
+            </div>
+            <div class="emp-row2">
+              <span id="hudStat_${idx}">1 pl | 25 Res</span>
+              <span id="hudKill_${idx}">💥0 🌀0</span>
+            </div>
+          </div>`,
+        )
+        .join('');
+    }
+
+    for (let i = 0; i < snap.empires.length; i++) {
+      const emp = snap.empires[i];
+      const statEl = document.getElementById(`hudStat_${i}`);
+      const killEl = document.getElementById(`hudKill_${i}`);
+      const badgeEl = document.getElementById(`hudTechB_${i}`);
+      if (statEl) statEl.textContent = `${emp.stats.planets} pl | ${Math.round(emp.stats.res)} Res`;
+      if (killEl) killEl.textContent = `💥${emp.doctrine.kills} 🌀${emp.stats.gates}`;
+      if (badgeEl) badgeEl.textContent = this.formatTechBadges(emp.perks);
+    }
   }
 
   private renderEvents(snap: SimSnapshot): void {
@@ -281,12 +537,12 @@ export class UiController {
     const pl = snap.planets[i];
     const insp = getEl('planetInspector');
     insp.style.display = 'flex';
-    const doc = pl.owner > 0 ? snap.doctrines[pl.owner - 1] : null;
-    insp.style.borderLeftColor = doc ? doc.color : '#64748b';
+    const emp = pl.owner > 0 ? snap.empires[pl.owner - 1] : null;
+    insp.style.borderLeftColor = emp ? emp.color : '#64748b';
     getEl('inspTitle').textContent = `System #${pl.id}`;
     const ownerEl = getEl('inspOwner');
-    ownerEl.textContent = doc ? doc.name : 'Uninhabited';
-    ownerEl.style.color = doc ? doc.color : '#94a3b8';
+    ownerEl.textContent = emp ? `${emp.name} (${shortPrt(emp.prt)})` : 'Uninhabited';
+    ownerEl.style.color = emp ? emp.color : '#94a3b8';
     getEl('inspHab').textContent = `${Math.round(pl.hab * 100)}%`;
     getEl('inspPop').textContent = `${Math.round(pl.pop)}k / ${Math.round(pl.maxPop)}k`;
     getEl('inspRes').textContent = `${Math.round(pl.res)} Res/yr`;
@@ -302,77 +558,142 @@ export class UiController {
     getEl('valGerm').textContent = `${Math.round(pl.germSurf)} (${Math.round(pl.germCrust)})`;
   }
 
-  private renderTechDrawer(snap: SimSnapshot): void {
-    let cardsHtml = '';
-    for (let e = 0; e < 3; e++) {
-      const d = snap.doctrines[e];
-      const lv = snap.techLv[e];
-      let rows = '';
-      for (const tf of this.meta.techFields) {
-        const pct = Math.min(100, (lv[tf.index] / 10.0) * 100);
-        rows += `<div class="tech-row">
-          <span style="width:32px;color:${tf.color};font-weight:bold;">${tf.key}</span>
-          <div class="tech-bar"><div class="tech-fill" style="width:${pct}%;background:${tf.color};"></div></div>
-          <span style="width:40px;text-align:right;">Lv ${lv[tf.index].toFixed(1)}</span>
-          <span style="width:32px;text-align:right;color:var(--muted);">${Math.round(d.techAlloc[tf.index] * 100)}%</span>
+  private renderTechOverview(snap: SimSnapshot): void {
+    const maxLv = this.meta.maxTechLevel || 26;
+    getEl('techCardsContainer').innerHTML = snap.empires
+      .map((emp) => {
+        const rows = this.meta.techFields
+          .map((tf) => {
+            const lv = emp.techLv[tf.index] ?? 0;
+            const pct = Math.min(100, (lv / maxLv) * 100);
+            return `<div class="tech-row">
+              <span style="width:28px;color:${tf.color};font-weight:bold;">${tf.key}</span>
+              <div class="tech-bar"><div class="tech-fill" style="width:${pct}%;background:${tf.color};"></div></div>
+              <span style="width:38px;text-align:right;">Lv ${lv.toFixed(1)}</span>
+              <span style="width:28px;text-align:right;color:var(--muted);">${Math.round((emp.doctrine.techAlloc[tf.index] ?? 0) * 100)}%</span>
+            </div>`;
+          })
+          .join('');
+        const lo = emp.loadout;
+        return `<div class="tech-card" style="border-top:2px solid ${emp.color}">
+          <div class="tech-card-head">
+            <span style="color:${emp.color}">${emp.name} <small style="color:var(--muted);">[${shortPrt(emp.prt)}]</small></span>
+            <span style="color:var(--muted);font-family:monospace;">${lo.unlockedCount}/239</span>
+          </div>
+          ${rows}
+          <div class="loadout-mini">
+            <span>Eng: ${lo.engine}</span>
+            <span>Wep: ${lo.weapon}</span>
+            <span>Arm: ${lo.armor}</span>
+            <span>Shd: ${lo.shield}</span>
+            <span>Def: ${lo.defense}</span>
+            <span>Gate: ${lo.stargate}</span>
+            <span>Cru: ${lo.cruiserHull}</span>
+            <span>Cap: ${lo.battleshipHull}</span>
+          </div>
         </div>`;
-      }
-      cardsHtml += `<div class="tech-card" style="border-top:2px solid ${d.color}">
-        <div class="tech-card-head"><span style="color:${d.color}">${d.name}</span><span style="color:var(--muted);font-family:monospace;">Budget: ${Math.round(d.techShare * 100)}%</span></div>
-        ${rows}
-      </div>`;
-    }
-    getEl('techCardsContainer').innerHTML = cardsHtml;
+      })
+      .join('');
 
-    let bpHtml = '';
-    for (const bp of this.meta.breakthroughs) {
-      let badges = '';
-      for (let e = 0; e < 3; e++) {
-        const has = (snap.perks[e] & bp.bit) !== 0;
-        const col = snap.doctrines[e].color;
-        badges += `<span style="display:inline-block;width:10px;height:10px;margin-left:3px;border:1px solid ${col};background:${has ? col : 'transparent'};"></span>`;
+    getEl('breakthroughsContainer').innerHTML = this.meta.breakthroughs
+      .map((bp) => {
+        const badges = snap.empires
+          .map((emp) => {
+            const has = (emp.perks & bp.bit) !== 0;
+            return `<span title="${emp.name}" style="display:inline-block;width:9px;height:9px;margin-left:2px;border:1px solid ${emp.color};background:${has ? emp.color : 'transparent'};"></span>`;
+          })
+          .join('');
+        return `<div class="bp-item">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <b>${bp.icon} ${bp.name}</b><div>${badges}</div>
+          </div>
+          <div class="bp-req">Requires: ${bp.reqTxt}</div>
+          <div style="color:#94a3b8;margin-top:2px;">${bp.desc}</div>
+        </div>`;
+      })
+      .join('');
+  }
+
+  private renderTechBrowser(snap: SimSnapshot): void {
+    const q = getEl<HTMLInputElement>('techSearch').value.trim().toLowerCase();
+    const cat = getEl<HTMLSelectElement>('techCatFilter').value;
+    const status = getEl<HTMLSelectElement>('techStatusFilter').value;
+
+    const filtered = this.catalog.entries.filter((entry) => {
+      if (cat !== 'all' && entry.categoryLabel !== cat) return false;
+      if (q && !entry.name.toLowerCase().includes(q) && !entry.statsSummary.toLowerCase().includes(q)) {
+        return false;
       }
-      bpHtml += `<div class="bp-item">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <b>${bp.icon} ${bp.name}</b><div>${badges}</div>
-        </div>
-        <div class="bp-req">Requires: ${bp.reqTxt}</div>
-        <div style="color:#94a3b8;margin-top:2px;">${bp.desc}</div>
-      </div>`;
-    }
-    getEl('breakthroughsContainer').innerHTML = bpHtml;
+      const unlockedByAny = snap.empires.some((emp) => isTechUnlocked(emp.loadout.unlockedBits, entry.id));
+      if (status === 'unlocked' && !unlockedByAny) return false;
+      if (status === 'locked' && unlockedByAny) return false;
+      return true;
+    });
+
+    getEl('techBrowserCount').textContent = `Showing ${filtered.length} of ${this.catalog.entries.length} craig-stars technologies`;
+
+    getEl('techBrowserBody').innerHTML = filtered
+      .map((entry) => {
+        const reqStr = entry.reqLevels.join('/');
+        const traits: string[] = [];
+        if (entry.acquirable) traits.push('MT');
+        if (entry.prtsRequired.length > 0) traits.push(entry.prtsRequired.map(shortPrt).join(','));
+        if (entry.lrtsRequired !== 0) traits.push(this.formatLrtCodes(entry.lrtsRequired));
+        const traitTxt = traits.length > 0 ? traits.join(' ') : 'All';
+
+        const costTxt = `${entry.cost.ironium}/${entry.cost.boranium}/${entry.cost.germanium}/${entry.cost.resources}`;
+        const dots = snap.empires
+          .map((emp) => {
+            const has = isTechUnlocked(emp.loadout.unlockedBits, entry.id);
+            return `<span title="${emp.name}" style="display:inline-block;width:8px;height:8px;margin-left:2px;border:1px solid ${emp.color};background:${has ? emp.color : 'transparent'};"></span>`;
+          })
+          .join('');
+
+        return `<tr>
+          <td style="font-weight:600;color:#f8fafc;">${entry.name}</td>
+          <td style="color:var(--muted);">${entry.categoryLabel}</td>
+          <td style="text-align:center;">${reqStr}</td>
+          <td style="color:var(--purple);">${traitTxt}</td>
+          <td>${costTxt}</td>
+          <td style="color:#94a3b8;text-align:left;">${entry.statsSummary}</td>
+          <td>${dots}</td>
+        </tr>`;
+      })
+      .join('');
   }
 
   private renderDNATable(snap: SimSnapshot): void {
     getEl('dnaGenInfo').textContent = `DNA Generation: #${snap.dnaGeneration}`;
-    let html = '';
-    for (let e = 0; e < 3; e++) {
-      const d = snap.doctrines[e];
-      let topF = 0;
-      for (let f = 1; f < 6; f++) {
-        if (d.techAlloc[f] > d.techAlloc[topF]) topF = f;
-      }
-      const tf = this.meta.techFields[topF];
-      html += `<tr>
-        <td style="color:${d.color};font-weight:bold;">${d.name}</td>
-        <td>${Math.round(d.facShare * 100)}%</td>
-        <td>${Math.round(d.shipShare * 100)}%</td>
-        <td>${Math.round(d.techShare * 100)}%</td>
-        <td style="color:#93c5fd;">${Math.round(d.cruiserShare * 100)}%</td>
-        <td style="color:#60a5fa;">${Math.round(d.bshipShare * 100)}%</td>
-        <td style="color:#34d399;">${Math.round(d.bomberShare * 100)}%</td>
-        <td style="color:#c084fc;">${Math.round(d.interceptBias * 100)}%</td>
-        <td style="color:${tf.color};font-weight:bold;">${tf.key} (${Math.round(d.techAlloc[topF] * 100)}%)</td>
-        <td style="color:${d.color};font-weight:bold;">${d.winRate}%</td>
-        <td style="color:${d.color};font-weight:bold;">${d.lastFit}</td>
-      </tr>`;
-    }
-    getEl('dnaTableBody').innerHTML = html;
+    getEl('dnaTableBody').innerHTML = snap.empires
+      .map((emp) => {
+        const d = emp.doctrine;
+        let topF = 0;
+        for (let f = 1; f < 6; f++) {
+          if ((d.techAlloc[f] ?? 0) > (d.techAlloc[topF] ?? 0)) topF = f;
+        }
+        const tf = this.meta.techFields[topF];
+        return `<tr>
+          <td style="color:${emp.color};font-weight:bold;">${emp.name}</td>
+          <td style="color:var(--muted);">${shortPrt(emp.prt)}</td>
+          <td>${Math.round(d.facShare * 100)}%</td>
+          <td>${Math.round(d.shipShare * 100)}%</td>
+          <td>${Math.round(d.techShare * 100)}%</td>
+          <td style="color:#93c5fd;">${Math.round(d.cruiserShare * 100)}%</td>
+          <td style="color:#60a5fa;">${Math.round(d.bshipShare * 100)}%</td>
+          <td style="color:#34d399;">${Math.round(d.bomberShare * 100)}%</td>
+          <td style="color:#c084fc;">${Math.round(d.interceptBias * 100)}%</td>
+          <td style="color:${tf.color};font-weight:bold;">${tf.key} (${Math.round((d.techAlloc[topF] ?? 0) * 100)}%)</td>
+          <td style="color:${emp.color};font-weight:bold;">${d.winRate}%</td>
+          <td style="color:${emp.color};font-weight:bold;">${d.lastFit}</td>
+        </tr>`;
+      })
+      .join('');
   }
 
   private renderPowerChart(snap: SimSnapshot): void {
     const canvas = getEl<HTMLCanvasElement>('powerCanvas');
-    const maxVal = drawPowerChart(canvas, snap.powerHistory);
+    const colors = snap.empires.map((e) => e.color);
+    const maxVal = drawPowerChart(canvas, snap.powerHistory, colors);
     getEl('maxResInfo').textContent = `Max: ${Math.round(maxVal)} Res/yr`;
   }
 
@@ -400,29 +721,28 @@ export class UiController {
     }));
 
     rows.sort((a, b) => (this.sortAsc ? a[this.sortKey] - b[this.sortKey] : b[this.sortKey] - a[this.sortKey]));
-    const colors = ['#475569', '#4ade80', '#38bdf8', '#facc15'];
     getEl('planetTableBody').innerHTML = rows
-      .map(
-        (r) => `<tr data-planet-idx="${r.idx}">
-        <td>#${r.id}</td>
-        <td><span class="dot" style="background:${colors[r.owner]}"></span></td>
-        <td style="color:#22d3ee;text-align:center;">${r.gate ? '🌀' : ''}</td>
-        <td>${r.hab}%</td>
-        <td>${r.pop}k</td>
-        <td>${r.actF}/${r.maxB}</td>
-        <td class="c-iron">${r.iron} <span style="color:#64748b">(${r.ironC})</span></td>
-        <td class="c-bora">${r.bora} <span style="color:#64748b">(${r.boraC})</span></td>
-        <td class="c-germ">${r.germ} <span style="color:#64748b">(${r.germC})</span></td>
-        <td style="color:#38bdf8;font-weight:bold;">${r.res}</td>
-        <td>${r.def}</td>
-      </tr>`,
-      )
+      .map((r) => {
+        const col = r.owner > 0 ? (snap.empires[r.owner - 1]?.color ?? '#94a3b8') : '#475569';
+        return `<tr data-planet-idx="${r.idx}">
+          <td>#${r.id}</td>
+          <td><span class="dot" style="background:${col}"></span></td>
+          <td style="color:#22d3ee;text-align:center;">${r.gate ? '🌀' : ''}</td>
+          <td>${r.hab}%</td>
+          <td>${r.pop}k</td>
+          <td>${r.actF}/${r.maxB}</td>
+          <td class="c-iron">${r.iron} <span style="color:#64748b">(${r.ironC})</span></td>
+          <td class="c-bora">${r.bora} <span style="color:#64748b">(${r.boraC})</span></td>
+          <td class="c-germ">${r.germ} <span style="color:#64748b">(${r.germC})</span></td>
+          <td style="color:#38bdf8;font-weight:bold;">${r.res}</td>
+          <td>${r.def}</td>
+        </tr>`;
+      })
       .join('');
   }
 
   private renderFleetTable(snap: SimSnapshot): void {
     getEl('repBtnFleets').textContent = `Fleets in Flight (${snap.fleets.length})`;
-    const colors = ['#475569', '#4ade80', '#38bdf8', '#facc15'];
     const minLetters = ['I', 'B', 'G'];
     const minCols = ['#60a5fa', '#34d399', '#fbbf24'];
 
@@ -432,6 +752,7 @@ export class UiController {
         const target = snap.planets[fl.target];
         const dist = target ? Math.hypot(target.x - fl.x, target.y - fl.y) : 0;
         const eta = dist / this.lastConfig.fleetSpeed;
+        const empCol = snap.empires[fl.emp - 1]?.color ?? '#94a3b8';
         const label =
           fl.type === 'freight'
             ? `■ Freight (${minLetters[fl.minType] ?? 'I'})`
@@ -447,7 +768,7 @@ export class UiController {
         const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
         return `<tr>
           <td>F${fl.id}</td>
-          <td><span class="dot" style="background:${colors[fl.emp]}"></span></td>
+          <td><span class="dot" style="background:${empCol}"></span></td>
           <td style="color:${col};font-weight:bold;">${label}</td>
           <td>#${fl.from + 1}→#${fl.target + 1}</td>
           <td>${Math.round(fl.power)} (${hpPct}%)</td>

@@ -3,11 +3,11 @@ import initWasm, { WasmEngine } from './wasm/sistars_engine';
 import { GalaxyRenderer } from './renderer';
 import { UiController } from './ui';
 import type {
-  AutoBalanceResult,
   CoEvolutionResult,
   EngineMeta,
   SimConfig,
   SimSnapshot,
+  TechCatalogView,
   TournamentResult,
 } from './types';
 
@@ -20,6 +20,7 @@ async function bootstrap(): Promise<void> {
 
   const engine = new WasmEngine(randomSeed());
   const meta = engine.get_metadata() as EngineMeta;
+  const catalog = engine.get_tech_catalog() as TechCatalogView;
   let config = engine.get_config() as SimConfig;
 
   const canvas = document.getElementById('galaxyCanvas') as HTMLCanvasElement;
@@ -36,7 +37,7 @@ async function bootstrap(): Promise<void> {
     ui.update(lastSnap, true);
   };
 
-  const ui = new UiController(meta, config, {
+  const ui = new UiController(meta, catalog, config, {
     onSpeedChange: (newSpeed) => {
       speed = newSpeed;
     },
@@ -52,10 +53,19 @@ async function bootstrap(): Promise<void> {
       if (reset) {
         ui.setSelectedPlanet(-1);
         refreshSnapshot(true);
+      } else {
+        refreshSnapshot(false);
       }
     },
     onSelectPlanet: (index) => {
       ui.setSelectedPlanet(index);
+    },
+    onLaunchRaces: (races) => {
+      const ok = engine.set_races(races, randomSeed());
+      if (ok) {
+        ui.setSelectedPlanet(-1);
+        refreshSnapshot(true);
+      }
     },
     onLabAction: (action) => {
       if (action === 'copyjson') {
@@ -66,15 +76,16 @@ async function bootstrap(): Promise<void> {
       }
 
       if (action === 'tournament') {
-        const numGames = 40;
+        const numGames = 30;
         ui.setStatus(`🏆 Running ${numGames}-map Monte Carlo tournament...`);
         setTimeout(() => {
-          const res = engine.run_tournament(numGames, 1400, randomSeed()) as TournamentResult;
-          ui.updateWinRateBar(res);
-          ui.setStatus(
-            `✓ Tournament (${res.numGames} maps): 🟢 ${res.winRates[0]}% | 🔵 ${res.winRates[1]}% | 🟡 ${res.winRates[2]}%`,
-          );
+          const res = engine.run_tournament(numGames, 1200, randomSeed()) as TournamentResult;
           refreshSnapshot(true);
+          ui.updateWinRateBar(res, lastSnap);
+          const summary = lastSnap.empires
+            .map((e, i) => `${e.name.slice(0, 4)} ${res.winRates[i] ?? 0}%`)
+            .join(' | ');
+          ui.setStatus(`✓ Tournament (${res.numGames} maps): ${summary}`);
         }, 25);
         return;
       }
@@ -83,25 +94,12 @@ async function bootstrap(): Promise<void> {
         ui.setStatus('🧬 Co-evolution: training budgets, fleet classes & 6 tech fields...');
         setTimeout(() => {
           const res = engine.run_co_evolution(randomSeed(), randomSeed()) as CoEvolutionResult;
-          ui.updateWinRateBar(res.tournament);
-          const wr = res.tournament.winRates;
-          ui.setStatus(`✓ Generation #${res.dnaGeneration}! Win-Rate: 🟢 ${wr[0]}% | 🔵 ${wr[1]}% | 🟡 ${wr[2]}%`);
           refreshSnapshot(true);
-        }, 25);
-        return;
-      }
-
-      if (action === 'autobalance') {
-        ui.setStatus('⚡ Auto-balancing race multipliers...');
-        setTimeout(() => {
-          const res = engine.run_auto_balance(randomSeed()) as AutoBalanceResult;
-          config = engine.get_config() as SimConfig;
-          ui.setConfig(config);
-          ui.syncWeightSliders(res.indWeight, res.expWeight, res.techWeight);
-          ui.updateWinRateBar(res.tournament);
-          const wr = res.tournament.winRates;
-          ui.setStatus(`✓ Balanced! Win-Rate: 🟢 ${wr[0]}% | 🔵 ${wr[1]}% | 🟡 ${wr[2]}%`);
-          refreshSnapshot(true);
+          ui.updateWinRateBar(res.tournament, lastSnap);
+          const summary = lastSnap.empires
+            .map((e, i) => `${e.name.slice(0, 4)} ${res.tournament.winRates[i] ?? 0}%`)
+            .join(' | ');
+          ui.setStatus(`✓ Generation #${res.dnaGeneration}! ${summary}`);
         }, 25);
       }
     },
