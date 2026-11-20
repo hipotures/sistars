@@ -502,6 +502,10 @@ export class WebGpuGalaxyBackend {
   private readonly dynamicLinesPipeline: GPURenderPipeline;
 
   private lastEmpireColorsKey = '';
+  private lastUploadedVersion = -1;
+  private lastPlanetCount = 0;
+  private lastFleetCount = 0;
+  private lastDebrisCount = 0;
 
   public static async create(
     canvas: HTMLCanvasElement,
@@ -879,6 +883,7 @@ export class WebGpuGalaxyBackend {
     wormholes: WormholeView[],
     jumpFx: JumpFxView[],
     combatFx: CombatFxView[],
+    dataVersion: number,
   ): void {
     // 1. Upload camera uniform (48 bytes) & empire palette (cached)
     this.cameraData[0] = cam.offX;
@@ -893,14 +898,27 @@ export class WebGpuGalaxyBackend {
     this.device.queue.writeBuffer(this.cameraUniformBuf, 0, this.cameraData);
     this.ensurePalette(empireColors);
 
-    // 2. Direct zero-copy uploads from WASM Float32Array views
-    const planetCount = Math.floor(planetsBuf.length / 7);
-    const fleetCount = Math.floor(fleetsBuf.length / 7);
-    const debrisCount = Math.floor(debrisBuf.length / 2);
+    // 2. Direct zero-copy uploads ONLY when simulation data version changed (0 MB upload during paused pan/zoom!)
+    let planetCount = this.lastPlanetCount;
+    let fleetCount = this.lastFleetCount;
+    let debrisCount = this.lastDebrisCount;
+    if (dataVersion !== this.lastUploadedVersion) {
+      this.lastUploadedVersion = dataVersion;
+      planetCount = Math.floor(planetsBuf.length / 7);
+      fleetCount = Math.floor(fleetsBuf.length / 7);
+      debrisCount = Math.floor(debrisBuf.length / 2);
+      this.lastPlanetCount = planetCount;
+      this.lastFleetCount = fleetCount;
+      this.lastDebrisCount = debrisCount;
 
-    const pBuf = planetCount > 0 ? this.planetsGpuBuf.upload(planetsBuf, planetCount * 7 * 4) : null;
-    const fBuf = fleetCount > 0 ? this.fleetsGpuBuf.upload(fleetsBuf, fleetCount * 7 * 4) : null;
-    const dBuf = debrisCount > 0 ? this.debrisGpuBuf.upload(debrisBuf, debrisCount * 2 * 4) : null;
+      if (planetCount > 0) this.planetsGpuBuf.upload(planetsBuf, planetCount * 7 * 4);
+      if (fleetCount > 0) this.fleetsGpuBuf.upload(fleetsBuf, fleetCount * 7 * 4);
+      if (debrisCount > 0) this.debrisGpuBuf.upload(debrisBuf, debrisCount * 2 * 4);
+    }
+
+    const pBuf = planetCount > 0 ? this.planetsGpuBuf.gpuBuffer : null;
+    const fBuf = fleetCount > 0 ? this.fleetsGpuBuf.gpuBuffer : null;
+    const dBuf = debrisCount > 0 ? this.debrisGpuBuf.gpuBuffer : null;
     const dynLineVerts = this.buildDynamicLines(wormholes, jumpFx, combatFx);
 
     // 3. Encode single render pass (1 draw call per layer)

@@ -126,6 +126,10 @@ export class GalaxyRenderer {
     return this.gpuBackend ? 'WebGPU' : 'Canvas2D';
   }
 
+  public get hasActiveFx(): boolean {
+    return this.jumpFx.length > 0 || this.combatFx.length > 0;
+  }
+
   public resize(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cssW = Math.max(1, this.canvas.clientWidth || window.innerWidth);
@@ -342,6 +346,7 @@ export class GalaxyRenderer {
     selection: MapSelection,
     hovered: HitTarget,
     selectedFleet: FleetView | null,
+    dataVersion = 0,
   ): void {
     const { hud, planetsBuf, fleetsBuf, debrisBuf } = frame;
     const transform = this.getTransform();
@@ -370,6 +375,7 @@ export class GalaxyRenderer {
         hud.wormholes,
         this.jumpFx,
         this.combatFx,
+        dataVersion,
       );
     } else if (this.fallbackCtx) {
       this.drawCanvas2dBase(
