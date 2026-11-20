@@ -35,11 +35,11 @@ export interface UiCallbacks {
   onHistoryScrub: (index: number) => void;
   onHistoryStep: (delta: number) => void;
   onHistoryLive: () => void;
-  getPlanetDetail: (index: number) => PlanetView | null;
-  getFleetById: (id: number) => FleetView | null;
-  getDebrisDetail: (index: number) => DebrisFieldView | null;
-  getReportsSnapshot: () => ReportsSnapshot;
-  getPowerHistory: () => number[][];
+  getPlanetDetail: (index: number) => Promise<PlanetView | null>;
+  getFleetById: (id: number) => Promise<FleetView | null>;
+  getDebrisDetail: (index: number) => Promise<DebrisFieldView | null>;
+  getReportsSnapshot: () => Promise<ReportsSnapshot>;
+  getPowerHistory: () => Promise<number[][]>;
 }
 
 const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
@@ -124,6 +124,9 @@ export class UiController {
   private lastEventsSignature = '';
   private lastHudUpdateMs = 0;
   private lastDrawerUpdateMs = 0;
+  private inspectorReqSeq = 0;
+  private reportsInFlight = false;
+  private powerHistoryInFlight = false;
   private showEventLog = true;
   private currentSpeed = 1;
 
@@ -271,7 +274,7 @@ export class UiController {
       this.updateEmpireHud(hud);
       this.renderEvents(hud);
       if (this.selection !== null) {
-        this.updateInspector(hud);
+        void this.updateInspector(hud);
       }
     }
 
@@ -289,12 +292,19 @@ export class UiController {
     }
     if (getEl('drawerStats').classList.contains('open')) {
       this.renderDNATable(hud);
-      this.renderPowerChart(hud);
+      void this.renderPowerChart(hud);
     }
-    if (getEl('drawerReports').classList.contains('open')) {
-      const rep = this.callbacks.getReportsSnapshot();
-      this.renderPlanetTable(hud, rep);
-      this.renderFleetTable(hud, rep);
+    if (getEl('drawerReports').classList.contains('open') && !this.reportsInFlight) {
+      this.reportsInFlight = true;
+      void this.callbacks
+        .getReportsSnapshot()
+        .then((rep) => {
+          this.renderPlanetTable(hud, rep);
+          this.renderFleetTable(hud, rep);
+        })
+        .finally(() => {
+          this.reportsInFlight = false;
+        });
     }
   }
 
@@ -534,7 +544,10 @@ export class UiController {
           this.sortAsc = false;
         }
         if (this.lastHud) {
-          this.renderPlanetTable(this.lastHud, this.callbacks.getReportsSnapshot());
+          const hud = this.lastHud;
+          void this.callbacks.getReportsSnapshot().then((rep) => {
+            this.renderPlanetTable(hud, rep);
+          });
         }
       });
     });
@@ -689,8 +702,9 @@ export class UiController {
     v.style.color = color;
   }
 
-  private updateInspector(hud: HudSnapshot): void {
+  private async updateInspector(hud: HudSnapshot): Promise<void> {
     const sel = this.selection;
+    const reqSeq = ++this.inspectorReqSeq;
     const insp = getEl('planetInspector');
     const minWrap = getEl('inspMineralsWrap');
     if (!sel) {
@@ -703,7 +717,8 @@ export class UiController {
         insp.style.display = 'none';
         return;
       }
-      const pl = this.callbacks.getPlanetDetail(sel.index);
+      const pl = await this.callbacks.getPlanetDetail(sel.index);
+      if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       if (!pl) {
         insp.style.display = 'none';
         return;
@@ -731,7 +746,8 @@ export class UiController {
     }
 
     if (sel.kind === 'fleet') {
-      const fl = this.callbacks.getFleetById(sel.id);
+      const fl = await this.callbacks.getFleetById(sel.id);
+      if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       if (!fl) {
         this.selection = null;
         insp.style.display = 'none';
@@ -758,11 +774,12 @@ export class UiController {
       this.setInspCell(1, 'Hull / Class', hullName);
       const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
       this.setInspCell(2, fl.type === 'freight' ? 'Cargo' : 'Power / HP', fl.type === 'freight' ? `${Math.round(fl.power)} kT` : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`, 'var(--accent)');
-      const targetPl = this.callbacks.getPlanetDetail(fl.target);
+      const targetPl = await this.callbacks.getPlanetDetail(fl.target);
+      if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
       const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
       this.setInspCell(3, 'Route / ETA', `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`);
-      const statusTxt = fl.hunting ? '🎯 Intercepting' : fl.usedWh ? '⚡ Gate/WH Jump' : 'En Route';
+      const statusTxt = fl.hunting ? '🎯 Intercepting' : fl.whRoute >= 0 ? '🌀 Wormhole Route' : fl.usedWh ? '⚡ Gate/WH Jump' : 'En Route';
       this.setInspCell(4, 'Orders / Dist', `${statusTxt} • ${Math.round(dist)}ly`);
       this.setInspCell(5, 'Drive / Weapon', emp ? `${emp.loadout.engine}` : '—');
       return;
@@ -790,7 +807,8 @@ export class UiController {
     }
 
     if (sel.kind === 'debris') {
-      const deb = this.callbacks.getDebrisDetail(sel.index);
+      const deb = await this.callbacks.getDebrisDetail(sel.index);
+      if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       if (!deb) {
         this.selection = null;
         insp.style.display = 'none';
@@ -952,12 +970,18 @@ export class UiController {
       .join('');
   }
 
-  private renderPowerChart(hud: HudSnapshot): void {
-    const canvas = getEl<HTMLCanvasElement>('powerCanvas');
-    const colors = hud.empires.map((e) => e.color);
-    const history = this.callbacks.getPowerHistory();
-    const maxVal = drawPowerChart(canvas, history, colors);
-    getEl('maxResInfo').textContent = `Max: ${Math.round(maxVal)} Res/yr`;
+  private async renderPowerChart(hud: HudSnapshot): Promise<void> {
+    if (this.powerHistoryInFlight) return;
+    this.powerHistoryInFlight = true;
+    try {
+      const canvas = getEl<HTMLCanvasElement>('powerCanvas');
+      const colors = hud.empires.map((e) => e.color);
+      const history = await this.callbacks.getPowerHistory();
+      const maxVal = drawPowerChart(canvas, history, colors);
+      getEl('maxResInfo').textContent = `Max: ${Math.round(maxVal)} Res/yr`;
+    } finally {
+      this.powerHistoryInFlight = false;
+    }
   }
 
   private renderPlanetTable(hud: HudSnapshot, rep: ReportsSnapshot): void {

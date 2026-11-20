@@ -1,5 +1,4 @@
 import './style.css';
-import initWasm, { WasmEngine } from './wasm/sistars_engine';
 import { GalaxyRenderer, type HitTarget } from './renderer';
 import { UiController } from './ui';
 import type {
@@ -8,6 +7,7 @@ import type {
   EngineMeta,
   FleetView,
   HudSnapshot,
+  MapSelection,
   PlanetView,
   RenderFrame,
   ReportsSnapshot,
@@ -15,6 +15,7 @@ import type {
   TechCatalogView,
   TournamentResult,
 } from './types';
+import type { MainToWorkerMsg, WorkerToMainMsg } from './workerProtocol';
 
 const MAX_HISTORY_SNAPSHOTS = 600;
 const HISTORY_SAMPLE_EVERY_TICKS = 2;
@@ -63,48 +64,140 @@ function downloadJsonFile(filename: string, text: string): void {
   URL.revokeObjectURL(url);
 }
 
-async function bootstrap(): Promise<void> {
-  const wasmExports = await initWasm();
+interface LiveBufferBacking {
+  planets: ArrayBuffer;
+  fleets: ArrayBuffer;
+  debris: ArrayBuffer;
+}
 
-  const engine = new WasmEngine(randomSeed());
-  const meta = engine.get_metadata() as EngineMeta;
-  const catalog = engine.get_tech_catalog() as TechCatalogView;
-  let config = engine.get_config() as SimConfig;
+async function bootstrap(): Promise<void> {
+  const worker = new Worker(new URL('./sim.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+
+  // Request/response Promise map for on-demand worker queries
+  let nextReqId = 1;
+  const pending = new Map<number, (val: unknown) => void>();
+
+  const postToWorker = (msg: MainToWorkerMsg, transfer?: Transferable[]): void => {
+    if (transfer && transfer.length > 0) {
+      worker.postMessage(msg, transfer);
+    } else {
+      worker.postMessage(msg);
+    }
+  };
+
+  const requestWorker = <T>(buildMsg: (reqId: number) => MainToWorkerMsg): Promise<T> => {
+    const reqId = nextReqId++;
+    return new Promise<T>((resolve) => {
+      pending.set(reqId, (val) => resolve(val as T));
+      postToWorker(buildMsg(reqId));
+    });
+  };
+
+  // Wait for worker WASM initialization + initial metadata & first frame
+  let resolveReady!: (init: {
+    meta: EngineMeta;
+    catalog: TechCatalogView;
+    config: SimConfig;
+  }) => void;
+  const readyPromise = new Promise<{
+    meta: EngineMeta;
+    catalog: TechCatalogView;
+    config: SimConfig;
+  }>((res) => {
+    resolveReady = res;
+  });
+
+  let resolveFirstFrame!: (msg: Extract<WorkerToMainMsg, { type: 'frame' }>) => void;
+  const firstFramePromise = new Promise<Extract<WorkerToMainMsg, { type: 'frame' }>>((res) => {
+    resolveFirstFrame = res;
+  });
+  let gotFirstFrame = false;
+
+  let onFrameHandler: ((msg: Extract<WorkerToMainMsg, { type: 'frame' }>) => void) | null = null;
+
+  worker.onmessage = (event: MessageEvent<WorkerToMainMsg>): void => {
+    const msg = event.data;
+    switch (msg.type) {
+      case 'ready':
+        resolveReady({ meta: msg.meta, catalog: msg.catalog, config: msg.config });
+        break;
+      case 'frame':
+        if (!gotFirstFrame) {
+          gotFirstFrame = true;
+          resolveFirstFrame(msg);
+        } else if (onFrameHandler) {
+          onFrameHandler(msg);
+        } else {
+          // Return unused buffers if UI isn't ready yet
+          postToWorker(
+            {
+              type: 'returnBuffers',
+              planets: msg.planets,
+              fleets: msg.fleets,
+              debris: msg.debris,
+            },
+            [msg.planets, msg.fleets, msg.debris],
+          );
+        }
+        break;
+      case 'planetDetail':
+      case 'fleetDetail':
+      case 'debrisDetail':
+      case 'reportsSnapshot':
+      case 'powerHistory':
+      case 'exportStateJson':
+      case 'tournamentResult':
+      case 'coEvolutionResult': {
+        const resolver = pending.get(msg.reqId);
+        if (resolver) {
+          pending.delete(msg.reqId);
+          resolver(msg.data);
+        }
+        break;
+      }
+    }
+  };
+
+  postToWorker({ type: 'init', seed: randomSeed() });
+
+  const [{ meta, catalog, config: initialConfig }, firstFrame] = await Promise.all([
+    readyPromise,
+    firstFramePromise,
+  ]);
+  let config = initialConfig;
 
   const canvas = document.getElementById('galaxyCanvas') as HTMLCanvasElement;
   const overlayCanvas = document.getElementById('overlayCanvas') as HTMLCanvasElement;
   const renderer = await GalaxyRenderer.create(canvas, overlayCanvas, meta.worldW, meta.worldH);
 
-  const buildZeroCopyViews = (): {
-    planetsBuf: Float32Array;
-    fleetsBuf: Float32Array;
-    debrisBuf: Float32Array;
-  } => {
-    const buf = wasmExports.memory.buffer;
-    return {
-      planetsBuf: new Float32Array(buf, engine.planets_render_ptr(), engine.planets_render_len()),
-      fleetsBuf: new Float32Array(buf, engine.fleets_render_ptr(), engine.fleets_render_len()),
-      debrisBuf: new Float32Array(buf, engine.debris_render_ptr(), engine.debris_render_len()),
-    };
-  };
-
   let speed = 1;
   let lastNonZeroSpeed = 1;
-  let tickAccum = 0;
   let hoveredTarget: HitTarget = null;
-  let lastHud = engine.take_hud_snapshot() as HudSnapshot;
-  let liveViews = buildZeroCopyViews();
+  let lastHud: HudSnapshot = firstFrame.hud;
+  let liveSelectedFleet: FleetView | null = firstFrame.selectedFleet;
+  let liveBacking: LiveBufferBacking = {
+    planets: firstFrame.planets,
+    fleets: firstFrame.fleets,
+    debris: firstFrame.debris,
+  };
+  let liveViews = {
+    planetsBuf: new Float32Array(firstFrame.planets, 0, firstFrame.planetsLen),
+    fleetsBuf: new Float32Array(firstFrame.fleets, 0, firstFrame.fleetsLen),
+    debrisBuf: new Float32Array(firstFrame.debris, 0, firstFrame.debrisLen),
+  };
   renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
 
-  // Debug Performance HUD, Yearly Telemetry & History Scrubber state
+  // Separate Main-thread (FPS, UI, DRAW) & Worker-thread (TPS, WASM) telemetry
   let debugPerfEnabled = false;
   let perfFrames = 0;
-  let perfTicks = 0;
-  let perfWasmSum = 0;
   let perfUiSum = 0;
   let perfDrawSum = 0;
   let perfWindowStart = performance.now();
-  let latestPerf = { fps: 0, tps: 0, wasmMs: 0, uiMs: 0, drawMs: 0 };
+  let workerTps = 0;
+  let workerWasmMs = 0;
+  let latestPerf = { fps: 60, tps: 0, wasmMs: 0, uiMs: 0, drawMs: 0 };
 
   interface YearlyTelemetrySample {
     year: number;
@@ -157,7 +250,6 @@ async function bootstrap(): Promise<void> {
     if (!debugHistoryEnabled) return;
     if (!force && hud.ticks - lastRecordedTick < HISTORY_SAMPLE_EVERY_TICKS) return;
     lastRecordedTick = hud.ticks;
-    // Copy compact typed arrays for replay buffer
     const archived: RenderFrame = {
       hud: { ...hud, newCombatFx: [], newJumpFx: [] },
       planetsBuf: new Float32Array(liveViews.planetsBuf),
@@ -179,8 +271,8 @@ async function bootstrap(): Promise<void> {
       year: yr,
       ticks: hud.ticks,
       fps: Number(latestPerf.fps.toFixed(1)),
-      tps: Number(latestPerf.tps.toFixed(1)),
-      wasmMs: Number(latestPerf.wasmMs.toFixed(2)),
+      tps: Number(workerTps.toFixed(1)),
+      wasmMs: Number(workerWasmMs.toFixed(2)),
       drawMs: Number(latestPerf.drawMs.toFixed(2)),
       fleets: hud.fleetCount,
       battles: hud.spaceBattlesCount,
@@ -217,93 +309,72 @@ async function bootstrap(): Promise<void> {
     historyBuffer = [];
     historyViewIndex = null;
     lastRecordedTick = -1;
+    postToWorker({ type: 'setScrubIndex', index: null });
     if (debugHistoryEnabled) {
       recordHistoryFrame(lastHud, true);
     }
     syncHistoryBar();
   };
 
-  const refreshLiveState = (clearVisualFx = false, resetHist = false): void => {
-    if (clearVisualFx) renderer.clearFx();
-    lastHud = engine.take_hud_snapshot() as HudSnapshot;
-    liveViews = buildZeroCopyViews();
-    renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
-    renderer.ingestFx(lastHud);
-    if (resetHist) {
-      resetHistory();
-      resetTelemetry();
-    } else if (historyViewIndex === null) {
-      recordHistoryFrame(lastHud);
-      recordYearlyTelemetry(lastHud);
-      syncHistoryBar();
+  const applySelection = (sel: MapSelection): void => {
+    ui.setSelection(sel);
+    const fleetId = sel?.kind === 'fleet' ? sel.id : null;
+    postToWorker({ type: 'setSelectedFleet', fleetId });
+    if (fleetId === null) {
+      liveSelectedFleet = null;
+    } else {
+      void requestWorker<FleetView | null>((reqId) => ({
+        type: 'getFleetById',
+        reqId,
+        id: fleetId,
+      })).then((fl) => {
+        if (ui.getSelection()?.kind === 'fleet') {
+          liveSelectedFleet = fl;
+        }
+      });
     }
-    ui.update(activeFrame().hud, true);
   };
 
   const ui = new UiController(meta, catalog, config, {
     onSpeedChange: (newSpeed) => {
       speed = newSpeed;
       if (newSpeed > 0) lastNonZeroSpeed = newSpeed;
-      tickAccum = 0;
       if (newSpeed > 0 && historyViewIndex !== null) {
         historyViewIndex = null;
+        postToWorker({ type: 'setScrubIndex', index: null });
         ui.update(lastHud, true);
         syncHistoryBar();
       }
+      postToWorker({ type: 'setSpeed', speed: newSpeed });
     },
     onStepTick: () => {
       speed = 0;
-      tickAccum = 0;
       ui.setActiveSpeedButton(0);
       historyViewIndex = null;
-      engine.step(1);
-      lastHud = engine.take_hud_snapshot() as HudSnapshot;
-      liveViews = buildZeroCopyViews();
-      renderer.ingestFx(lastHud);
-      recordHistoryFrame(lastHud, true);
-      ui.update(lastHud, true);
-      syncHistoryBar();
+      postToWorker({ type: 'setScrubIndex', index: null });
+      postToWorker({ type: 'step', ticks: 1 });
     },
     onReset: () => {
-      ui.setSelection(null);
-      engine.init(randomSeed());
-      refreshLiveState(true, true);
+      applySelection(null);
+      postToWorker({ type: 'newGalaxy', seed: randomSeed() });
     },
     onParamChange: (key, value) => {
-      const reset = engine.update_param(key, value, randomSeed());
-      config = engine.get_config() as SimConfig;
-      ui.setConfig(config);
-      if (reset) {
-        ui.setSelection(null);
-        refreshLiveState(true, true);
-      } else {
-        refreshLiveState(false, false);
-      }
+      postToWorker({ type: 'updateConfig', key, value, seed: randomSeed() });
     },
     onGalaxyChange: (size, shape) => {
-      const ok = engine.set_galaxy_options(size, shape, randomSeed());
-      if (ok) {
-        config = engine.get_config() as SimConfig;
-        ui.setConfig(config);
-        ui.setSelection(null);
-        refreshLiveState(true, true);
-      }
+      applySelection(null);
+      postToWorker({ type: 'newGalaxy', seed: randomSeed(), size, shape });
     },
     onSelectObject: (sel) => {
-      ui.setSelection(sel);
+      applySelection(sel);
     },
     onLaunchRaces: (races) => {
-      const ok = engine.set_races(races, randomSeed());
-      if (ok) {
-        ui.setSelection(null);
-        refreshLiveState(true, true);
-      }
+      applySelection(null);
+      postToWorker({ type: 'setRaces', races, seed: randomSeed() });
     },
     onDebugPerfToggle: (enabled) => {
       debugPerfEnabled = enabled;
       perfFrames = 0;
-      perfTicks = 0;
-      perfWasmSum = 0;
       perfUiSum = 0;
       perfDrawSum = 0;
       perfWindowStart = performance.now();
@@ -311,11 +382,11 @@ async function bootstrap(): Promise<void> {
       ui.updatePerfHud(
         enabled,
         renderer.backendName,
+        latestPerf.fps,
+        workerTps,
+        workerWasmMs,
         0,
-        0,
-        0,
-        0,
-        0,
+        latestPerf.drawMs,
         f.hud.planetCount,
         f.hud.fleetCount,
       );
@@ -326,10 +397,12 @@ async function bootstrap(): Promise<void> {
         historyBuffer = [];
         historyViewIndex = null;
         lastRecordedTick = -1;
+        postToWorker({ type: 'setScrubIndex', index: null });
         recordHistoryFrame(lastHud, true);
       } else {
         historyBuffer = [];
         historyViewIndex = null;
+        postToWorker({ type: 'setScrubIndex', index: null });
         ui.update(lastHud, true);
       }
       syncHistoryBar();
@@ -379,8 +452,9 @@ async function bootstrap(): Promise<void> {
       if (historyBuffer.length === 0) return;
       const clamped = Math.max(0, Math.min(historyBuffer.length - 1, index));
       speed = 0;
-      tickAccum = 0;
       ui.setActiveSpeedButton(0);
+      postToWorker({ type: 'setPaused', paused: true });
+      postToWorker({ type: 'setScrubIndex', index: clamped });
       renderer.clearFx();
       historyViewIndex = clamped;
       ui.update(activeFrame().hud, true);
@@ -391,8 +465,9 @@ async function bootstrap(): Promise<void> {
       const current = historyViewIndex === null ? historyBuffer.length - 1 : historyViewIndex;
       const next = Math.max(0, Math.min(historyBuffer.length - 1, current + delta));
       speed = 0;
-      tickAccum = 0;
       ui.setActiveSpeedButton(0);
+      postToWorker({ type: 'setPaused', paused: true });
+      postToWorker({ type: 'setScrubIndex', index: next });
       renderer.clearFx();
       historyViewIndex = next;
       ui.update(activeFrame().hud, true);
@@ -400,24 +475,31 @@ async function bootstrap(): Promise<void> {
     },
     onHistoryLive: () => {
       historyViewIndex = null;
+      postToWorker({ type: 'setScrubIndex', index: null });
       ui.update(lastHud, true);
       syncHistoryBar();
     },
-    getPlanetDetail: (index) => engine.get_planet_detail(index) as PlanetView | null,
-    getFleetById: (id) => engine.get_fleet_by_id(id) as FleetView | null,
-    getDebrisDetail: (index) => engine.get_debris_detail(index) as DebrisFieldView | null,
-    getReportsSnapshot: () => engine.get_reports_snapshot() as ReportsSnapshot,
-    getPowerHistory: () => engine.get_power_history() as number[][],
+    getPlanetDetail: (index) =>
+      requestWorker<PlanetView | null>((reqId) => ({ type: 'getPlanetDetail', reqId, index })),
+    getFleetById: (id) =>
+      requestWorker<FleetView | null>((reqId) => ({ type: 'getFleetById', reqId, id })),
+    getDebrisDetail: (index) =>
+      requestWorker<DebrisFieldView | null>((reqId) => ({ type: 'getDebrisDetail', reqId, index })),
+    getReportsSnapshot: () =>
+      requestWorker<ReportsSnapshot>((reqId) => ({ type: 'getReportsSnapshot', reqId })),
+    getPowerHistory: () =>
+      requestWorker<number[][]>((reqId) => ({ type: 'getPowerHistory', reqId })),
     onLabAction: (action) => {
       if (action === 'copyjson') {
-        const json = engine.export_state_json();
-        void copyTextToClipboard(json).then((ok) => {
-          if (ok) {
-            ui.setStatus('✓ Copied state JSON to clipboard!');
-          } else {
-            downloadJsonFile(`sistars-state-${lastHud.mapSeed}.json`, json);
-            ui.setStatus('⬇ Clipboard blocked on HTTP — downloaded state JSON!');
-          }
+        void requestWorker<string>((reqId) => ({ type: 'exportStateJson', reqId })).then((json) => {
+          void copyTextToClipboard(json).then((ok) => {
+            if (ok) {
+              ui.setStatus('✓ Copied state JSON to clipboard!');
+            } else {
+              downloadJsonFile(`sistars-state-${lastHud.mapSeed}.json`, json);
+              ui.setStatus('⬇ Clipboard blocked on HTTP — downloaded state JSON!');
+            }
+          });
         });
         return;
       }
@@ -425,32 +507,95 @@ async function bootstrap(): Promise<void> {
       if (action === 'tournament') {
         const numGames = 30;
         ui.setStatus(`🏆 Running ${numGames}-map Monte Carlo tournament...`);
-        setTimeout(() => {
-          const res = engine.run_tournament(numGames, 1200, randomSeed()) as TournamentResult;
-          refreshLiveState(true, true);
+        void requestWorker<TournamentResult>((reqId) => ({
+          type: 'runTournament',
+          reqId,
+          numGames,
+          ticksPerGame: 1200,
+          seed: randomSeed(),
+        })).then((res) => {
           ui.updateWinRateBar(res, lastHud);
           const summary = lastHud.empires
             .map((e, i) => `${e.name.slice(0, 4)} ${res.winRates[i] ?? 0}%`)
             .join(' | ');
           ui.setStatus(`✓ Tournament (${res.numGames} maps): ${summary}`);
-        }, 25);
+        });
         return;
       }
 
       if (action === 'coevolve') {
         ui.setStatus('🧬 Co-evolution: training budgets, fleet classes & 6 tech fields...');
-        setTimeout(() => {
-          const res = engine.run_co_evolution(randomSeed(), randomSeed()) as CoEvolutionResult;
-          refreshLiveState(true, true);
+        void requestWorker<CoEvolutionResult>((reqId) => ({
+          type: 'trainAi',
+          reqId,
+          evoSeed: randomSeed(),
+          resetSeed: randomSeed(),
+        })).then((res) => {
           ui.updateWinRateBar(res.tournament, lastHud);
           const summary = lastHud.empires
             .map((e, i) => `${e.name.slice(0, 4)} ${res.tournament.winRates[i] ?? 0}%`)
             .join(' | ');
           ui.setStatus(`✓ Generation #${res.dnaGeneration}! ${summary}`);
-        }, 25);
+        });
       }
     },
   });
+
+  // Receive ping-pong frame buffers from Web Worker and immediately recycle the previous slot
+  onFrameHandler = (msg) => {
+    const prev = liveBacking;
+    liveBacking = {
+      planets: msg.planets,
+      fleets: msg.fleets,
+      debris: msg.debris,
+    };
+    liveViews = {
+      planetsBuf: new Float32Array(msg.planets, 0, msg.planetsLen),
+      fleetsBuf: new Float32Array(msg.fleets, 0, msg.fleetsLen),
+      debrisBuf: new Float32Array(msg.debris, 0, msg.debrisLen),
+    };
+    // Return previous ArrayBuffers to worker for zero-GC reuse
+    postToWorker(
+      {
+        type: 'returnBuffers',
+        planets: prev.planets,
+        fleets: prev.fleets,
+        debris: prev.debris,
+      },
+      [prev.planets, prev.fleets, prev.debris],
+    );
+
+    if (msg.config) {
+      config = msg.config;
+      ui.setConfig(config);
+    }
+    if (msg.resetVisuals) {
+      renderer.clearFx();
+    }
+
+    lastHud = msg.hud;
+    liveSelectedFleet = msg.selectedFleet;
+    workerTps = msg.tps;
+    workerWasmMs = msg.wasmMs;
+
+    renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
+    renderer.ingestFx(lastHud);
+
+    const u0 = debugPerfEnabled ? performance.now() : 0;
+    if (msg.resetHistory) {
+      resetHistory();
+      resetTelemetry();
+      ui.update(activeFrame().hud, true);
+    } else if (historyViewIndex === null) {
+      recordHistoryFrame(lastHud);
+      recordYearlyTelemetry(lastHud);
+      ui.update(lastHud, false);
+      if (debugHistoryEnabled) syncHistoryBar();
+    }
+    if (debugPerfEnabled) {
+      perfUiSum += performance.now() - u0;
+    }
+  };
 
   // Camera zoom (wheel + 2-finger pinch), pan (mouse drag + 1-finger drag),
   // reset (dblclick / Home / 0) & object tap/click
@@ -491,7 +636,6 @@ async function bootstrap(): Promise<void> {
   window.addEventListener('pointermove', (e) => {
     if (activePointers.has(e.pointerId)) {
       if (activePointers.size === 2) {
-        // Two-finger pinch-to-zoom around midpoint + simultaneous pan
         const entries = Array.from(activePointers.entries());
         const other = entries[0][0] === e.pointerId ? entries[1][1] : entries[0][1];
         const prev = activePointers.get(e.pointerId)!;
@@ -545,7 +689,6 @@ async function bootstrap(): Promise<void> {
     activePointers.delete(e.pointerId);
 
     if (activePointers.size === 1) {
-      // Transition cleanly from 2-finger pinch back to 1-finger pan
       const [remId, remPos] = activePointers.entries().next().value as [
         number,
         { x: number; y: number },
@@ -560,12 +703,17 @@ async function bootstrap(): Promise<void> {
       if (!dragMoved && !wasPinching && e.type === 'pointerup') {
         const hit = renderer.hitTest(e.clientX, e.clientY, activeFrame());
         if (!hit) {
-          ui.setSelection(null);
+          applySelection(null);
         } else if (hit.kind === 'fleet') {
-          const fl = engine.get_fleet_by_index(hit.index) as FleetView | null;
-          ui.setSelection(fl ? { kind: 'fleet', id: fl.id } : null);
+          void requestWorker<FleetView | null>((reqId) => ({
+            type: 'getFleetByIndex',
+            reqId,
+            index: hit.index,
+          })).then((fl) => {
+            applySelection(fl ? { kind: 'fleet', id: fl.id } : null);
+          });
         } else {
-          ui.setSelection(hit);
+          applySelection(hit);
         }
       }
       primaryPointerId = null;
@@ -593,63 +741,36 @@ async function bootstrap(): Promise<void> {
     e.preventDefault();
     if (speed > 0) {
       speed = 0;
-      tickAccum = 0;
       ui.setActiveSpeedButton(0);
+      postToWorker({ type: 'setSpeed', speed: 0 });
     } else {
       speed = lastNonZeroSpeed;
-      tickAccum = 0;
       ui.setActiveSpeedButton(speed);
       if (historyViewIndex !== null) {
         historyViewIndex = null;
+        postToWorker({ type: 'setScrubIndex', index: null });
         ui.update(lastHud, true);
         syncHistoryBar();
       }
+      postToWorker({ type: 'setSpeed', speed });
     }
   });
 
   ui.update(lastHud, true);
 
-  const frame = (): void => {
-    const measurePerf = debugPerfEnabled || debugTelemetryEnabled;
-    let stepsDone = 0;
-    let wasmMs = 0;
-    let uiMs = 0;
-
-    if (speed > 0 && historyViewIndex === null) {
-      tickAccum += speed;
-      const steps = Math.floor(tickAccum);
-      if (steps > 0) {
-        tickAccum -= steps;
-        const t0 = measurePerf ? performance.now() : 0;
-        engine.step(steps);
-        lastHud = engine.take_hud_snapshot() as HudSnapshot;
-        liveViews = buildZeroCopyViews();
-        const t1 = measurePerf ? performance.now() : 0;
-        if (measurePerf) wasmMs = t1 - t0;
-        stepsDone = steps;
-        renderer.ingestFx(lastHud);
-        recordHistoryFrame(lastHud);
-        recordYearlyTelemetry(lastHud);
-        ui.update(lastHud, false);
-        if (debugHistoryEnabled) syncHistoryBar();
-        if (measurePerf) uiMs = performance.now() - t1;
-      }
-    }
-
+  // Pure 60 FPS render loop on Main Thread (zero WASM blocking!)
+  const renderFrame = (): void => {
     const cur = activeFrame();
     const sel = ui.getSelection();
-    const selectedFleet =
-      sel?.kind === 'fleet' ? (engine.get_fleet_by_id(sel.id) as FleetView | null) : null;
+    const selectedFleet = sel?.kind === 'fleet' && historyViewIndex === null ? liveSelectedFleet : null;
+
+    const measurePerf = debugPerfEnabled || debugTelemetryEnabled;
     const d0 = measurePerf ? performance.now() : 0;
     renderer.draw(cur, config.crustRichness, sel, hoveredTarget, selectedFleet);
 
     if (measurePerf) {
-      const drawMs = performance.now() - d0;
+      perfDrawSum += performance.now() - d0;
       perfFrames += 1;
-      perfTicks += stepsDone;
-      perfWasmSum += wasmMs;
-      perfUiSum += uiMs;
-      perfDrawSum += drawMs;
 
       const now = performance.now();
       const elapsed = now - perfWindowStart;
@@ -657,8 +778,8 @@ async function bootstrap(): Promise<void> {
         const sec = elapsed / 1000;
         latestPerf = {
           fps: perfFrames / sec,
-          tps: perfTicks / sec,
-          wasmMs: perfWasmSum / perfFrames,
+          tps: workerTps,
+          wasmMs: workerWasmMs,
           uiMs: perfUiSum / perfFrames,
           drawMs: perfDrawSum / perfFrames,
         };
@@ -667,8 +788,8 @@ async function bootstrap(): Promise<void> {
             true,
             renderer.backendName,
             latestPerf.fps,
-            latestPerf.tps,
-            latestPerf.wasmMs,
+            workerTps,
+            workerWasmMs,
             latestPerf.uiMs,
             latestPerf.drawMs,
             cur.hud.planetCount,
@@ -676,18 +797,16 @@ async function bootstrap(): Promise<void> {
           );
         }
         perfFrames = 0;
-        perfTicks = 0;
-        perfWasmSum = 0;
         perfUiSum = 0;
         perfDrawSum = 0;
         perfWindowStart = now;
       }
     }
 
-    requestAnimationFrame(frame);
+    requestAnimationFrame(renderFrame);
   };
 
-  requestAnimationFrame(frame);
+  requestAnimationFrame(renderFrame);
 }
 
 void bootstrap();
