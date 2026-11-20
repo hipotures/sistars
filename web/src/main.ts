@@ -1,5 +1,10 @@
 import './style.css';
 import { GalaxyRenderer, PLANET_STRIDE, type HitTarget } from './renderer';
+import {
+  loadPersistedSettings,
+  savePersistedSettings,
+  type PersistedSettings,
+} from './settingsStorage';
 import { UiController } from './ui';
 import type {
   CoEvolutionResult,
@@ -7,6 +12,8 @@ import type {
   EngineMeta,
   EquilibriumMode,
   FleetView,
+  GalaxyShape,
+  GalaxySize,
   HudSnapshot,
   MapSelection,
   PlanetView,
@@ -163,7 +170,28 @@ async function bootstrap(): Promise<void> {
     }
   };
 
-  postToWorker({ type: 'init', seed: randomSeed() });
+  const persisted: PersistedSettings = loadPersistedSettings();
+  const persistSettings = (): void => {
+    savePersistedSettings(persisted);
+  };
+
+  postToWorker({
+    type: 'init',
+    seed: randomSeed(),
+    initialSettings: {
+      ignoreRacialTraits: persisted.ignoreRacialTraits,
+      galaxySize: persisted.galaxySize,
+      galaxyShape: persisted.galaxyShape,
+      wormholePairs: persisted.wormholePairs,
+      crustRichness: persisted.crustRichness,
+      gateCost: persisted.gateCost,
+      interceptRad: persisted.interceptRad,
+      salvageRate: persisted.salvageRate,
+      aggroBias: persisted.aggroBias,
+      sprawlPenalty: persisted.sprawlPenalty,
+      speed: persisted.speed,
+    },
+  });
 
   const [{ meta, catalog, config: initialConfig }, firstFrame] = await Promise.all([
     readyPromise,
@@ -175,8 +203,8 @@ async function bootstrap(): Promise<void> {
   const overlayCanvas = document.getElementById('overlayCanvas') as HTMLCanvasElement;
   const renderer = await GalaxyRenderer.create(canvas, overlayCanvas, meta.worldW, meta.worldH);
 
-  let speed = 1;
-  let lastNonZeroSpeed = 1;
+  let speed = persisted.speed;
+  let lastNonZeroSpeed = persisted.speed > 0 ? persisted.speed : 1;
   let hoveredTarget: HitTarget = null;
   let lastHud: HudSnapshot = firstFrame.hud;
   let liveSelectedFleet: FleetView | null = firstFrame.selectedFleet;
@@ -185,9 +213,9 @@ async function bootstrap(): Promise<void> {
   let renderDirty = true;
 
   // Scanner field visual settings & interactive Empire Lens state
-  let equilibriumMode: EquilibriumMode = 'gap';
-  let contourMode: RangeContourMode = 'subtle';
-  let contourOpacity = 0.22;
+  let equilibriumMode: EquilibriumMode = persisted.equilibriumMode;
+  let contourMode: RangeContourMode = persisted.contourMode;
+  let contourOpacity = persisted.contourOpacity / 100;
   const hudLensEmpires = new Set<number>();
   let lastLensSig = '';
 
@@ -213,7 +241,7 @@ async function bootstrap(): Promise<void> {
   renderer.setWorldSize(lastHud.worldW, lastHud.worldH);
 
   // Separate Main-thread (FPS, UI, DRAW) & Worker-thread (TPS, WASM) telemetry
-  let debugPerfEnabled = false;
+  let debugPerfEnabled = persisted.debugPerf;
   let perfFrames = 0;
   let perfUiSum = 0;
   let perfDrawSum = 0;
@@ -245,11 +273,11 @@ async function bootstrap(): Promise<void> {
     }[];
   }
 
-  let debugTelemetryEnabled = false;
+  let debugTelemetryEnabled = persisted.debugTelemetry;
   let telemetrySamples: YearlyTelemetrySample[] = [];
   let lastTelemetryYear = -1;
 
-  let debugHistoryEnabled = false;
+  let debugHistoryEnabled = persisted.debugHistory;
   let historyBuffer: RenderFrame[] = [];
   let historyViewIndex: number | null = null;
   let lastRecordedTick = -1;
@@ -407,6 +435,8 @@ async function bootstrap(): Promise<void> {
   const ui = new UiController(meta, catalog, config, {
     onSpeedChange: (newSpeed) => {
       speed = newSpeed;
+      persisted.speed = newSpeed;
+      persistSettings();
       if (newSpeed > 0) lastNonZeroSpeed = newSpeed;
       if (newSpeed === 0) {
         workerTps = 0;
@@ -428,6 +458,8 @@ async function bootstrap(): Promise<void> {
     },
     onStepTick: () => {
       speed = 0;
+      persisted.speed = 0;
+      persistSettings();
       ui.setActiveSpeedButton(0);
       historyViewIndex = null;
       postToWorker({ type: 'setScrubIndex', index: null });
@@ -439,9 +471,21 @@ async function bootstrap(): Promise<void> {
       postToWorker({ type: 'newGalaxy', seed: randomSeed() });
     },
     onParamChange: (key, value) => {
+      if (key === 'ignoreRacialTraits') persisted.ignoreRacialTraits = value !== 0;
+      else if (key === 'wormholePairs') persisted.wormholePairs = value;
+      else if (key === 'crustRichness') persisted.crustRichness = value;
+      else if (key === 'gateCost') persisted.gateCost = value;
+      else if (key === 'interceptRad') persisted.interceptRad = value;
+      else if (key === 'salvageRate') persisted.salvageRate = value;
+      else if (key === 'aggroBias') persisted.aggroBias = value;
+      else if (key === 'sprawlPenalty') persisted.sprawlPenalty = value;
+      persistSettings();
       postToWorker({ type: 'updateConfig', key, value, seed: randomSeed() });
     },
     onGalaxyChange: (size, shape) => {
+      persisted.galaxySize = size as GalaxySize;
+      persisted.galaxyShape = shape as GalaxyShape;
+      persistSettings();
       hudLensEmpires.clear();
       applySelection(null);
       postToWorker({ type: 'newGalaxy', seed: randomSeed(), size, shape });
@@ -471,18 +515,30 @@ async function bootstrap(): Promise<void> {
     },
     onEquilibriumModeChange: (mode) => {
       equilibriumMode = mode;
+      persisted.equilibriumMode = mode;
+      persistSettings();
       scheduleRender();
     },
     onContourModeChange: (mode) => {
       contourMode = mode;
+      persisted.contourMode = mode;
+      persistSettings();
       scheduleRender();
     },
     onContourOpacityChange: (opacity) => {
       contourOpacity = opacity;
+      persisted.contourOpacity = Math.round(opacity * 100);
+      persistSettings();
       scheduleRender();
+    },
+    onShowEventLogToggle: (enabled) => {
+      persisted.showEventLog = enabled;
+      persistSettings();
     },
     onDebugPerfToggle: (enabled) => {
       debugPerfEnabled = enabled;
+      persisted.debugPerf = enabled;
+      persistSettings();
       perfFrames = 0;
       perfUiSum = 0;
       perfDrawSum = 0;
@@ -502,6 +558,8 @@ async function bootstrap(): Promise<void> {
     },
     onDebugHistoryToggle: (enabled) => {
       debugHistoryEnabled = enabled;
+      persisted.debugHistory = enabled;
+      persistSettings();
       if (enabled) {
         historyBuffer = [];
         historyViewIndex = null;
@@ -518,6 +576,8 @@ async function bootstrap(): Promise<void> {
     },
     onDebugTelemetryToggle: (enabled) => {
       debugTelemetryEnabled = enabled;
+      persisted.debugTelemetry = enabled;
+      persistSettings();
       if (enabled) {
         telemetrySamples = [];
         lastTelemetryYear = -1;
@@ -872,6 +932,8 @@ async function bootstrap(): Promise<void> {
     e.preventDefault();
     if (speed > 0) {
       speed = 0;
+      persisted.speed = 0;
+      persistSettings();
       workerTps = 0;
       workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
@@ -882,6 +944,8 @@ async function bootstrap(): Promise<void> {
       }
     } else {
       speed = lastNonZeroSpeed;
+      persisted.speed = speed;
+      persistSettings();
       ui.setActiveSpeedButton(speed);
       if (historyViewIndex !== null) {
         historyViewIndex = null;
@@ -895,6 +959,27 @@ async function bootstrap(): Promise<void> {
     }
   });
 
+  ui.applyPersistedSettings(persisted);
+  if (debugPerfEnabled) {
+    ui.updatePerfHud(
+      true,
+      renderer.backendName,
+      0,
+      0,
+      0,
+      0,
+      0,
+      lastHud.planetCount,
+      lastHud.fleetCount,
+    );
+  }
+  if (debugHistoryEnabled) {
+    recordHistoryFrame(lastHud, true);
+    syncHistoryBar();
+  }
+  if (debugTelemetryEnabled) {
+    recordYearlyTelemetry(lastHud, true);
+  }
   ui.update(lastHud, true);
 
   // Demand-driven 60 FPS render loop on Main Thread:

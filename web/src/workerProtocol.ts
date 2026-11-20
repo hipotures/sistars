@@ -12,8 +12,22 @@ import type {
   TournamentResult,
 } from './types';
 
+export interface InitialSimSettings {
+  ignoreRacialTraits: boolean;
+  galaxySize: string;
+  galaxyShape: string;
+  wormholePairs: number;
+  crustRichness: number;
+  gateCost: number;
+  interceptRad: number;
+  salvageRate: number;
+  aggroBias: number;
+  sprawlPenalty: number;
+  speed: number;
+}
+
 export type MainToWorkerMsg =
-  | { type: 'init'; seed: number }
+  | { type: 'init'; seed: number; initialSettings?: InitialSimSettings }
   | { type: 'setSpeed'; speed: number }
   | { type: 'setPaused'; paused: boolean }
   | { type: 'step'; ticks: number }

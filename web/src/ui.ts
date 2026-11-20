@@ -1,4 +1,5 @@
 import { drawPowerChart } from './renderer';
+import type { PersistedSettings } from './settingsStorage';
 import type {
   DebrisFieldView,
   Doctrine,
@@ -33,6 +34,7 @@ export interface UiCallbacks {
   onEquilibriumModeChange: (mode: EquilibriumMode) => void;
   onContourModeChange: (mode: RangeContourMode) => void;
   onContourOpacityChange: (opacity: number) => void;
+  onShowEventLogToggle: (enabled: boolean) => void;
   onDebugPerfToggle: (enabled: boolean) => void;
   onDebugHistoryToggle: (enabled: boolean) => void;
   onDebugTelemetryToggle: (enabled: boolean) => void;
@@ -176,6 +178,48 @@ export class UiController {
     getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = cfg.ignoreRacialTraits;
     getEl<HTMLSelectElement>('p_galaxySize').value = cfg.galaxySize;
     getEl<HTMLSelectElement>('p_galaxyShape').value = cfg.galaxyShape;
+  }
+
+  public applyPersistedSettings(s: PersistedSettings): void {
+    // Map & Scanner Field
+    document.querySelectorAll<HTMLButtonElement>('[data-eq-mode]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.eqMode === s.equilibriumMode);
+    });
+    this.activeContourMode = s.contourMode;
+    document.querySelectorAll<HTMLButtonElement>('[data-contour-mode]').forEach((b) => {
+      b.classList.toggle('active', b.dataset.contourMode === s.contourMode);
+    });
+    const pct = Math.max(0, Math.min(80, Math.round(s.contourOpacity)));
+    if (pct > 0) this.lastNonZeroContourOpacity = pct;
+    getEl<HTMLInputElement>('p_contourOpacity').value = String(pct);
+    getEl('v_contourOpacity').textContent = `${pct}%`;
+
+    // World Rules & Galaxy Generator
+    getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = s.ignoreRacialTraits;
+    getEl<HTMLSelectElement>('p_galaxySize').value = s.galaxySize;
+    getEl<HTMLSelectElement>('p_galaxyShape').value = s.galaxyShape;
+
+    const setSlider = (key: string, val: number, suffix = ''): void => {
+      const inp = document.getElementById(`p_${key}`) as HTMLInputElement | null;
+      const lbl = document.getElementById(`v_${key}`);
+      if (inp) inp.value = String(val);
+      if (lbl) lbl.textContent = `${val}${suffix}`;
+    };
+    setSlider('wormholePairs', s.wormholePairs);
+    setSlider('crustRichness', s.crustRichness);
+    setSlider('gateCost', s.gateCost);
+    setSlider('interceptRad', s.interceptRad);
+    setSlider('salvageRate', s.salvageRate, '%');
+    setSlider('aggroBias', s.aggroBias, '%');
+    setSlider('sprawlPenalty', s.sprawlPenalty, '%');
+
+    // Debug & UI
+    this.showEventLog = s.showEventLog;
+    getEl<HTMLInputElement>('p_showEventLog').checked = s.showEventLog;
+    getEl<HTMLInputElement>('p_debugPerf').checked = s.debugPerf;
+    getEl<HTMLInputElement>('p_debugHistory').checked = s.debugHistory;
+    getEl<HTMLInputElement>('p_debugTelemetry').checked = s.debugTelemetry;
+    this.setActiveSpeedButton(s.speed);
   }
 
   public setSelection(sel: MapSelection): void {
@@ -471,6 +515,7 @@ export class UiController {
       if (this.showEventLog && this.currentSpeed <= 1 && this.lastHud) {
         this.renderEvents(this.lastHud);
       }
+      this.callbacks.onShowEventLogToggle(this.showEventLog);
     });
     getEl<HTMLInputElement>('p_debugPerf').addEventListener('change', (e) => {
       this.callbacks.onDebugPerfToggle((e.target as HTMLInputElement).checked);
