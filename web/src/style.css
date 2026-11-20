@@ -518,6 +518,59 @@ header.hud-top {
   gap: 8px;
 }
 
+.sys-moons-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-top: 1px solid #182336;
+  padding-top: 6px;
+}
+
+.sys-moons-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.sys-moons-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.sys-moon-card {
+  flex: 0 0 74px;
+  background: rgba(8, 13, 22, 0.9);
+  border: 1px solid var(--border);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: border-color 0.14s, background 0.14s;
+}
+
+.sys-moon-card:hover,
+.sys-moon-card.selected {
+  border-color: var(--accent);
+  background: rgba(20, 34, 56, 0.95);
+}
+
+.sys-moon-thumb {
+  width: 44px;
+  height: 44px;
+  display: block;
+  border-radius: 3px;
+}
+
 .astro-sub {
   font-size: 0.68em;
   vertical-align: -0.22em;

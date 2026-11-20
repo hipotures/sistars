@@ -331,6 +331,24 @@ pub struct PlanetLiveStateView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MoonView {
+    pub name: String,
+    pub orbit_radius_planet: f32,
+    pub orbit_angle_rad: f32,
+    pub orbit_speed: f32,
+    pub radius_earth: f32,
+    pub body_type: BodyType,
+    pub temp_k: f32,
+    pub water_pct: f32,
+    pub ice_pct: f32,
+    pub atmo_density: f32,
+    pub atmo_color_rgb: [f32; 3],
+    pub cloud_pct: f32,
+    pub seed: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemBodyView {
     pub name: String,
     pub orbit_au: f32,
@@ -348,6 +366,7 @@ pub struct SystemBodyView {
     pub ring_outer: f32,
     pub ring_color_rgb: [f32; 3],
     pub moons_count: u8,
+    pub moons: Vec<MoonView>,
     pub seed: u32,
     pub live_state: Option<PlanetLiveStateView>,
 }

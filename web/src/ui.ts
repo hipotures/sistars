@@ -166,7 +166,10 @@ export class UiController {
   private readonly sysPreviewRenderer: ProceduralBodyRenderer;
   private activeInspSystem: StarSystemView | null = null;
   private activeModalSystem: StarSystemView | null = null;
-  private activeModalSelection: 'star' | number = 0;
+  private activeModalSelection: 'star' | { bodyIdx: number; moonIdx: number | null } = {
+    bodyIdx: 0,
+    moonIdx: null,
+  };
   private modalReqSeq = 0;
 
   constructor(
@@ -594,9 +597,19 @@ export class UiController {
     getEl('btnExportPlanetPng').addEventListener('click', () => {
       const sys = this.activeModalSystem;
       if (!sys || this.activeModalSelection === 'star') return;
-      const body = sys.bodies[this.activeModalSelection];
+      const body = sys.bodies[this.activeModalSelection.bodyIdx];
       if (!body) return;
-      exportPlanetTexturePng(body, sys.star);
+      if (this.activeModalSelection.moonIdx !== null) {
+        const moon = body.moons[this.activeModalSelection.moonIdx];
+        if (moon) exportPlanetTexturePng(moon, sys.star);
+      } else {
+        exportPlanetTexturePng(body, sys.star);
+      }
+    });
+    getEl('btnBackToParentPlanet').addEventListener('click', () => {
+      if (this.activeModalSelection !== 'star') {
+        this.selectModalItem({ bodyIdx: this.activeModalSelection.bodyIdx, moonIdx: null });
+      }
     });
 
     // Tech drawer tabs
@@ -912,7 +925,7 @@ export class UiController {
     if (seq !== this.modalReqSeq || !sys) return;
 
     this.activeModalSystem = sys;
-    this.activeModalSelection = sys.primaryIndex;
+    this.activeModalSelection = { bodyIdx: sys.primaryIndex, moonIdx: null };
     getEl('systemModal').style.display = 'flex';
     getEl('sysModalTitle').textContent = `🌌 System #${sys.planetId} (${sys.bodies.length} bodies)`;
     getEl('sysStarMeta').innerHTML =
@@ -948,20 +961,21 @@ export class UiController {
         (ls?.hasStargate ? '🌀' : '') +
         (ls?.hasJammer ? '📡' : '') +
         (ls?.hasStarbase ? '🛡' : '');
+      const moonTag = body.moonsCount > 0 ? ` · ${body.moonsCount}m` : '';
       card.innerHTML = `
         <canvas class="sys-body-thumb" width="96" height="96"></canvas>
         <div class="sys-body-name" title="${body.name}">${isPrimary ? '★ ' : ''}${body.name.replace(/^System #\d+\s*/, '')}</div>
-        <div class="sys-body-sub">${body.orbitAu.toFixed(2)} AU ${icons}</div>
+        <div class="sys-body-sub">${body.orbitAu.toFixed(2)} AU${moonTag} ${icons}</div>
       `;
       const c = card.querySelector<HTMLCanvasElement>('canvas');
       if (c) {
         renderProceduralThumbnailTo2d(c, { kind: 'body', body, star: sys.star });
       }
-      card.addEventListener('click', () => this.selectModalItem(idx));
+      card.addEventListener('click', () => this.selectModalItem({ bodyIdx: idx, moonIdx: null }));
       strip.appendChild(card);
     });
 
-    this.selectModalItem(sys.primaryIndex);
+    this.selectModalItem({ bodyIdx: sys.primaryIndex, moonIdx: null });
   }
 
   public closeSystemView(): void {
@@ -970,24 +984,27 @@ export class UiController {
     this.activeModalSystem = null;
   }
 
-  private selectModalItem(which: 'star' | number): void {
+  private selectModalItem(which: 'star' | { bodyIdx: number; moonIdx: number | null }): void {
     const sys = this.activeModalSystem;
     if (!sys) return;
     this.activeModalSelection = which;
 
+    const selectedOrbitKey = which === 'star' ? 'star' : String(which.bodyIdx);
     getEl('sysOrbitStrip')
       .querySelectorAll<HTMLElement>('.sys-body-card')
       .forEach((el) => {
-        const key = el.dataset.sysItem;
-        el.classList.toggle('selected', key === String(which));
+        el.classList.toggle('selected', el.dataset.sysItem === selectedOrbitKey);
       });
 
     const statsEl = getEl('sysBodyStats');
     const exportBtn = getEl('btnExportPlanetPng');
+    const moonsWrap = getEl('sysMoonsWrap');
+    const backBtn = getEl('btnBackToParentPlanet');
 
     if (which === 'star') {
       getEl('sysSelectedLabel').textContent = `Host Star • ${sys.star.spectralClass}`;
       exportBtn.style.display = 'none';
+      moonsWrap.style.display = 'none';
       this.sysPreviewRenderer.setTarget({ kind: 'star', star: sys.star }, true);
       statsEl.innerHTML = `
         <div class="insp-stat"><span>Spectral Class</span><b>${sys.star.spectralClass}</b></div>
@@ -1000,12 +1017,59 @@ export class UiController {
       return;
     }
 
-    const body = sys.bodies[which];
+    const body = sys.bodies[which.bodyIdx];
     if (!body) return;
-    const isPrimary = which === sys.primaryIndex;
+    exportBtn.style.display = 'inline-block';
+
+    // Populate Moons strip for the parent planet
+    const moons = body.moons ?? [];
+    if (moons.length > 0) {
+      moonsWrap.style.display = 'flex';
+      getEl('sysMoonsTitle').textContent = `Moons of ${body.name.replace(/^System #\d+\s*/, '')} (${moons.length})`;
+      backBtn.style.display = which.moonIdx !== null ? 'inline-block' : 'none';
+      const moonsStrip = getEl('sysMoonsStrip');
+      moonsStrip.innerHTML = '';
+      moons.forEach((moon, mIdx) => {
+        const card = document.createElement('div');
+        card.className = `sys-moon-card${which.moonIdx === mIdx ? ' selected' : ''}`;
+        const shortName = moon.name.replace(/^System #\d+\s*/, '');
+        card.innerHTML = `
+          <canvas class="sys-moon-thumb" width="64" height="64"></canvas>
+          <div class="sys-body-name">${shortName}</div>
+          <div class="sys-body-sub">${moon.bodyType}</div>
+        `;
+        const mc = card.querySelector<HTMLCanvasElement>('canvas');
+        if (mc) {
+          renderProceduralThumbnailTo2d(mc, { kind: 'moon', moon, star: sys.star });
+        }
+        card.addEventListener('click', () =>
+          this.selectModalItem({ bodyIdx: which.bodyIdx, moonIdx: mIdx }),
+        );
+        moonsStrip.appendChild(card);
+      });
+    } else {
+      moonsWrap.style.display = 'none';
+    }
+
+    if (which.moonIdx !== null) {
+      const moon = moons[which.moonIdx];
+      if (!moon) return;
+      getEl('sysSelectedLabel').textContent = `${moon.name} (Moon)`;
+      this.sysPreviewRenderer.setTarget({ kind: 'moon', moon, star: sys.star }, true);
+      statsEl.innerHTML = `
+        <div class="insp-stat"><span>Classification</span><b>${moon.bodyType} Moon</b></div>
+        <div class="insp-stat"><span>Parent Orbit</span><b>${moon.orbitRadiusPlanet.toFixed(2)} R<sub class="astro-sub">p</sub></b></div>
+        <div class="insp-stat"><span>Radius</span><b>${moon.radiusEarth.toFixed(2)} R<sub class="astro-sub">⊕</sub></b></div>
+        <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(moon.tempK)} K (${Math.round(moon.tempK - 273.15)}°C)</b></div>
+        <div class="insp-stat"><span>Ice / Water</span><b>${Math.round(moon.icePct * 100)}% ice · ${Math.round(moon.waterPct * 100)}% water</b></div>
+        <div class="insp-stat"><span>Atmo / Clouds</span><b>${Math.round(moon.atmoDensity * 100)}% atmo · ${Math.round(moon.cloudPct * 100)}% clouds</b></div>
+      `;
+      return;
+    }
+
+    const isPrimary = which.bodyIdx === sys.primaryIndex;
     const ls = body.liveState;
     getEl('sysSelectedLabel').textContent = `${body.name}${isPrimary ? ' (Primary World)' : ''}`;
-    exportBtn.style.display = 'inline-block';
     this.sysPreviewRenderer.setTarget({ kind: 'body', body, star: sys.star }, true);
 
     const liveCells = ls

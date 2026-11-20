@@ -1,4 +1,4 @@
-import type { BodyType, StarView, SystemBodyView } from './types';
+import type { BodyType, MoonView, StarView, SystemBodyView } from './types';
 
 // Procedural GPU Planet & Star Renderer (WebGL2 ray-sphere + 3D Simplex fBm)
 // Zero static PNG assets: generates planets, rings, stars, and 2048x1024 equirectangular
@@ -254,6 +254,9 @@ uniform int uHasRings;
 uniform float uRingInner;
 uniform float uRingOuter;
 uniform vec3 uRingColor;
+uniform int uMoonCount;
+uniform vec4 uMoonOrbit[4]; // (orbitRad, phase, speed, moonRadius)
+uniform vec3 uMoonColor[4];
 
 ${NOISE_GLSL}
 ${SURFACE_EVAL_GLSL}
@@ -292,17 +295,72 @@ void main() {
     return;
   }
 
-  // Camera & ray for planet + optional tilted rings
-  float planetRad = uHasRings == 1 ? 0.56 : 0.74;
+  // Camera & ray for planet + optional tilted rings + orbiting moons
+  float planetRad = uHasRings == 1 ? 0.54 : (uMoonCount > 0 ? 0.62 : 0.74);
   vec3 ro = vec3(0.0, 0.0, 2.8);
   vec3 rd = normalize(vec3(p * 0.95, -2.2));
   vec3 lightDir = normalize(vec3(-0.76, 0.32, 0.56));
 
-  // Ray-sphere intersection
+  // Ray-sphere intersection for planet
   float b = dot(ro, rd);
   float c = dot(ro, ro) - planetRad * planetRad;
   float disc = b * b - c;
   float tSphere = disc >= 0.0 ? (-b - sqrt(disc)) : 1e9;
+
+  // Ray-sphere intersection for up to 4 orbiting moons (nearest hit tracked separately for behind/front)
+  float tMoonBack = 1e9;
+  vec3 moonBackCol = vec3(0.0);
+  float moonBackAA = 0.0;
+  float tMoonFront = 1e9;
+  vec3 moonFrontCol = vec3(0.0);
+  float moonFrontAA = 0.0;
+
+  for (int m = 0; m < 4; m++) {
+    if (m >= uMoonCount) break;
+    vec4 mo = uMoonOrbit[m];
+    float ang = mo.y + uTime * mo.z;
+    float orbR = clamp(mo.x, 1.45, 2.55) * planetRad;
+    float tilt = 0.24 + float(m) * 0.07;
+    vec3 mCenter = vec3(
+      cos(ang) * orbR,
+      sin(ang) * orbR * sin(tilt),
+      sin(ang) * orbR * cos(tilt)
+    );
+    float mRad = mo.w * planetRad;
+    vec3 oc = ro - mCenter;
+    float mb = dot(oc, rd);
+    float mc = dot(oc, oc) - mRad * mRad;
+    float mdisc = mb * mb - mc;
+    if (mdisc >= 0.0) {
+      float tm = -mb - sqrt(mdisc);
+      if (tm > 0.0) {
+        vec3 mHit = ro + rd * tm;
+        vec3 mn = normalize(mHit - mCenter);
+        float mNoise = fbm(mn * 5.2 + vec3(float(m) * 7.3, uSeed * 0.01, -3.1)) * 0.5 + 0.5;
+        float mDiff = smoothstep(-0.1, 0.9, dot(mn, lightDir));
+        // Planet eclipse shadow on moon
+        float eb = dot(mHit, lightDir);
+        float ec = dot(mHit, mHit) - planetRad * planetRad;
+        float edisc = eb * eb - ec;
+        float eclipse = (edisc > 0.0 && eb < 0.0) ? 0.14 : 1.0;
+        vec3 mCol = uMoonColor[m] * (0.72 + 0.45 * mNoise) * uStarColor * (0.05 + mDiff * 0.98 * eclipse);
+        float mAA = smoothstep(0.0, 0.18, sqrt(mdisc) / max(0.01, mRad));
+        if (tm < tSphere) {
+          if (tm < tMoonFront) {
+            tMoonFront = tm;
+            moonFrontCol = mCol;
+            moonFrontAA = mAA;
+          }
+        } else {
+          if (tm < tMoonBack) {
+            tMoonBack = tm;
+            moonBackCol = mCol;
+            moonBackAA = mAA;
+          }
+        }
+      }
+    }
+  }
 
   // Ray-ring plane intersection (tilted ring normal)
   vec3 ringN = normalize(vec3(0.18, 0.92, 0.34));
@@ -335,9 +393,19 @@ void main() {
 
   vec3 col = bg;
 
+  // Moons behind planet
+  if (tMoonBack < 1e8 && tMoonBack > tRing) {
+    col = mix(col, moonBackCol, moonBackAA);
+  }
+
   // Background ring half (behind planet)
   if (tRing < 1e8 && tRing > tSphere) {
     col = mix(col, ringCol, ringAlpha);
+  }
+
+  // Moons between background ring and planet
+  if (tMoonBack < 1e8 && tMoonBack <= tRing) {
+    col = mix(col, moonBackCol, moonBackAA);
   }
 
   // Planet sphere shading
@@ -422,6 +490,11 @@ void main() {
   // Foreground ring half (in front of planet)
   if (tRing < tSphere && tRing < 1e8) {
     col = mix(col, ringCol, ringAlpha);
+  }
+
+  // Moons passing in front of planet & rings
+  if (tMoonFront < 1e8) {
+    col = mix(col, moonFrontCol, moonFrontAA);
   }
 
   // Gamma tone mapping
@@ -542,7 +615,15 @@ function compileProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string
 
 export type ProceduralTarget =
   | { kind: 'star'; star: StarView }
-  | { kind: 'body'; body: SystemBodyView; star: StarView };
+  | { kind: 'body'; body: SystemBodyView; star: StarView }
+  | { kind: 'moon'; moon: MoonView; star: StarView };
+
+function moonBaseRgb(m: MoonView): [number, number, number] {
+  if (m.bodyType === 'Volcanic') return [0.85, 0.44, 0.24];
+  if (m.bodyType === 'Ice') return [0.76, 0.88, 0.98];
+  if (m.bodyType === 'Desert') return [0.86, 0.68, 0.40];
+  return [0.64, 0.64, 0.66];
+}
 
 /**
  * Lightweight WebGL2 procedural sphere/star canvas renderer.
@@ -641,6 +722,23 @@ export class ProceduralBodyRenderer {
       gl.uniform1i(loc('uIsStar'), 1);
       gl.uniform1f(loc('uSeed'), st.seed % 100000);
       gl.uniform3f(loc('uStarColor'), st.colorRgb[0], st.colorRgb[1], st.colorRgb[2]);
+    } else if (this.target.kind === 'moon') {
+      const m = this.target.moon;
+      const st = this.target.star;
+      gl.uniform1i(loc('uIsStar'), 0);
+      gl.uniform1i(loc('uBodyType'), bodyTypeToInt(m.bodyType));
+      gl.uniform1f(loc('uSeed'), m.seed % 100000);
+      gl.uniform1f(loc('uTempK'), m.tempK);
+      gl.uniform1f(loc('uWaterPct'), m.waterPct);
+      gl.uniform1f(loc('uIcePct'), m.icePct);
+      gl.uniform1f(loc('uAtmoDensity'), m.atmoDensity);
+      gl.uniform3f(loc('uAtmoColor'), m.atmoColorRgb[0], m.atmoColorRgb[1], m.atmoColorRgb[2]);
+      gl.uniform1f(loc('uCloudPct'), m.cloudPct);
+      gl.uniform1f(loc('uPopNorm'), 0);
+      gl.uniform3f(loc('uMineralTint'), 0, 0, 0);
+      gl.uniform3f(loc('uStarColor'), st.colorRgb[0], st.colorRgb[1], st.colorRgb[2]);
+      gl.uniform1i(loc('uHasRings'), 0);
+      gl.uniform1i(loc('uMoonCount'), 0);
     } else {
       const b = this.target.body;
       const st = this.target.star;
@@ -666,6 +764,28 @@ export class ProceduralBodyRenderer {
       gl.uniform1f(loc('uRingInner'), b.ringInner);
       gl.uniform1f(loc('uRingOuter'), b.ringOuter);
       gl.uniform3f(loc('uRingColor'), b.ringColorRgb[0], b.ringColorRgb[1], b.ringColorRgb[2]);
+
+      const moons = b.moons ?? [];
+      const mCount = Math.min(4, moons.length);
+      gl.uniform1i(loc('uMoonCount'), mCount);
+      if (mCount > 0) {
+        const orbArr = new Float32Array(16);
+        const colArr = new Float32Array(12);
+        for (let i = 0; i < mCount; i++) {
+          const m = moons[i];
+          const relRad = Math.max(0.08, Math.min(0.18, (m.radiusEarth / Math.max(0.5, b.radiusEarth)) * 0.45));
+          orbArr[i * 4] = Math.min(2.45, 1.48 + i * 0.28);
+          orbArr[i * 4 + 1] = m.orbitAngleRad;
+          orbArr[i * 4 + 2] = m.orbitSpeed;
+          orbArr[i * 4 + 3] = relRad;
+          const rgb = moonBaseRgb(m);
+          colArr[i * 3] = rgb[0];
+          colArr[i * 3 + 1] = rgb[1];
+          colArr[i * 3 + 2] = rgb[2];
+        }
+        gl.uniform4fv(loc('uMoonOrbit'), orbArr);
+        gl.uniform3fv(loc('uMoonColor'), colArr);
+      }
     }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -702,7 +822,10 @@ export function renderProceduralThumbnailTo2d(
 /**
  * Exports a 2048x1024 equirectangular PNG texture of any procedural planet using the exact same shader.
  */
-export function exportPlanetTexturePng(body: SystemBodyView, star: StarView): boolean {
+export function exportPlanetTexturePng(
+  body: SystemBodyView | MoonView,
+  star: StarView,
+): boolean {
   const canvas = document.createElement('canvas');
   canvas.width = 2048;
   canvas.height = 1024;
@@ -716,7 +839,7 @@ export function exportPlanetTexturePng(body: SystemBodyView, star: StarView): bo
   gl.bindVertexArray(vao);
 
   const loc = (name: string) => gl.getUniformLocation(prog, name);
-  const ls = body.liveState;
+  const ls = 'liveState' in body ? body.liveState : null;
   gl.uniform1i(loc('uBodyType'), bodyTypeToInt(body.bodyType));
   gl.uniform1f(loc('uSeed'), body.seed % 100000);
   gl.uniform1f(loc('uTempK'), body.tempK);

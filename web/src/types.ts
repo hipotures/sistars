@@ -371,6 +371,22 @@ export interface PlanetLiveStateView {
   terraPct: number;
 }
 
+export interface MoonView {
+  name: string;
+  orbitRadiusPlanet: number;
+  orbitAngleRad: number;
+  orbitSpeed: number;
+  radiusEarth: number;
+  bodyType: BodyType;
+  tempK: number;
+  waterPct: number;
+  icePct: number;
+  atmoDensity: number;
+  atmoColorRgb: [number, number, number];
+  cloudPct: number;
+  seed: number;
+}
+
 export interface SystemBodyView {
   name: string;
   orbitAu: number;
@@ -388,6 +404,7 @@ export interface SystemBodyView {
   ringOuter: number;
   ringColorRgb: [number, number, number];
   moonsCount: number;
+  moons: MoonView[];
   seed: number;
   liveState: PlanetLiveStateView | null;
 }
