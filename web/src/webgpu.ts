@@ -323,11 +323,11 @@ fn vs_main(
   @builtin(vertex_index) vid: u32,
   @location(0) pos: vec2<f32>,
   @location(1) targetPos: vec2<f32>,
-  @location(2) meta: vec3<f32>, // [emp, typeCode, flags]
+  @location(2) fleetInfo: vec3<f32>, // [emp, typeCode, flags]
 ) -> LineOut {
   let worldP = select(pos, targetPos, vid == 1u);
-  let flags = u32(meta.z);
-  let fType = u32(round(meta.y));
+  let flags = u32(fleetInfo.z);
+  let fType = u32(round(fleetInfo.y));
 
   var col: vec4<f32>;
   if ((flags & 1u) != 0u) {
@@ -364,15 +364,15 @@ struct FleetOut {
 fn vs_main(
   @builtin(vertex_index) vid: u32,
   @location(0) pos: vec2<f32>,
-  @location(2) meta: vec3<f32>, // [emp, typeCode, flags]
+  @location(2) fleetInfo: vec3<f32>, // [emp, typeCode, flags]
 ) -> FleetOut {
   let corner = QUAD[vid];
   let localPx = corner * 6.5;
   var out: FleetOut;
   out.pos = screenToClip(worldToScreen(pos) + localPx);
   out.localPx = localPx;
-  out.color = empireColor(meta.x);
-  out.fType = meta.y;
+  out.color = empireColor(fleetInfo.x);
+  out.fType = fleetInfo.y;
   return out;
 }
 
