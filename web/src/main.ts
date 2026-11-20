@@ -220,20 +220,69 @@ async function bootstrap(): Promise<void> {
     },
   });
 
-  canvas.addEventListener('click', (e) => {
-    const closest = renderer.findPlanetAt(e.clientX, e.clientY, activeSnap().planets, 22);
-    ui.setSelectedPlanet(closest);
+  // Camera zoom (wheel), pan (drag), reset (dblclick / Home / 0) & planet click
+  let isDragging = false;
+  let dragMoved = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+
+  canvas.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      renderer.zoomAt(e.clientX, e.clientY, factor);
+    },
+    { passive: false },
+  );
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isDragging = true;
+    dragMoved = false;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
   });
 
-  canvas.addEventListener('mousemove', (e) => {
+  window.addEventListener('mousemove', (e) => {
+    if (isDragging) {
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+      if (Math.hypot(dx, dy) > 3) dragMoved = true;
+      if (dragMoved) {
+        renderer.panBy(dx, dy);
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        canvas.style.cursor = 'grabbing';
+      }
+      return;
+    }
     hoveredPlanet = renderer.findPlanetAt(e.clientX, e.clientY, activeSnap().planets, 20);
     canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
   });
 
+  window.addEventListener('mouseup', (e) => {
+    if (!isDragging) return;
+    isDragging = false;
+    if (!dragMoved && e.target === canvas) {
+      const closest = renderer.findPlanetAt(e.clientX, e.clientY, activeSnap().planets, 22);
+      ui.setSelectedPlanet(closest);
+    }
+    canvas.style.cursor = hoveredPlanet !== -1 ? 'pointer' : 'crosshair';
+  });
+
+  canvas.addEventListener('dblclick', () => {
+    renderer.resetCamera();
+  });
+
   window.addEventListener('keydown', (e) => {
-    if (e.code !== 'Space') return;
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.code === 'Home' || e.key === '0') {
+      renderer.resetCamera();
+      return;
+    }
+    if (e.code !== 'Space') return;
     e.preventDefault();
     if (speed > 0) {
       speed = 0;
