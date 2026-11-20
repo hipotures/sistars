@@ -384,24 +384,38 @@ fn sampleSignals(uv: vec2<f32>) -> array<f32, 6> {
 
 @fragment
 fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
-  // Central-difference gradients at 1.5 CSS px with linear filtering:
-  // eliminates f16 quantization stippling at high zoom and V-fold cancellation on A = B seams
-  const STEP_PX: f32 = 1.5;
-  let dxUv = vec2<f32>(STEP_PX / max(1.0, cam.viewportW), 0.0);
-  let dyUv = vec2<f32>(0.0, STEP_PX / max(1.0, cam.viewportH));
+  // Smooth 5-tap prefilter (1.5 px) + wide central-difference gradient (3.5 px):
+  // eliminates rgba16float quantization staircases at extreme zoom (10x-40x)
+  // while keeping V-fold-free gradients on A = B equilibrium seams.
+  const FILTER_PX: f32 = 1.5;
+  const GRAD_PX: f32 = 3.5;
+  let invW = 1.0 / max(1.0, cam.viewportW);
+  let invH = 1.0 / max(1.0, cam.viewportH);
 
-  var sig = sampleSignals(in.uv);
-  var sigR = sampleSignals(in.uv + dxUv);
-  var sigL = sampleSignals(in.uv - dxUv);
-  var sigU = sampleSignals(in.uv + dyUv);
-  var sigD = sampleSignals(in.uv - dyUv);
+  let fDx = vec2<f32>(FILTER_PX * invW, 0.0);
+  let fDy = vec2<f32>(0.0, FILTER_PX * invH);
+  let gDx = vec2<f32>(GRAD_PX * invW, 0.0);
+  let gDy = vec2<f32>(0.0, GRAD_PX * invH);
 
+  var sigC = sampleSignals(in.uv);
+  var sigFR = sampleSignals(in.uv + fDx);
+  var sigFL = sampleSignals(in.uv - fDx);
+  var sigFU = sampleSignals(in.uv + fDy);
+  var sigFD = sampleSignals(in.uv - fDy);
+
+  var sigGR = sampleSignals(in.uv + gDx);
+  var sigGL = sampleSignals(in.uv - gDx);
+  var sigGU = sampleSignals(in.uv + gDy);
+  var sigGD = sampleSignals(in.uv - gDy);
+
+  var sig: array<f32, 6>;
   var gradX: array<f32, 6>;
   var gradY: array<f32, 6>;
-  let invSpan = 1.0 / (2.0 * STEP_PX);
+  let invSpan = 1.0 / (2.0 * GRAD_PX);
   for (var i: u32 = 0u; i < 6u; i = i + 1u) {
-    gradX[i] = (sigR[i] - sigL[i]) * invSpan;
-    gradY[i] = (sigU[i] - sigD[i]) * invSpan;
+    sig[i] = (sigC[i] * 2.0 + sigFR[i] + sigFL[i] + sigFU[i] + sigFD[i]) * (1.0 / 6.0);
+    gradX[i] = (sigGR[i] - sigGL[i]) * invSpan;
+    gradY[i] = (sigGU[i] - sigGD[i]) * invSpan;
   }
 
   var top1Val: f32 = 0.0;
@@ -424,8 +438,8 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
 
   const THRESH: f32 = 0.015;
 
-  let g1 = max(length(vec2<f32>(gradX[top1Idx], gradY[top1Idx])), 1e-4);
-  let g2 = max(length(vec2<f32>(gradX[top2Idx], gradY[top2Idx])), 1e-4);
+  let g1 = max(length(vec2<f32>(gradX[top1Idx], gradY[top1Idx])), 2e-5);
+  let g2 = max(length(vec2<f32>(gradX[top2Idx], gradY[top2Idx])), 2e-5);
   let dist1Px = (top1Val - THRESH) / g1;
   let dist2Px = (top2Val - THRESH) / g2;
 
@@ -438,16 +452,16 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
   let radialGlow = pow(top1Val, 2.2) * 0.48;
   var fillA = inside1 * clamp(baseTint + radialGlow, 0.0, 0.65);
 
-  // Equilibrium line (A = B): central-difference gradient with fixed (top1Idx, top2Idx)
+  // Equilibrium line (A = B): wide central-difference gradient with fixed (top1Idx, top2Idx)
   if (fieldCfg.eqMode == 0u && top2Val > 0.001) {
-    let diffR = sigR[top1Idx] - sigR[top2Idx];
-    let diffL = sigL[top1Idx] - sigL[top2Idx];
-    let diffU = sigU[top1Idx] - sigU[top2Idx];
-    let diffD = sigD[top1Idx] - sigD[top2Idx];
+    let diffR = sigGR[top1Idx] - sigGR[top2Idx];
+    let diffL = sigGL[top1Idx] - sigGL[top2Idx];
+    let diffU = sigGU[top1Idx] - sigGU[top2Idx];
+    let diffD = sigGD[top1Idx] - sigGD[top2Idx];
     let eqGradLen = length(vec2<f32>(diffR - diffL, diffU - diffD) * invSpan);
-    if (eqGradLen >= 1e-4) {
-      let eqDistPx = (top1Val - top2Val) / max(eqGradLen, 1e-4);
-      let gapMask = smoothstep(0.6, 1.8, eqDistPx);
+    if (eqGradLen >= 2e-5) {
+      let eqDistPx = (top1Val - top2Val) / eqGradLen;
+      let gapMask = smoothstep(0.55, 1.85, eqDistPx);
       fillA = fillA * mix(1.0, gapMask, inside2);
     }
   }
@@ -475,7 +489,7 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
       for (var i: u32 = 0u; i < 6u; i = i + 1u) {
         let v = sig[i];
         if (v > 0.002) {
-          let g = max(length(vec2<f32>(gradX[i], gradY[i])), 1e-4);
+          let g = max(length(vec2<f32>(gradX[i], gradY[i])), 2e-5);
           let linePx = abs(v - THRESH) / g;
           let hasSig = smoothstep(0.003, 0.015, v);
           let stroke = (1.0 - smoothstep(0.42, 1.32, linePx)) * hasSig;
