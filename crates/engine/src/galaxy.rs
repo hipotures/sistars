@@ -139,6 +139,46 @@ impl SpacingGrid {
     }
 
     #[inline]
+    fn has_local_neighbors(
+        &self,
+        x: f32,
+        y: f32,
+        xs: &[f32],
+        ys: &[f32],
+        radius: f32,
+        min_neighbors: usize,
+    ) -> bool {
+        let r_cells = (radius * self.inv_cell).ceil() as usize;
+        let radius_sq = radius * radius;
+        let (cx, cy) = self.cell(x, y);
+        let min_x = cx.saturating_sub(r_cells);
+        let max_x = (cx + r_cells).min(self.cols - 1);
+        let min_y = cy.saturating_sub(r_cells);
+        let max_y = (cy + r_cells).min(self.rows - 1);
+        let mut count = 0usize;
+        for gy in min_y..=max_y {
+            let row_off = gy * self.cols;
+            for gx in min_x..=max_x {
+                let mut cur = self.head[row_off + gx];
+                while cur >= 0 {
+                    let i = cur as usize;
+                    let dx = xs[i] - x;
+                    let dy = ys[i] - y;
+                    let d_sq = dx * dx + dy * dy;
+                    if d_sq > 1.0 && d_sq <= radius_sq {
+                        count += 1;
+                        if count >= min_neighbors {
+                            return true;
+                        }
+                    }
+                    cur = self.next[i];
+                }
+            }
+        }
+        false
+    }
+
+    #[inline]
     fn insert(&mut self, idx: usize, x: f32, y: f32) {
         let (cx, cy) = self.cell(x, y);
         let cell = cy * self.cols + cx;
@@ -173,80 +213,28 @@ pub fn generate_galaxy(
     let mut pos_y = Vec::with_capacity(n);
     let mut grid = SpacingGrid::new(world_w, world_h, min_spacing, n);
 
-    // 1. Place homeworlds (indices 0..num_empires) symmetrically according to galaxy shape
     let base_angle = next_rand(rng_seed) * TAU;
     let mut cluster_centers: Vec<(f32, f32)> = Vec::new();
-
-    for e in 0..num_empires {
-        let frac = (e as f32) / (num_empires as f32);
-        let ang = base_angle + frac * TAU;
-        let (hx, hy) = match shape {
-            GalaxyShape::Ring => (cx + ang.cos() * (rx * 0.82), cy + ang.sin() * (ry * 0.82)),
-            GalaxyShape::Clusters => {
-                let rad_mod = 0.72 + (e % 2) as f32 * 0.14;
-                let x = (cx + ang.cos() * (rx * rad_mod)).clamp(margin + 50.0, world_w - margin - 50.0);
-                let y = (cy + ang.sin() * (ry * rad_mod)).clamp(margin + 50.0, world_h - margin - 50.0);
-                cluster_centers.push((x, y));
-                (x, y)
-            }
-            GalaxyShape::Spiral => {
-                let x = cx + ang.cos() * (rx * 0.72);
-                let y = cy + ang.sin() * (ry * 0.72);
-                (x, y)
-            }
-            GalaxyShape::Elliptical | GalaxyShape::Random => {
-                (cx + ang.cos() * (rx * 0.76), cy + ang.sin() * (ry * 0.76))
-            }
-        };
-        let px = hx.clamp(margin, world_w - margin);
-        let py = hy.clamp(margin, world_h - margin);
-        let idx = pos_x.len();
-        pos_x.push(px);
-        pos_y.push(py);
-        grid.insert(idx, px, py);
-    }
-
-    // Add extra neutral cluster centers for Clusters shape
     if shape == GalaxyShape::Clusters {
-        cluster_centers.push((cx, cy));
-        let extra = (n / 65).clamp(2, 16);
-        for k in 0..extra {
-            let ang = base_angle + 0.5 + (k as f32 / extra as f32) * TAU;
-            let x = (cx + ang.cos() * (rx * 0.42)).clamp(margin + 40.0, world_w - margin - 40.0);
-            let y = (cy + ang.sin() * (ry * 0.42)).clamp(margin + 40.0, world_h - margin - 40.0);
+        let total_clusters = (num_empires + (n / 65).clamp(2, 16)).max(num_empires);
+        for k in 0..total_clusters {
+            let ang = base_angle + (k as f32 / total_clusters as f32) * TAU;
+            let rad_mod = if k < num_empires {
+                0.72 + (k % 2) as f32 * 0.14
+            } else {
+                0.35 + next_rand(rng_seed) * 0.25
+            };
+            let x = (cx + ang.cos() * (rx * rad_mod)).clamp(margin + 50.0, world_w - margin - 50.0);
+            let y = (cy + ang.sin() * (ry * rad_mod)).clamp(margin + 50.0, world_h - margin - 50.0);
             cluster_centers.push((x, y));
         }
     }
 
-    // 2. Guarantee 2 local frontier worlds within 42..76 ly of each homeworld so no empire is ever stranded
-    for e in 0..num_empires {
-        let hx = pos_x[e];
-        let hy = pos_y[e];
-        for _ in 0..2 {
-            if pos_x.len() >= n {
-                break;
-            }
-            for _attempt in 0..25 {
-                let a = next_rand(rng_seed) * TAU;
-                let d = 42.0 + next_rand(rng_seed) * 34.0;
-                let x = (hx + a.cos() * d).clamp(margin, world_w - margin);
-                let y = (hy + a.sin() * d).clamp(margin, world_h - margin);
-                if grid.far_enough(x, y, &pos_x, &pos_y, min_spacing_sq) {
-                    let idx = pos_x.len();
-                    pos_x.push(x);
-                    pos_y.push(y);
-                    grid.insert(idx, x, y);
-                    break;
-                }
-            }
-        }
-    }
-
-    // 3. Generate remaining stars using chosen galaxy topology (O(N) via SpacingGrid!)
+    // 1. Generate all N stars strictly inside the chosen galaxy topology (O(N) via SpacingGrid)
     let num_arms = if n >= 400 { 4 } else { 3 };
     let arm_twist = 2.6f32;
     let mut safety = 0usize;
-    let max_attempts = n.saturating_mul(8).max(4000);
+    let max_attempts = n.saturating_mul(10).max(6000);
 
     while pos_x.len() < n && safety < max_attempts {
         safety += 1;
@@ -310,6 +298,94 @@ pub fn generate_galaxy(
         pos_y.push(margin + next_rand(rng_seed) * (world_h - margin * 2.0));
     }
 
+    // 2. Select homeworlds FROM ACTUAL GENERATED STARS using Farthest-Point Sampling
+    //    over well-connected stars (at least 3 neighbors within 110 ly), so every empire
+    //    spawns strictly inside the galactic structure (spiral arms, ring, clusters)
+    //    and never on a lone statistical outlier!
+    let sample_step = (n / 1500).max(1);
+    let offset = (next_rand(rng_seed) * sample_step as f32) as usize % n;
+    let mut candidates: Vec<usize> = Vec::with_capacity(1500);
+    let mut idx = offset;
+    while idx < n {
+        if grid.has_local_neighbors(pos_x[idx], pos_y[idx], &pos_x, &pos_y, 110.0, 3) {
+            candidates.push(idx);
+        }
+        idx += sample_step;
+    }
+    // Fallback if a sparse custom map had too few dense candidates
+    if candidates.len() < num_empires {
+        candidates.clear();
+        let mut i = offset;
+        while i < n {
+            candidates.push(i);
+            i += sample_step;
+        }
+        for i in 0..n {
+            if candidates.len() >= num_empires {
+                break;
+            }
+            if !candidates.contains(&i) {
+                candidates.push(i);
+            }
+        }
+    }
+
+    let mut chosen: Vec<usize> = Vec::with_capacity(num_empires);
+
+    // Pick first homeworld from the outer half of the structure
+    let mut first_idx = candidates[0];
+    let mut best_first_r = -1.0f32;
+    for &i in &candidates {
+        let nx = (pos_x[i] - cx) / rx;
+        let ny = (pos_y[i] - cy) / ry;
+        let r = (nx * nx + ny * ny).sqrt();
+        if r >= 0.45 && r <= 0.85 && r > best_first_r {
+            best_first_r = r;
+            first_idx = i;
+        }
+    }
+    chosen.push(first_idx);
+
+    for _ in 1..num_empires {
+        let mut best_cand = candidates[0];
+        let mut best_min_dist_sq = -1.0f32;
+        for &c_idx in &candidates {
+            if chosen.contains(&c_idx) {
+                continue;
+            }
+            let x = pos_x[c_idx];
+            let y = pos_y[c_idx];
+            let mut min_d_sq = f32::MAX;
+            for &c in &chosen {
+                let dx = pos_x[c] - x;
+                let dy = pos_y[c] - y;
+                let d_sq = dx * dx + dy * dy;
+                if d_sq < min_d_sq {
+                    min_d_sq = d_sq;
+                }
+            }
+            if min_d_sq > best_min_dist_sq {
+                best_min_dist_sq = min_d_sq;
+                best_cand = c_idx;
+            }
+        }
+        chosen.push(best_cand);
+    }
+
+    // Swap chosen homeworlds into indices 0..num_empires
+    for e in 0..num_empires {
+        let target = chosen[e];
+        if target != e {
+            pos_x.swap(e, target);
+            pos_y.swap(e, target);
+            for c in chosen.iter_mut().skip(e + 1) {
+                if *c == e {
+                    *c = target;
+                }
+            }
+        }
+    }
+
     let mut hab = vec![0.0f32; n];
     let mut min_crust = vec![0.0f32; n * 3];
     for i in 0..n {
@@ -366,6 +442,33 @@ mod tests {
                 assert_eq!(g.pos_x.len(), expected_n);
                 assert_eq!(g.world_w, exp_w);
                 assert_eq!(g.world_h, exp_h);
+            }
+        }
+    }
+
+    #[test]
+    fn homeworlds_spawn_inside_structure_with_neighbors() {
+        for size in [GalaxySize::Huge, GalaxySize::Colossal] {
+            for shape in [GalaxyShape::Spiral, GalaxyShape::Ring, GalaxyShape::Clusters] {
+                for seed_init in [42u32, 1337, 99999] {
+                    let mut seed = seed_init;
+                    let num_empires = 6;
+                    let g = generate_galaxy(size, shape, num_empires, 800.0, 2, &mut seed);
+                    for e in 0..num_empires {
+                        let hx = g.pos_x[e];
+                        let hy = g.pos_y[e];
+                        let nearby = (0..g.pos_x.len())
+                            .filter(|&j| {
+                                j != e
+                                    && (g.pos_x[j] - hx).hypot(g.pos_y[j] - hy) <= 115.0
+                            })
+                            .count();
+                        assert!(
+                            nearby >= 3,
+                            "Empire {e} on {size:?}/{shape:?} (seed {seed_init}) has only {nearby} neighbors within 115 ly!"
+                        );
+                    }
+                }
             }
         }
     }
