@@ -203,6 +203,7 @@ export class UiController {
     fps: number,
     tps: number,
     wasmMs: number,
+    uiMs: number,
     drawMs: number,
     planets: number,
     fleets: number,
@@ -217,6 +218,7 @@ export class UiController {
 
     getEl('perfTps').textContent = String(Math.round(tps));
     getEl('perfWasm').textContent = `${wasmMs.toFixed(2)}ms`;
+    getEl('perfUi').textContent = `${uiMs.toFixed(2)}ms`;
     getEl('perfDraw').textContent = `${drawMs.toFixed(2)}ms`;
     getEl('perfEnt').textContent = `${planets}p / ${fleets}f`;
   }

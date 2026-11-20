@@ -98,9 +98,10 @@ async function bootstrap(): Promise<void> {
   let perfFrames = 0;
   let perfTicks = 0;
   let perfWasmSum = 0;
+  let perfUiSum = 0;
   let perfDrawSum = 0;
   let perfWindowStart = performance.now();
-  let latestPerf = { fps: 0, tps: 0, wasmMs: 0, drawMs: 0 };
+  let latestPerf = { fps: 0, tps: 0, wasmMs: 0, uiMs: 0, drawMs: 0 };
 
   interface YearlyTelemetrySample {
     year: number;
@@ -300,10 +301,11 @@ async function bootstrap(): Promise<void> {
       perfFrames = 0;
       perfTicks = 0;
       perfWasmSum = 0;
+      perfUiSum = 0;
       perfDrawSum = 0;
       perfWindowStart = performance.now();
       const f = activeFrame();
-      ui.updatePerfHud(enabled, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
+      ui.updatePerfHud(enabled, 0, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
     },
     onDebugHistoryToggle: (enabled) => {
       debugHistoryEnabled = enabled;
@@ -521,6 +523,7 @@ async function bootstrap(): Promise<void> {
     const measurePerf = debugPerfEnabled || debugTelemetryEnabled;
     let stepsDone = 0;
     let wasmMs = 0;
+    let uiMs = 0;
 
     if (speed > 0 && historyViewIndex === null) {
       tickAccum += speed;
@@ -531,13 +534,15 @@ async function bootstrap(): Promise<void> {
         engine.step(steps);
         lastHud = engine.take_hud_snapshot() as HudSnapshot;
         liveViews = buildZeroCopyViews();
-        if (measurePerf) wasmMs = performance.now() - t0;
+        const t1 = measurePerf ? performance.now() : 0;
+        if (measurePerf) wasmMs = t1 - t0;
         stepsDone = steps;
         renderer.ingestFx(lastHud);
         recordHistoryFrame(lastHud);
         recordYearlyTelemetry(lastHud);
         ui.update(lastHud, false);
         if (debugHistoryEnabled) syncHistoryBar();
+        if (measurePerf) uiMs = performance.now() - t1;
       }
     }
 
@@ -550,6 +555,7 @@ async function bootstrap(): Promise<void> {
       perfFrames += 1;
       perfTicks += stepsDone;
       perfWasmSum += wasmMs;
+      perfUiSum += uiMs;
       perfDrawSum += drawMs;
 
       const now = performance.now();
@@ -560,6 +566,7 @@ async function bootstrap(): Promise<void> {
           fps: perfFrames / sec,
           tps: perfTicks / sec,
           wasmMs: perfWasmSum / perfFrames,
+          uiMs: perfUiSum / perfFrames,
           drawMs: perfDrawSum / perfFrames,
         };
         if (debugPerfEnabled) {
@@ -568,6 +575,7 @@ async function bootstrap(): Promise<void> {
             latestPerf.fps,
             latestPerf.tps,
             latestPerf.wasmMs,
+            latestPerf.uiMs,
             latestPerf.drawMs,
             cur.hud.planetCount,
             cur.hud.fleetCount,
@@ -576,6 +584,7 @@ async function bootstrap(): Promise<void> {
         perfFrames = 0;
         perfTicks = 0;
         perfWasmSum = 0;
+        perfUiSum = 0;
         perfDrawSum = 0;
         perfWindowStart = now;
       }
