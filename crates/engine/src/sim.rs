@@ -197,8 +197,10 @@ pub struct Simulation {
     pub has_gate: Vec<u8>,
     pub claim_mask: Vec<u16>,
 
-    // Precomputed sorted nearest-neighbor lists per planet (eliminates O(P^2) scans)
+    // Precomputed sorted nearest-neighbor lists per planet & wormhole endpoints (eliminates O(P^2) scans)
     planet_neighbors: Vec<Vec<(u32, f32)>>,
+    wh_near_a: Vec<Vec<(u32, f32)>>,
+    wh_near_b: Vec<Vec<(u32, f32)>>,
 
     // Reusable spatial grids & per-tick scratch buffers (zero per-tick allocations)
     fleet_grid: UniformGrid,
@@ -277,6 +279,8 @@ impl Simulation {
             has_gate: Vec::new(),
             claim_mask: Vec::new(),
             planet_neighbors: Vec::new(),
+            wh_near_a: Vec::new(),
+            wh_near_b: Vec::new(),
             fleet_grid: UniformGrid::default(),
             debris_grid: UniformGrid::default(),
             gate_lists: vec![Vec::new(); num_emp],
@@ -420,6 +424,30 @@ impl Simulation {
             scratch.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
             let list = scratch.iter().map(|&(j, d_sq)| (j, d_sq.sqrt())).collect();
             self.planet_neighbors.push(list);
+        }
+
+        // Precompute closest 20 planets to each wormhole endpoint (O(W * N), <= 5 wormholes)
+        self.wh_near_a.clear();
+        self.wh_near_b.clear();
+        let wh_k = 20usize.min(n);
+        for wh in &self.wormholes {
+            for (ex, ey, dest) in [
+                (wh.x1, wh.y1, &mut self.wh_near_a),
+                (wh.x2, wh.y2, &mut self.wh_near_b),
+            ] {
+                scratch.clear();
+                for j in 0..n {
+                    let dx = self.pos_x[j] - ex;
+                    let dy = self.pos_y[j] - ey;
+                    scratch.push((j as u32, dx * dx + dy * dy));
+                }
+                if wh_k < scratch.len() {
+                    scratch.select_nth_unstable_by(wh_k, |a, b| a.1.total_cmp(&b.1));
+                    scratch.truncate(wh_k);
+                }
+                scratch.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                dest.push(scratch.iter().map(|&(j, d_sq)| (j, d_sq.sqrt())).collect());
+            }
         }
     }
 
@@ -833,6 +861,7 @@ impl Simulation {
                                     FleetClass::Freight,
                                     cargo,
                                     m as u8,
+                                    -1,
                                     silent,
                                 );
                                 break;
@@ -853,6 +882,7 @@ impl Simulation {
                 {
                     let mut best_target: Option<usize> = None;
                     let mut best_score = -1.0f32;
+                    let mut best_wh_route: i8 = -1;
                     let mut mission = FleetClass::Col;
                     let my_bit = 1u16 << e;
 
@@ -921,7 +951,53 @@ impl Simulation {
                                         if score > best_score {
                                             best_score = score;
                                             best_target = Some(j);
+                                            best_wh_route = -1;
                                             mission = FleetClass::Col;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Check natural Wormhole relays (jump itself costs 0 fuel; fuel = dist_to_entry + dist_from_exit)
+                        if !self.wormholes.is_empty() {
+                            let xi = self.pos_x[i];
+                            let yi = self.pos_y[i];
+                            for w in 0..self.wormholes.len() {
+                                let wh = self.wormholes[w];
+                                for dir in 0..2u8 {
+                                    let (ex, ey, near_exit) = if dir == 0 {
+                                        (wh.x1, wh.y1, &self.wh_near_b[w])
+                                    } else {
+                                        (wh.x2, wh.y2, &self.wh_near_a[w])
+                                    };
+                                    let d_entry = (ex - xi).hypot(ey - yi);
+                                    if d_entry >= col_range * 0.88 {
+                                        continue;
+                                    }
+                                    let rem_range = col_range - d_entry;
+                                    for &(j_u32, d_exit) in near_exit {
+                                        if d_exit > rem_range {
+                                            break;
+                                        }
+                                        let j = j_u32 as usize;
+                                        if self.owner[j] == 0 && (self.claim_mask[j] & my_bit) == 0 {
+                                            let d = (d_entry + d_exit).max(25.0);
+                                            let sum_crust = self.min_crust[j * 3]
+                                                + self.min_crust[j * 3 + 1]
+                                                + self.min_crust[j * 3 + 2];
+                                            let quality = self.hab[j].powf(1.5)
+                                                * (0.4
+                                                    + sum_crust / (self.cfg.crust_richness * 3.0));
+                                            let score = (quality.powf(qual_exp)
+                                                / (d / 180.0).powf(dist_exp))
+                                                * 1.08;
+                                            if score > best_score {
+                                                best_score = score;
+                                                best_target = Some(j);
+                                                best_wh_route = (w as i8) * 2 + (dir as i8);
+                                                mission = FleetClass::Col;
+                                            }
                                         }
                                     }
                                 }
@@ -1067,7 +1143,71 @@ impl Simulation {
                                                 if score > best_score {
                                                     best_score = score;
                                                     best_target = Some(j);
+                                                    best_wh_route = -1;
                                                     mission = c_class;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Check natural Wormhole invasion relays (0 fuel jump; fuel = dist_to_entry + dist_from_exit)
+                            if !self.wormholes.is_empty() {
+                                let xi = self.pos_x[i];
+                                let yi = self.pos_y[i];
+                                for w in 0..self.wormholes.len() {
+                                    let wh = self.wormholes[w];
+                                    for dir in 0..2u8 {
+                                        let (ex, ey, near_exit) = if dir == 0 {
+                                            (wh.x1, wh.y1, &self.wh_near_b[w])
+                                        } else {
+                                            (wh.x2, wh.y2, &self.wh_near_a[w])
+                                        };
+                                        let d_entry = (ex - xi).hypot(ey - yi);
+                                        if d_entry >= ship_range * 0.88 {
+                                            continue;
+                                        }
+                                        let rem_range = ship_range - d_entry;
+                                        for &(j_u32, d_exit) in near_exit {
+                                            if d_exit > rem_range {
+                                                break;
+                                            }
+                                            let j = j_u32 as usize;
+                                            let target_owner = self.owner[j];
+                                            if target_owner != 0
+                                                && target_owner != emp_u8
+                                                && (self.claim_mask[j] & my_bit) == 0
+                                            {
+                                                let target_e = (target_owner - 1) as usize;
+                                                let d = (d_entry + d_exit).max(30.0);
+                                                let eff_def = self.defense[j] * (1.0 - bomb_pen);
+                                                let enemy_def = 20.0 + eff_def + self.pop[j] * 0.35;
+                                                let target_share = self.empires[target_e].res_total
+                                                    / total_galactic_res;
+                                                let leader_aggro_bonus = if target_e == leader_e
+                                                    && target_share > 0.30
+                                                {
+                                                    1.0 + (target_share - 0.25)
+                                                        * 4.0
+                                                        * self.cfg.aggro_bias
+                                                } else {
+                                                    1.0
+                                                };
+                                                if my_attack_est * leader_aggro_bonus
+                                                    > enemy_def * 0.72
+                                                {
+                                                    let score = (((self.factories[j] + 15.0)
+                                                        * (my_attack_est / enemy_def)
+                                                        * leader_aggro_bonus)
+                                                        / (d / 180.0).powf(1.35))
+                                                        * 1.08;
+                                                    if score > best_score {
+                                                        best_score = score;
+                                                        best_target = Some(j);
+                                                        best_wh_route = (w as i8) * 2 + (dir as i8);
+                                                        mission = c_class;
+                                                    }
                                                 }
                                             }
                                         }
@@ -1097,6 +1237,7 @@ impl Simulation {
                                 mission,
                                 power,
                                 0,
+                                best_wh_route,
                                 silent,
                             );
                         }
@@ -1215,12 +1356,86 @@ impl Simulation {
             f_idx -= 1;
             let emp_u8 = self.fleets[f_idx].emp;
             let e = (emp_u8 - 1) as usize;
-            let target_idx = self.fleets[f_idx].target;
+            let mut target_idx = self.fleets[f_idx].target;
             let mut tx = self.pos_x[target_idx];
             let mut ty = self.pos_y[target_idx];
             self.fleets[f_idx].hunting = false;
 
-            if !self.fleets[f_idx].used_wh && !self.wormholes.is_empty() {
+            let wh_route = self.fleets[f_idx].wh_route;
+            let mut heading_to_wh = false;
+            if wh_route >= 0 && !self.fleets[f_idx].used_wh {
+                let w = (wh_route / 2) as usize;
+                let dir = wh_route % 2;
+                if let Some(&wh) = self.wormholes.get(w) {
+                    let (ex, ey, ox, oy) = if dir == 0 {
+                        (wh.x1, wh.y1, wh.x2, wh.y2)
+                    } else {
+                        (wh.x2, wh.y2, wh.x1, wh.y1)
+                    };
+                    let fx = self.fleets[f_idx].x;
+                    let fy = self.fleets[f_idx].y;
+                    let d_sq = (ex - fx) * (ex - fx) + (ey - fy) * (ey - fy);
+                    if d_sq <= 784.0 {
+                        if !silent && self.pending_jump_fx.len() < 25 {
+                            self.pending_jump_fx.push(JumpFx {
+                                x1: fx,
+                                y1: fy,
+                                x2: ox,
+                                y2: oy,
+                                ttl: 12,
+                                col: "#d946ef".to_string(),
+                            });
+                        }
+                        self.fleets[f_idx].x = ox;
+                        self.fleets[f_idx].y = oy;
+                        self.fleets[f_idx].used_wh = true;
+                        self.fleets[f_idx].wh_route = -1;
+                        self.gate_jumps_count += 1;
+
+                        // If a Colonizer jumped and its target was already taken by an enemy,
+                        // pick another free neutral near the exit or return home through the wormhole!
+                        if self.fleets[f_idx].fleet_type == FleetClass::Col
+                            && self.owner[target_idx] != 0
+                            && self.owner[target_idx] != emp_u8
+                        {
+                            let near_exit = if dir == 0 {
+                                &self.wh_near_b[w]
+                            } else {
+                                &self.wh_near_a[w]
+                            };
+                            let mut alt: Option<usize> = None;
+                            for &(cand_u32, _) in near_exit {
+                                let cand = cand_u32 as usize;
+                                if self.owner[cand] == 0 {
+                                    alt = Some(cand);
+                                    break;
+                                }
+                            }
+                            self.claim_mask[target_idx] &= !(1u16 << e);
+                            if let Some(new_t) = alt {
+                                target_idx = new_t;
+                                self.fleets[f_idx].target = new_t;
+                                self.claim_mask[new_t] |= 1u16 << e;
+                            } else {
+                                // No free neutral on the other side: safely return through the same wormhole
+                                let home = self.fleets[f_idx].from;
+                                target_idx = home;
+                                self.fleets[f_idx].target = home;
+                                self.fleets[f_idx].x = ex;
+                                self.fleets[f_idx].y = ey;
+                            }
+                            tx = self.pos_x[target_idx];
+                            ty = self.pos_y[target_idx];
+                        }
+                    } else {
+                        tx = ex;
+                        ty = ey;
+                        heading_to_wh = true;
+                    }
+                } else {
+                    self.fleets[f_idx].wh_route = -1;
+                }
+            } else if !self.fleets[f_idx].used_wh && !self.wormholes.is_empty() {
                 let fx = self.fleets[f_idx].x;
                 let fy = self.fleets[f_idx].y;
                 let direct_dist = (tx - fx).hypot(ty - fy);
@@ -1267,7 +1482,8 @@ impl Simulation {
             // Cruiser interception using UniformGrid (stable per-fleet role so Cruisers don't zigzag!)
             let intercept_roll =
                 ((self.fleets[f_idx].id.wrapping_mul(2654435761)) >> 24) as f32 / 256.0;
-            if self.fleets[f_idx].fleet_type == FleetClass::Cruiser
+            if !heading_to_wh
+                && self.fleets[f_idx].fleet_type == FleetClass::Cruiser
                 && intercept_roll < self.empires[e].race.doctrine.intercept_bias
             {
                 let tc_scan = self.empires[e].tech_cache.scanner_range;
@@ -1370,7 +1586,7 @@ impl Simulation {
 
             let tdx = self.pos_x[target_idx] - fx;
             let tdy = self.pos_y[target_idx] - fy;
-            if tdx * tdx + tdy * tdy <= step_dist * step_dist {
+            if !heading_to_wh && tdx * tdx + tdy * tdy <= step_dist * step_dist {
                 let fl = self.fleets.swap_remove(f_idx);
                 self.claim_mask[target_idx] &= !(1u16 << e);
 
@@ -1637,6 +1853,7 @@ impl Simulation {
         fleet_type: FleetClass,
         power: f32,
         min_type: u8,
+        wh_route: i8,
         silent: bool,
     ) {
         let e = (emp_u8 - 1) as usize;
@@ -1645,7 +1862,7 @@ impl Simulation {
         let mut jumped_gate = false;
         let gate_range = self.empires[e].tech_cache.stargate_max_range.max(250.0);
 
-        if self.has_gate[from_idx] != 0 && self.gate_lists[e].len() > 1 {
+        if wh_route < 0 && self.has_gate[from_idx] != 0 && self.gate_lists[e].len() > 1 {
             // Find the closest friendly Stargate to the target via target's sorted neighbor list (O(1))
             let direct_thresh =
                 (self.pos_x[target_idx] - start_x).hypot(self.pos_y[target_idx] - start_y) * 0.72;
@@ -1684,6 +1901,22 @@ impl Simulation {
             }
         }
 
+        let (init_steer_x, init_steer_y) = if wh_route >= 0 {
+            let w = (wh_route / 2) as usize;
+            let dir = wh_route % 2;
+            if let Some(&wh) = self.wormholes.get(w) {
+                if dir == 0 {
+                    (wh.x1, wh.y1)
+                } else {
+                    (wh.x2, wh.y2)
+                }
+            } else {
+                (self.pos_x[target_idx], self.pos_y[target_idx])
+            }
+        } else {
+            (self.pos_x[target_idx], self.pos_y[target_idx])
+        };
+
         let id = self.next_fleet_id;
         self.next_fleet_id += 1;
         self.fleets.push(Fleet {
@@ -1699,8 +1932,9 @@ impl Simulation {
             max_power: power,
             hunting: false,
             used_wh: jumped_gate,
-            steer_x: self.pos_x[target_idx],
-            steer_y: self.pos_y[target_idx],
+            steer_x: init_steer_x,
+            steer_y: init_steer_y,
+            wh_route: if jumped_gate { -1 } else { wh_route },
         });
     }
 

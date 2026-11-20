@@ -202,6 +202,7 @@ export interface FleetView {
   usedWh: boolean;
   steerX: number;
   steerY: number;
+  whRoute: number;
 }
 
 export interface WormholeView {

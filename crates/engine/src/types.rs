@@ -121,6 +121,7 @@ pub struct Fleet {
     pub used_wh: bool,
     pub steer_x: f32,
     pub steer_y: f32,
+    pub wh_route: i8,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

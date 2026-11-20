@@ -396,13 +396,52 @@ pub fn generate_galaxy(
         }
     }
 
-    // 4. Wormhole pairs bridging opposite halves of the galaxy
+    // 4. Wormhole pairs anchored near real stars inside the galactic structure,
+    //    bridging distant regions (e.g. opposite spiral arms / clusters) so AI fleets can use them!
     let mut wormholes = Vec::with_capacity(wormhole_pairs);
+    let min_span = world_w.min(world_h) * 0.42;
+    let pool_len = candidates.len().max(1);
     for _ in 0..wormhole_pairs {
-        let x1 = world_w * (0.10 + next_rand(rng_seed) * 0.32);
-        let y1 = world_h * (0.14 + next_rand(rng_seed) * 0.72);
-        let x2 = world_w * (0.58 + next_rand(rng_seed) * 0.32);
-        let y2 = world_h * (0.14 + next_rand(rng_seed) * 0.72);
+        let mut a_star = candidates[(next_rand(rng_seed) * pool_len as f32) as usize % pool_len];
+        // Pick a star A that isn't right on top of an existing wormhole endpoint
+        for _ in 0..12 {
+            let ax = pos_x[a_star];
+            let ay = pos_y[a_star];
+            let too_close = wormholes.iter().any(|wh: &Wormhole| {
+                (wh.x1 - ax).hypot(wh.y1 - ay) < 110.0 || (wh.x2 - ax).hypot(wh.y2 - ay) < 110.0
+            });
+            if !too_close {
+                break;
+            }
+            a_star = candidates[(next_rand(rng_seed) * pool_len as f32) as usize % pool_len];
+        }
+        let ax = pos_x[a_star];
+        let ay = pos_y[a_star];
+
+        // Pick star B in a distant part of the galactic structure
+        let mut b_star = a_star;
+        let mut best_span = -1.0f32;
+        for _ in 0..24 {
+            let cand = candidates[(next_rand(rng_seed) * pool_len as f32) as usize % pool_len];
+            let bx = pos_x[cand];
+            let by = pos_y[cand];
+            let span = (bx - ax).hypot(by - ay);
+            if span >= min_span {
+                b_star = cand;
+                break;
+            }
+            if span > best_span {
+                best_span = span;
+                b_star = cand;
+            }
+        }
+
+        let ang_a = next_rand(rng_seed) * TAU;
+        let ang_b = next_rand(rng_seed) * TAU;
+        let x1 = (ax + ang_a.cos() * 16.0).clamp(margin, world_w - margin);
+        let y1 = (ay + ang_a.sin() * 16.0).clamp(margin, world_h - margin);
+        let x2 = (pos_x[b_star] + ang_b.cos() * 16.0).clamp(margin, world_w - margin);
+        let y2 = (pos_y[b_star] + ang_b.sin() * 16.0).clamp(margin, world_h - margin);
         wormholes.push(Wormhole { x1, y1, x2, y2 });
     }
 
