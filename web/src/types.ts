@@ -149,6 +149,12 @@ export interface EmpireLoadoutView {
   rangeBattleship: number;
   rangeBomber: number;
   scannerRange: number;
+  cloakArmedPct: number;
+  cloakUnarmedPct: number;
+  tachyonReductionPct: number;
+  torpedoJammingPct: number;
+  ecmJammerRange: number;
+  ecmJammerStrength: number;
 }
 
 export interface EmpireSummaryView {
@@ -171,6 +177,7 @@ export interface PlanetView {
   y: number;
   owner: number;
   hasGate: boolean;
+  hasEcmJammer: boolean;
   hab: number;
   pop: number;
   maxPop: number;

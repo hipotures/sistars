@@ -86,6 +86,12 @@ pub struct EmpireLoadoutView {
     pub range_battleship: f32,
     pub range_bomber: f32,
     pub scanner_range: f32,
+    pub cloak_armed_pct: f32,
+    pub cloak_unarmed_pct: f32,
+    pub tachyon_reduction_pct: f32,
+    pub torpedo_jamming_pct: f32,
+    pub ecm_jammer_range: f32,
+    pub ecm_jammer_strength: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +194,7 @@ pub struct PlanetView {
     pub y: f32,
     pub owner: u8,
     pub has_gate: bool,
+    pub has_ecm_jammer: bool,
     pub hab: f32,
     pub pop: f32,
     pub max_pop: f32,

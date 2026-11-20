@@ -1510,6 +1510,7 @@ impl Simulation {
                 && intercept_roll < self.empires[e].race.doctrine.intercept_bias
             {
                 let tc_scan = self.empires[e].tech_cache.scanner_range;
+                let tachyon_red = self.empires[e].tech_cache.tachyon_cloak_reduction;
                 let scan_max = ((self.cfg.scanner_range * 0.65 + tc_scan * 0.45)
                     * if self.empires[e].race.prt == "PRT_SS" {
                         1.25
@@ -1523,6 +1524,12 @@ impl Simulation {
                 let mut best_prey: Option<(f32, f32)> = None;
                 let mut best_prey_dist_sq = scan_max * scan_max;
                 let fleets_ref = &self.fleets;
+                let empires_ref = &self.empires;
+                let owner_ref = &self.owner;
+                let has_gate_ref = &self.has_gate;
+                let defense_ref = &self.defense;
+                let pos_x_ref = &self.pos_x;
+                let pos_y_ref = &self.pos_y;
 
                 self.fleet_grid.for_each_in_radius(fx, fy, scan_max, |k| {
                     if k >= fleets_ref.len() || k == f_idx {
@@ -1538,7 +1545,44 @@ impl Simulation {
                         let dx = other.x - fx;
                         let dy = other.y - fy;
                         let d_sq = dx * dx + dy * dy;
-                        if d_sq < best_prey_dist_sq {
+                        if d_sq >= best_prey_dist_sq {
+                            return;
+                        }
+                        // Electronic Warfare: target Cloak vs observer Tachyon Detector + local enemy ECM
+                        let other_e = (other.emp - 1) as usize;
+                        let other_tc = &empires_ref[other_e].tech_cache;
+                        let target_cloak = if other.fleet_type.is_combat() {
+                            other_tc.cloak_armed_pct
+                        } else {
+                            other_tc.cloak_unarmed_pct
+                        };
+                        let mut ecm_pen = 0.0f32;
+                        for &p_idx in &[other.from, other.target] {
+                            let p_owner = owner_ref[p_idx];
+                            if p_owner != 0 && p_owner != emp_u8 {
+                                let pe = (p_owner - 1) as usize;
+                                let ptc = &empires_ref[pe].tech_cache;
+                                if ptc.ecm_jammer_strength > 0.0
+                                    && ptc.ecm_jammer_range > 0.0
+                                    && (has_gate_ref[p_idx] != 0 || defense_ref[p_idx] >= 55.0)
+                                {
+                                    let jdx = other.x - pos_x_ref[p_idx];
+                                    let jdy = other.y - pos_y_ref[p_idx];
+                                    let jdist = (jdx * jdx + jdy * jdy).sqrt();
+                                    if jdist < ptc.ecm_jammer_range {
+                                        let falloff = 1.0 - jdist / ptc.ecm_jammer_range;
+                                        ecm_pen = ecm_pen.max(ptc.ecm_jammer_strength * falloff);
+                                    }
+                                }
+                            }
+                        }
+                        let eff_scan = effective_detection_range(
+                            scan_max,
+                            target_cloak,
+                            tachyon_red,
+                            ecm_pen,
+                        );
+                        if d_sq <= eff_scan * eff_scan {
                             best_prey_dist_sq = d_sq;
                             best_prey = Some((other.x, other.y));
                         }
@@ -1774,6 +1818,18 @@ impl Simulation {
                             mod_b *= 1.12;
                         }
 
+                        // Electronic Warfare: defender Torpedo Jamming reduces enemy torpedo effectiveness
+                        mod_a = apply_torpedo_jamming(
+                            mod_a,
+                            self.empires[ea].tech_cache.weapon_is_torpedo,
+                            self.empires[eb].tech_cache.torpedo_jamming,
+                        );
+                        mod_b = apply_torpedo_jamming(
+                            mod_b,
+                            self.empires[eb].tech_cache.weapon_is_torpedo,
+                            self.empires[ea].tech_cache.torpedo_jamming,
+                        );
+
                         let eff_a = (if a_c { self.fleets[i].power } else { 8.0 }) * mod_a;
                         let eff_b = (if b_c { self.fleets[j].power } else { 8.0 }) * mod_b;
                         let mx = (ax + bx) * 0.5;
@@ -1845,6 +1901,19 @@ impl Simulation {
         }
 
         stats
+    }
+
+    #[inline]
+    pub fn planet_has_ecm_jammer(&self, i: usize) -> bool {
+        let emp_u8 = self.owner[i];
+        if emp_u8 == 0 {
+            return false;
+        }
+        let e = (emp_u8 - 1) as usize;
+        let tc = &self.empires[e].tech_cache;
+        tc.ecm_jammer_strength > 0.0
+            && tc.ecm_jammer_range > 0.0
+            && (self.has_gate[i] != 0 || self.defense[i] >= 55.0)
     }
 
     #[inline]
@@ -2056,12 +2125,14 @@ impl Simulation {
         for i in 0..n {
             let b = i * 3;
             let crust_sum = self.min_crust[b] + self.min_crust[b + 1] + self.min_crust[b + 2];
+            let p_flags = (if self.has_gate[i] != 0 { 1 } else { 0 })
+                | (if self.planet_has_ecm_jammer(i) { 2 } else { 0 });
             self.planet_render_buf.push(self.pos_x[i]);
             self.planet_render_buf.push(self.pos_y[i]);
             self.planet_render_buf.push(self.owner[i] as f32);
             self.planet_render_buf.push(self.factories[i]);
             self.planet_render_buf.push(self.hab[i]);
-            self.planet_render_buf.push(self.has_gate[i] as f32);
+            self.planet_render_buf.push(p_flags as f32);
             self.planet_render_buf.push(crust_sum);
         }
 
@@ -2127,6 +2198,7 @@ impl Simulation {
             y: self.pos_y[i],
             owner: emp_u8,
             has_gate: self.has_gate[i] != 0,
+            has_ecm_jammer: self.planet_has_ecm_jammer(i),
             hab: self.hab[i],
             pop: self.pop[i],
             max_pop,
@@ -2237,9 +2309,64 @@ impl Simulation {
     }
 }
 
+/// Effective target cloak after observer's Tachyon Detector reduction.
+#[inline]
+pub fn effective_cloak_pct(target_cloak_pct: f32, observer_tachyon_reduction: f32) -> f32 {
+    target_cloak_pct.clamp(0.0, 0.98) * (1.0 - observer_tachyon_reduction.clamp(0.0, 0.95))
+}
+
+/// Effective fleet detection / interception range accounting for target cloak,
+/// observer Tachyon Detector reduction, and local enemy ECM jamming penalty.
+#[inline]
+pub fn effective_detection_range(
+    base_scan_range: f32,
+    target_cloak_pct: f32,
+    observer_tachyon_reduction: f32,
+    local_ecm_penalty: f32,
+) -> f32 {
+    let eff_cloak = effective_cloak_pct(target_cloak_pct, observer_tachyon_reduction);
+    base_scan_range * (1.0 - eff_cloak) * (1.0 - local_ecm_penalty.clamp(0.0, 0.85))
+}
+
+/// Combat firepower modifier after defender's torpedo jamming deflection.
+#[inline]
+pub fn apply_torpedo_jamming(
+    attacker_mod: f32,
+    attacker_uses_torpedoes: bool,
+    defender_torpedo_jamming: f32,
+) -> f32 {
+    let jam = defender_torpedo_jamming.clamp(0.0, 0.75);
+    let weight = if attacker_uses_torpedoes { 0.65 } else { 0.20 };
+    attacker_mod * (1.0 - jam * weight)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn electronic_warfare_detection_and_torpedo_jamming() {
+        // 75% cloak without Tachyon cuts 160 ly scan range down to 40 ly
+        let uncountered = effective_detection_range(160.0, 0.75, 0.0, 0.0);
+        assert!((uncountered - 40.0).abs() < 1e-3);
+
+        // 50% Tachyon reduction cuts effective cloak to 37.5%, restoring range to 100 ly
+        let countered = effective_detection_range(160.0, 0.75, 0.50, 0.0);
+        assert!((countered - 100.0).abs() < 1e-3);
+        assert!(countered > uncountered);
+
+        // Enemy ECM field further suppresses detection range
+        let jammed = effective_detection_range(160.0, 0.75, 0.50, 0.40);
+        assert!((jammed - 60.0).abs() < 1e-3);
+        assert!(jammed < countered);
+
+        // Torpedo jamming strongly reduces torpedo-armed attacker damage
+        let base_mod = 1.0;
+        let vs_torp = apply_torpedo_jamming(base_mod, true, 0.50);
+        let vs_beam = apply_torpedo_jamming(base_mod, false, 0.50);
+        assert!(vs_torp < vs_beam);
+        assert!((vs_torp - 0.675).abs() < 1e-4);
+    }
 
     #[test]
     fn deterministic_six_empire_simulation() {

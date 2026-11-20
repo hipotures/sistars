@@ -827,7 +827,8 @@ export class UiController {
       }
       if (badgeEl) badgeEl.textContent = this.formatTechBadges(emp.perks);
       if (pillEl) {
-        pillEl.title = `${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates`;
+        const ewTxt = `Cloak ${Math.round(emp.loadout.cloakArmedPct * 100)}% · Tachyon ${Math.round(emp.loadout.tachyonReductionPct * 100)}% · Jammer ${Math.round(emp.loadout.torpedoJammingPct * 100)}%`;
+        pillEl.title = `${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates | EW: ${ewTxt}`;
       }
     }
   }
@@ -884,7 +885,11 @@ export class UiController {
       this.setInspCell(2, 'Population', `${Math.round(pl.pop)}k / ${Math.round(pl.maxPop)}k`);
       this.setInspCell(3, 'Production', `${Math.round(pl.res)} Res/yr`, 'var(--accent)');
       this.setInspCell(4, 'Factories / Mines', `${Math.round(pl.factories)} fac / ${Math.round(pl.mines)} mine`);
-      this.setInspCell(5, 'Defense / Gate', `${Math.round(pl.defense)} | ${pl.hasGate ? '🌀 Active' : 'None'}`);
+      const gateTxt = pl.hasGate ? '🌀 Gate' : 'No Gate';
+      const ecmTxt = pl.hasEcmJammer && emp
+        ? ` · 📡 ECM ${Math.round(emp.loadout.ecmJammerStrength * 100)}% (${Math.round(emp.loadout.ecmJammerRange)}ly)`
+        : '';
+      this.setInspCell(5, 'Defense / EW', `${Math.round(pl.defense)} | ${gateTxt}${ecmTxt}`);
 
       const maxC = this.lastConfig.crustRichness * 1.6;
       getEl('barIron').style.width = `${Math.min(100, (pl.ironCrust / maxC) * 100)}%`;
@@ -932,6 +937,11 @@ export class UiController {
       this.setInspCell(3, 'Route / ETA', `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`);
       const statusTxt = fl.hunting ? '🎯 Intercepting' : fl.whRoute >= 0 ? '🌀 Wormhole Route' : fl.usedWh ? '⚡ Gate/WH Jump' : 'En Route';
       this.setInspCell(4, 'Orders / Dist', `${statusTxt} • ${Math.round(dist)}ly`);
+      const isArmed = fl.type === 'cruiser' || fl.type === 'battleship' || fl.type === 'bomber';
+      const cloakPct = emp ? Math.round((isArmed ? emp.loadout.cloakArmedPct : emp.loadout.cloakUnarmedPct) * 100) : 0;
+      const tachPct = emp ? Math.round(emp.loadout.tachyonReductionPct * 100) : 0;
+      const jamPct = emp ? Math.round(emp.loadout.torpedoJammingPct * 100) : 0;
+      this.setInspCell(5, 'EW (Cloak/Tach/Jam)', `${cloakPct}% / ${tachPct}% / ${jamPct}%`);
       this.setInspCell(5, 'Drive / Weapon', emp ? `${emp.loadout.engine}` : '—');
       return;
     }
