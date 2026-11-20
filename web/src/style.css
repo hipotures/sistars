@@ -74,11 +74,14 @@ header.hud-top {
 
 .year-box {
   font-family: monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 0.86rem;
   font-weight: 700;
   background: #0a101a;
   border: 1px solid var(--border);
   padding: 4px 8px;
+  width: 68px;
+  text-align: center;
   color: #f8fafc;
 }
 
@@ -127,7 +130,8 @@ header.hud-top {
 }
 
 .emp-pill {
-  flex: 0 0 auto;
+  flex: 0 0 166px;
+  width: 166px;
   background: rgba(15, 23, 38, 0.88);
   border: 1px solid var(--border);
   border-top: 2px solid var(--accent);
@@ -135,7 +139,7 @@ header.hud-top {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  min-width: 122px;
+  overflow: hidden;
 }
 
 .emp-row1 {
@@ -144,7 +148,17 @@ header.hud-top {
   align-items: center;
   font-size: 0.69rem;
   font-weight: 700;
-  gap: 6px;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.emp-row1 > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emp-row1 > span:last-child {
+  flex-shrink: 0;
 }
 
 .emp-row2 {
@@ -152,9 +166,11 @@ header.hud-top {
   justify-content: space-between;
   font-size: 0.63rem;
   font-family: monospace;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
   margin-top: 1px;
-  gap: 6px;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .nav-actions {
