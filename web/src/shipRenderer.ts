@@ -128,52 +128,86 @@ const SOLID_FRAG = /* glsl */ `
     vec3 V = normalize(vViewDir);
 
     vec4 tex = uHasMap > 0.5 ? texture2D(uMap, vUv) : vec4(0.62, 0.66, 0.72, 0.35);
-    // tex.a encodes the faction paint mask (0 = neutral hull metal, 1 = painted empire accent)
-    vec3 hullBase = mix(tex.rgb, tex.rgb * uEmpireColor * 1.48, tex.a);
+    // tex.a encodes the faction paint mask (0 = neutral metallic hull, 1 = painted empire accent)
+    vec3 metalAlbedo = tex.rgb;
+    vec3 paintedAlbedo = tex.rgb * uEmpireColor * 1.35;
+    vec3 hullBase = mix(metalAlbedo, paintedAlbedo, tex.a);
 
     // Subtle cargo mineral trim on Freighters
     if (uHasCargoAccent > 0.5) {
       float stripe = smoothstep(0.35, 0.75, tex.a) * smoothstep(-0.2, 0.4, vLocalPos.y);
-      hullBase = mix(hullBase, tex.rgb * uAccentColor * 1.45, stripe * 0.45);
+      hullBase = mix(hullBase, tex.rgb * uAccentColor * 1.35, stripe * 0.42);
     }
 
-    // Damage darkening + subtle damaged hull scorch flicker when HP < 100%
+    // Damage darkening when HP < 100%
     float dmg = 1.0 - clamp(uHpRatio, 0.0, 1.0);
-    float dmgDark = 1.0 - dmg * 0.42;
-    hullBase *= dmgDark;
+    hullBase *= 1.0 - dmg * 0.38;
 
-    // Key light + cool fill + specular + empire rim-light
-    vec3 L1 = normalize(vec3(0.72, 0.85, 0.58));
-    vec3 L2 = normalize(vec3(-0.75, -0.35, -0.55));
-    float diff1 = max(dot(N, L1), 0.0);
-    float diff2 = max(dot(N, L2), 0.0);
-    vec3 H1 = normalize(L1 + V);
-    float spec = pow(max(dot(N, H1), 0.0), 28.0) * (0.35 + 0.25 * (1.0 - tex.a));
+    // 3-point studio hangar lighting: warm-white key, cool-blue fill, back rim in empire color
+    vec3 L_key = normalize(vec3(0.68, 0.82, 0.62));
+    vec3 L_fill = normalize(vec3(-0.78, 0.25, -0.45));
+    vec3 L_back = normalize(vec3(0.15, -0.55, -0.82));
 
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 2.6);
+    float diffKey = max(dot(N, L_key), 0.0);
+    float diffFill = max(dot(N, L_fill), 0.0);
+    float diffBack = max(dot(N, L_back), 0.0);
+
+    vec3 H_key = normalize(L_key + V);
+    float spec = pow(max(dot(N, H_key), 0.0), 36.0) * (0.42 + 0.28 * (1.0 - tex.a));
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
     vec3 rimCol = mix(uEmpireColor, uAccentColor, uHasCargoAccent * 0.35);
 
-    vec3 color = hullBase * (0.28 + diff1 * 0.92 + diff2 * 0.24)
-               + vec3(0.88, 0.94, 1.0) * spec
-               + rimCol * fresnel * (0.48 + uCloak * 1.15);
+    vec3 color = hullBase * (0.30 + diffKey * 0.95 + diffFill * 0.30 + diffBack * 0.16)
+               + vec3(0.92, 0.96, 1.0) * spec
+               + rimCol * fresnel * (0.32 + uCloak * 0.85);
 
-    // Low-HP warning ember pulse
+    // Low-HP warning ember pulse on damaged armor
     if (dmg > 0.15) {
       float flicker = 0.5 + 0.5 * sin(uTime * 16.0 + vLocalPos.z * 7.0);
-      float spark = smoothstep(0.65, 0.98, flicker) * dmg * 0.35;
-      color += vec3(1.0, 0.32, 0.08) * spark * (1.0 - tex.a);
+      float spark = smoothstep(0.68, 0.98, flicker) * dmg * 0.38;
+      color += vec3(1.0, 0.34, 0.08) * spark * (1.0 - tex.a);
     }
 
-    // Cloak shimmer & Fresnel translucency
+    // Cloak: keep crisp metallic hull readable with depthWrite=true, add sleek stealth Fresnel sheen
     float alpha = 1.0;
     if (uCloak > 0.01) {
-      float scan = 0.88 + 0.12 * sin(vLocalPos.y * 28.0 - uTime * 5.0);
-      vec3 cloakTint = mix(uEmpireColor, vec3(0.35, 0.92, 1.0), 0.5);
-      color = mix(color, cloakTint * (0.55 + fresnel * 1.55) * scan, uCloak * 0.55);
-      alpha = mix(1.0, clamp(0.18 + fresnel * 0.72, 0.18, 0.92), uCloak);
+      float sweep = 0.5 + 0.5 * sin(vLocalPos.z * 14.0 - uTime * 3.8);
+      vec3 cloakEdge = mix(uEmpireColor, vec3(0.28, 0.92, 1.0), 0.55);
+      color += cloakEdge * fresnel * uCloak * (0.55 + 0.35 * sweep);
+      alpha = mix(1.0, clamp(0.62 + fresnel * 0.35, 0.62, 0.98), uCloak);
     }
 
     gl_FragColor = vec4(color, alpha);
+  }
+`;
+
+const JAMMER_VERT = /* glsl */ `
+  varying vec3 vNormalW;
+  varying vec3 vViewDir;
+  varying vec3 vLocalPos;
+  void main() {
+    vLocalPos = position;
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vNormalW = normalize(mat3(modelMatrix) * normal);
+    vViewDir = normalize(cameraPosition - worldPos.xyz);
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+
+const JAMMER_FRAG = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uStrength;
+  uniform float uTime;
+  varying vec3 vNormalW;
+  varying vec3 vViewDir;
+  varying vec3 vLocalPos;
+  void main() {
+    float ndv = abs(dot(normalize(vNormalW), normalize(vViewDir)));
+    float rim = pow(1.0 - ndv, 3.4);
+    float band = 0.6 + 0.4 * sin(vLocalPos.y * 16.0 - uTime * 3.5);
+    float pulse = 0.72 + 0.28 * sin(uTime * 3.0);
+    float alpha = rim * (0.14 + uStrength * 0.34) * band * pulse;
+    gl_FragColor = vec4(uColor, alpha);
   }
 `;
 
@@ -216,7 +250,7 @@ export class ShipPreviewRenderer {
   private holoMat: THREE.ShaderMaterial;
   private blueprintGrid: THREE.GridHelper;
   private jammerField: THREE.Mesh;
-  private jammerMat: THREE.MeshBasicMaterial;
+  private jammerMat: THREE.ShaderMaterial;
   private engineGlow: THREE.Sprite;
   private engineGlowMat: THREE.SpriteMaterial;
   private stars: THREE.Points;
@@ -295,7 +329,7 @@ export class ShipPreviewRenderer {
       fragmentShader: SOLID_FRAG,
       transparent: true,
       depthWrite: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
       uniforms: {
         uMap: { value: null },
         uHasMap: { value: 0 },
@@ -333,15 +367,20 @@ export class ShipPreviewRenderer {
     this.blueprintGrid.visible = false;
     this.scene.add(this.blueprintGrid);
 
-    // EW Jammer interference shell
-    const jamGeo = new THREE.IcosahedronGeometry(1.45, 2);
-    this.jammerMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color('#a855f7'),
-      wireframe: true,
+    // EW Jammer smooth Fresnel energy field (no jagged wireframe cage)
+    const jamGeo = new THREE.SphereGeometry(1.42, 32, 24);
+    this.jammerMat = new THREE.ShaderMaterial({
+      vertexShader: JAMMER_VERT,
+      fragmentShader: JAMMER_FRAG,
       transparent: true,
-      opacity: 0.0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+      side: THREE.FrontSide,
+      uniforms: {
+        uColor: { value: new THREE.Color('#a855f7') },
+        uStrength: { value: 0 },
+        uTime: { value: 0 },
+      },
     });
     this.jammerField = new THREE.Mesh(jamGeo, this.jammerMat);
     this.jammerField.visible = false;
@@ -491,7 +530,7 @@ export class ShipPreviewRenderer {
     this.solidMat.uniforms.uHasCargoAccent.value = isFreight ? 1.0 : 0.0;
     this.solidMat.uniforms.uCloak.value = Math.max(0, Math.min(1, this.state.cloakPct));
     this.solidMat.uniforms.uHpRatio.value = Math.max(0, Math.min(1, this.state.hpRatio));
-    this.solidMat.depthWrite = this.state.cloakPct < 0.05;
+    this.solidMat.depthWrite = true;
 
     this.wireMat.color.copy(empCol);
     this.holoMat.uniforms.uEmpireColor.value.copy(empCol);
@@ -500,7 +539,8 @@ export class ShipPreviewRenderer {
     const hasJam = this.state.jammerPct > 0.01;
     this.jammerField.visible = hasJam;
     if (hasJam) {
-      this.jammerMat.color.copy(empCol).lerp(new THREE.Color('#c084fc'), 0.55);
+      this.jammerMat.uniforms.uColor.value.copy(empCol).lerp(new THREE.Color('#c084fc'), 0.55);
+      this.jammerMat.uniforms.uStrength.value = Math.max(0, Math.min(1, this.state.jammerPct));
     }
   }
 
@@ -575,12 +615,10 @@ export class ShipPreviewRenderer {
     const glowScale = (0.85 + 0.14 * flicker) * (0.65 + 0.35 * hp);
     this.engineGlow.scale.set(glowScale, glowScale, 1);
 
-    // EW Jammer pulse
+    // EW Jammer smooth Fresnel energy field
     if (this.jammerField.visible) {
-      this.jammerField.rotation.y = -t * 0.45;
-      this.jammerField.rotation.x = t * 0.22;
-      const pulse = 0.55 + 0.45 * Math.sin(t * 4.2);
-      this.jammerMat.opacity = (0.1 + this.state.jammerPct * 0.28) * pulse;
+      this.jammerField.rotation.y = -t * 0.25;
+      this.jammerMat.uniforms.uTime.value = t;
     }
 
     this.stars.rotation.y = t * 0.012;

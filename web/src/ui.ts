@@ -1375,7 +1375,7 @@ export class UiController {
         <div class="insp-stat"><span>Propulsion</span><b>${lo.engine}</b></div>
         <div class="insp-stat"><span>${fl.type === 'bomber' ? 'Ordnance / Bombs' : 'Weapons'}</span><b>${fl.type === 'bomber' ? lo.bomb : lo.weapon}</b></div>
         <div class="insp-stat"><span>Armor / Shields</span><b>${lo.armor} / ${lo.shield}</b></div>
-        <div class="insp-stat"><span>Scanner / Range</span><b>${lo.scanner} (${Math.round(lo.scannerRange)} ly)</b></div>
+        <div class="insp-stat"><span>Scanner</span><b>${lo.scanner}</b></div>
         <div class="insp-stat"><span>Fuel Range</span><b>${Math.round(rangeVal)} ly</b></div>
         <div class="insp-stat"><span>Stargate Network</span><b>${lo.stargate}</b></div>
       `;
