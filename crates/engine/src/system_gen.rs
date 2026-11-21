@@ -8,7 +8,7 @@
 use std::f32::consts::TAU;
 
 use crate::types::{
-    BodyType, MoonView, PlanetLiveStateView, StarSystemView, StarView, SystemBodyView,
+    BodyType, MoonView, PlanetLiveStateView, StarKind, StarSystemView, StarView, SystemBodyView,
 };
 
 const ROMAN: [&str; 12] = [
@@ -119,9 +119,77 @@ fn derive_primary_env(base_hab: f32, terra_bonus: f32, rng: &mut SysRng) -> (f32
     (grav_g, temp_k, rad_mr)
 }
 
-/// Generate a host star consistent with the primary world's radiation and temperature.
+/// Generate a host star consistent with the primary world's radiation and temperature,
+/// including rare exotic stars (Brown Dwarf, White Dwarf, Pulsar, Black Hole).
 fn generate_star(temp_k: f32, rad_mr: f32, rng: &mut SysRng) -> StarView {
     let seed = rng.next_u32();
+    let exotic_roll = rng.next_f32();
+
+    // Rare Black Hole (~2% on extreme radiation > 82 mR, or ~0.6% very rare overall)
+    if (rad_mr > 82.0 && exotic_roll < 0.04) || exotic_roll < 0.006 {
+        let mass = rng.range(4.8, 12.5);
+        return StarView {
+            star_kind: StarKind::BlackHole,
+            spectral_class: "BH".to_string(),
+            temp_k: rng.range(18000.0, 42000.0), // accretion disk inner temp
+            mass_solar: mass,
+            radius_solar: mass * 0.0000042,
+            luminosity_solar: rng.range(0.35, 2.4),
+            color_rgb: [1.0, 0.72, 0.36],
+            seed,
+        };
+    }
+
+    // Rare Pulsar / Neutron Star (~5% on extreme radiation > 76 mR, or ~1.2% overall)
+    if (rad_mr > 76.0 && exotic_roll < 0.09) || exotic_roll < 0.018 {
+        return StarView {
+            star_kind: StarKind::Pulsar,
+            spectral_class: format!("PSR-{}", (rng.next_u32() % 900) + 100),
+            temp_k: rng.range(24000.0, 58000.0),
+            mass_solar: rng.range(1.38, 2.15),
+            radius_solar: 0.000018,
+            luminosity_solar: rng.range(0.25, 1.4),
+            color_rgb: [0.54, 0.86, 1.0],
+            seed,
+        };
+    }
+
+    // White Dwarf (~18% on high-rad / cooler worlds, or ~3.5% overall)
+    if (rad_mr > 56.0 && temp_k < 360.0 && exotic_roll < 0.24) || exotic_roll < 0.052 {
+        return StarView {
+            star_kind: StarKind::WhiteDwarf,
+            spectral_class: format!("DA{}", (rng.next_u32() % 6) + 2),
+            temp_k: rng.range(10500.0, 24000.0),
+            mass_solar: rng.range(0.54, 1.18),
+            radius_solar: rng.range(0.009, 0.016),
+            luminosity_solar: rng.range(0.04, 0.28),
+            color_rgb: [0.84, 0.93, 1.0],
+            seed,
+        };
+    }
+
+    // Brown Dwarf (L / T / Y classes) for very cold systems
+    if temp_k < 175.0 && exotic_roll < 0.34 {
+        let sub = rng.next_f32();
+        let (cls, bd_temp) = if sub < 0.45 {
+            (format!("L{}", (rng.next_u32() % 8) + 1), rng.range(1350.0, 2100.0))
+        } else if sub < 0.82 {
+            (format!("T{}", (rng.next_u32() % 8) + 1), rng.range(720.0, 1300.0))
+        } else {
+            (format!("Y{}", (rng.next_u32() % 3) + 1), rng.range(420.0, 680.0))
+        };
+        return StarView {
+            star_kind: StarKind::BrownDwarf,
+            spectral_class: cls,
+            temp_k: bd_temp,
+            mass_solar: rng.range(0.028, 0.074),
+            radius_solar: rng.range(0.085, 0.115),
+            luminosity_solar: rng.range(0.015, 0.045),
+            color_rgb: [0.92, 0.32, 0.44],
+            seed,
+        };
+    }
+
     let (spectral_class, star_temp, mass, radius, color_rgb) = if rad_mr > 72.0 && temp_k > 390.0 {
         if rng.next_f32() < 0.65 {
             (
@@ -187,6 +255,7 @@ fn generate_star(temp_k: f32, rad_mr: f32, rng: &mut SysRng) -> StarView {
     // Main-sequence mass-luminosity approximation L ~ M^3.5
     let luminosity_solar = mass.powf(3.5).clamp(0.015, 22.0);
     StarView {
+        star_kind: StarKind::MainSequence,
         spectral_class,
         temp_k: star_temp,
         mass_solar: mass,
@@ -194,6 +263,65 @@ fn generate_star(temp_k: f32, rad_mr: f32, rng: &mut SysRng) -> StarView {
         luminosity_solar,
         color_rgb,
         seed,
+    }
+}
+
+/// Optional binary companion star (~30% of systems) creating dual-tinted illumination on planets.
+fn generate_companion_star(primary: &StarView, rng: &mut SysRng) -> Option<StarView> {
+    if matches!(primary.star_kind, StarKind::BlackHole | StarKind::Pulsar) {
+        return None;
+    }
+    if rng.next_f32() >= 0.30 {
+        return None;
+    }
+    let seed = rng.next_u32();
+    let roll = rng.next_f32();
+    if roll < 0.48 {
+        let mass = rng.range(0.18, 0.48);
+        Some(StarView {
+            star_kind: StarKind::MainSequence,
+            spectral_class: format!("M{}V", (rng.next_u32() % 7) + 1),
+            temp_k: rng.range(2850.0, 3650.0),
+            mass_solar: mass,
+            radius_solar: rng.range(0.22, 0.50),
+            luminosity_solar: mass.powf(3.5).clamp(0.01, 0.12),
+            color_rgb: [1.0, 0.48, 0.28],
+            seed,
+        })
+    } else if roll < 0.76 {
+        let mass = rng.range(0.55, 0.82);
+        Some(StarView {
+            star_kind: StarKind::MainSequence,
+            spectral_class: format!("K{}V", (rng.next_u32() % 7) + 2),
+            temp_k: rng.range(4000.0, 4950.0),
+            mass_solar: mass,
+            radius_solar: rng.range(0.62, 0.84),
+            luminosity_solar: mass.powf(3.5).clamp(0.08, 0.55),
+            color_rgb: [1.0, 0.78, 0.48],
+            seed,
+        })
+    } else if roll < 0.90 {
+        Some(StarView {
+            star_kind: StarKind::WhiteDwarf,
+            spectral_class: format!("DA{}", (rng.next_u32() % 5) + 2),
+            temp_k: rng.range(12000.0, 22000.0),
+            mass_solar: rng.range(0.55, 0.95),
+            radius_solar: 0.012,
+            luminosity_solar: rng.range(0.04, 0.22),
+            color_rgb: [0.76, 0.90, 1.0],
+            seed,
+        })
+    } else {
+        Some(StarView {
+            star_kind: StarKind::BrownDwarf,
+            spectral_class: format!("L{}", (rng.next_u32() % 7) + 2),
+            temp_k: rng.range(1150.0, 1950.0),
+            mass_solar: rng.range(0.035, 0.072),
+            radius_solar: 0.095,
+            luminosity_solar: 0.018,
+            color_rgb: [0.92, 0.30, 0.44],
+            seed,
+        })
     }
 }
 
@@ -482,10 +610,11 @@ fn generate_moons(
 pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
     let (mut rng, system_seed) = SysRng::from_seed(input.map_seed, input.planet_id);
 
-    // 1. Derive primary world's astrophysical environment & matching host star
+    // 1. Derive primary world's astrophysical environment & matching host star (+ optional binary companion)
     let (grav_g, primary_temp_k, rad_mr) =
         derive_primary_env(input.base_hab, input.terra_bonus, &mut rng);
     let star = generate_star(primary_temp_k, rad_mr, &mut rng);
+    let companion_star = generate_companion_star(&star, &mut rng);
 
     // Equilibrium orbital radius for the primary world: T_eq ~ 278 * L^0.25 / sqrt(a)
     let lum_quarter = star.luminosity_solar.powf(0.25);
@@ -853,6 +982,7 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
         planet_id: input.planet_id,
         system_seed,
         star,
+        companion_star,
         primary_index,
         bodies,
     }
@@ -959,5 +1089,33 @@ mod tests {
         assert!(saw_kuiper, "expected Kuiper Belt in at least one system");
         assert!(saw_dwarf, "expected Dwarf planet in at least one system");
         assert!(saw_comet, "expected Comet in at least one system");
+    }
+
+    #[test]
+    fn generates_binary_and_exotic_stars() {
+        let mut saw_binary = false;
+        let mut saw_brown = false;
+        let mut saw_white = false;
+        let mut saw_pulsar = false;
+        let mut saw_bh = false;
+        for id in 1..=350 {
+            let hab = if id % 3 == 0 { 0.12 } else { 0.55 };
+            let sys = generate_star_system(&sample_input(id, hab, 0.0, 0.1));
+            if sys.companion_star.is_some() {
+                saw_binary = true;
+            }
+            match sys.star.star_kind {
+                StarKind::BrownDwarf => saw_brown = true,
+                StarKind::WhiteDwarf => saw_white = true,
+                StarKind::Pulsar => saw_pulsar = true,
+                StarKind::BlackHole => saw_bh = true,
+                StarKind::MainSequence => {}
+            }
+        }
+        assert!(saw_binary, "expected Binary star system");
+        assert!(saw_brown, "expected Brown Dwarf");
+        assert!(saw_white, "expected White Dwarf");
+        assert!(saw_pulsar, "expected Pulsar");
+        assert!(saw_bh, "expected Black Hole");
     }
 }
