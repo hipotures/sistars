@@ -842,9 +842,16 @@ export class UiController {
       const id = Number(row.dataset.fleetId);
       if (Number.isNaN(id)) return;
 
-      if (target.closest('[data-route-focus]')) {
+      const routeCell = target.closest<HTMLElement>('[data-route-focus]');
+      if (routeCell) {
+        const fromIdx = Number(row.dataset.fromIdx);
+        const targetIdx = Number(row.dataset.targetIdx);
         this.callbacks.onSelectObject({ kind: 'fleet', id });
-        void this.focusFleetRouteOnMap(id);
+        void this.focusFleetRouteOnMap(
+          id,
+          Number.isNaN(fromIdx) ? null : fromIdx,
+          Number.isNaN(targetIdx) ? null : targetIdx,
+        );
         return;
       }
 
@@ -1301,15 +1308,24 @@ export class UiController {
     getEl('fleetModeBlueprint').classList.toggle('active', mode === 'blueprint');
   }
 
-  private async focusFleetRouteOnMap(fleetId: number): Promise<void> {
+  private async focusFleetRouteOnMap(
+    fleetId: number,
+    fallbackFromIdx: number | null,
+    fallbackTargetIdx: number | null,
+  ): Promise<void> {
     const fl = await this.callbacks.getFleetById(fleetId);
-    if (!fl) return;
+    const fromIdx = fl ? fl.from : fallbackFromIdx;
+    const targetIdx = fl ? fl.target : fallbackTargetIdx;
     const [fromPl, targetPl] = await Promise.all([
-      this.callbacks.getPlanetDetail(fl.from),
-      this.callbacks.getPlanetDetail(fl.target),
+      fromIdx !== null ? this.callbacks.getPlanetDetail(fromIdx) : Promise.resolve(null),
+      targetIdx !== null ? this.callbacks.getPlanetDetail(targetIdx) : Promise.resolve(null),
     ]);
-    const xs = [fl.x];
-    const ys = [fl.y];
+    const xs: number[] = [];
+    const ys: number[] = [];
+    if (fl) {
+      xs.push(fl.x);
+      ys.push(fl.y);
+    }
     if (fromPl) {
       xs.push(fromPl.x);
       ys.push(fromPl.y);
@@ -1318,6 +1334,13 @@ export class UiController {
       xs.push(targetPl.x);
       ys.push(targetPl.y);
     }
+    if (xs.length === 0) return;
+
+    // If the fleet already arrived at its destination, select the destination planet instead
+    if (!fl && targetIdx !== null) {
+      this.callbacks.onSelectObject({ kind: 'planet', index: targetIdx });
+    }
+
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
@@ -1883,7 +1906,7 @@ export class UiController {
                 ? '#f87171'
                 : '#93c5fd';
         const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
-        return `<tr data-fleet-id="${fl.id}">
+        return `<tr data-fleet-id="${fl.id}" data-from-idx="${fl.from}" data-target-idx="${fl.target}">
           <td>F${fl.id}</td>
           <td><span class="dot" style="background:${empCol}"></span></td>
           <td style="color:${col};font-weight:bold;">${label}</td>
