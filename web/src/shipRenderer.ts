@@ -168,16 +168,39 @@ const SOLID_FRAG = /* glsl */ `
       color += vec3(1.0, 0.34, 0.08) * spark * (1.0 - tex.a);
     }
 
-    // Cloak: keep crisp metallic hull readable with depthWrite=true, add sleek stealth Fresnel sheen
-    float alpha = 1.0;
-    if (uCloak > 0.01) {
-      float sweep = 0.5 + 0.5 * sin(vLocalPos.z * 14.0 - uTime * 3.8);
-      vec3 cloakEdge = mix(uEmpireColor, vec3(0.28, 0.92, 1.0), 0.55);
-      color += cloakEdge * fresnel * uCloak * (0.55 + 0.35 * sweep);
-      alpha = mix(1.0, clamp(0.62 + fresnel * 0.35, 0.62, 0.98), uCloak);
-    }
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
 
-    gl_FragColor = vec4(color, alpha);
+const CLOAK_VERT = /* glsl */ `
+  varying vec3 vNormalW;
+  varying vec3 vViewDir;
+  varying vec3 vLocalPos;
+  void main() {
+    vLocalPos = position;
+    vec3 inflated = position + normal * 0.012;
+    vec4 worldPos = modelMatrix * vec4(inflated, 1.0);
+    vNormalW = normalize(mat3(modelMatrix) * normal);
+    vViewDir = normalize(cameraPosition - worldPos.xyz);
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+
+const CLOAK_FRAG = /* glsl */ `
+  uniform vec3 uEmpireColor;
+  uniform float uCloak;
+  uniform float uTime;
+  varying vec3 vNormalW;
+  varying vec3 vViewDir;
+  varying vec3 vLocalPos;
+  void main() {
+    float ndv = max(dot(normalize(vNormalW), normalize(vViewDir)), 0.0);
+    float fresnel = pow(1.0 - ndv, 2.8);
+    float wave = 0.55 + 0.45 * sin(vLocalPos.z * 16.0 - uTime * 4.2);
+    float scan = 0.8 + 0.2 * sin(vLocalPos.y * 34.0 + uTime * 2.4);
+    vec3 cloakCol = mix(uEmpireColor, vec3(0.24, 0.94, 1.0), 0.58);
+    float intensity = fresnel * uCloak * (0.55 + 0.55 * wave) * scan;
+    gl_FragColor = vec4(cloakCol * intensity * 1.35, intensity);
   }
 `;
 
@@ -244,6 +267,8 @@ export class ShipPreviewRenderer {
 
   private solidMesh: THREE.Mesh | null = null;
   private solidMat: THREE.ShaderMaterial;
+  private cloakMesh: THREE.Mesh | null = null;
+  private cloakMat: THREE.ShaderMaterial;
   private wireMesh: THREE.Mesh | null = null;
   private wireMat: THREE.MeshBasicMaterial;
   private holoMesh: THREE.Mesh | null = null;
@@ -280,7 +305,7 @@ export class ShipPreviewRenderer {
   constructor(canvas: HTMLCanvasElement, interactive: boolean) {
     this.canvas = canvas;
     this.interactive = interactive;
-    this.camDist = interactive ? 3.85 : 3.7;
+    this.camDist = interactive ? 4.15 : 3.85;
 
     try {
       this.renderer = new THREE.WebGLRenderer({
@@ -323,11 +348,11 @@ export class ShipPreviewRenderer {
     this.stars = new THREE.Points(starGeo, starMat);
     this.scene.add(this.stars);
 
-    // Materials
+    // Materials (base hull is strictly opaque so internal geometry never bleeds through)
     this.solidMat = new THREE.ShaderMaterial({
       vertexShader: SOLID_VERT,
       fragmentShader: SOLID_FRAG,
-      transparent: true,
+      transparent: false,
       depthWrite: true,
       side: THREE.FrontSide,
       uniforms: {
@@ -338,6 +363,20 @@ export class ShipPreviewRenderer {
         uHasCargoAccent: { value: 0 },
         uCloak: { value: 0 },
         uHpRatio: { value: 1 },
+        uTime: { value: 0 },
+      },
+    });
+
+    this.cloakMat = new THREE.ShaderMaterial({
+      vertexShader: CLOAK_VERT,
+      fragmentShader: CLOAK_FRAG,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.FrontSide,
+      uniforms: {
+        uEmpireColor: { value: new THREE.Color('#38bdf8') },
+        uCloak: { value: 0 },
         uTime: { value: 0 },
       },
     });
@@ -472,7 +511,7 @@ export class ShipPreviewRenderer {
   public resetCamera(): void {
     this.yaw = 0.65;
     this.pitch = 0.28;
-    this.camDist = this.interactive ? 3.85 : 3.7;
+    this.camDist = this.interactive ? 4.15 : 3.85;
   }
 
   public setState(next: ShipRenderState): void {
@@ -496,6 +535,7 @@ export class ShipPreviewRenderer {
 
   private attachGeometry(asset: CachedShipAsset): void {
     if (this.solidMesh) this.shipRoot.remove(this.solidMesh);
+    if (this.cloakMesh) this.shipRoot.remove(this.cloakMesh);
     if (this.wireMesh) this.shipRoot.remove(this.wireMesh);
     if (this.holoMesh) this.shipRoot.remove(this.holoMesh);
 
@@ -503,15 +543,18 @@ export class ShipPreviewRenderer {
     this.solidMat.uniforms.uHasMap.value = asset.texture ? 1.0 : 0.0;
 
     this.solidMesh = new THREE.Mesh(asset.geometry, this.solidMat);
+    this.cloakMesh = new THREE.Mesh(asset.geometry, this.cloakMat);
     this.wireMesh = new THREE.Mesh(asset.geometry, this.wireMat);
     this.holoMesh = new THREE.Mesh(asset.geometry, this.holoMat);
 
     this.shipRoot.add(this.solidMesh);
+    this.shipRoot.add(this.cloakMesh);
     this.shipRoot.add(this.wireMesh);
     this.shipRoot.add(this.holoMesh);
 
-    const jr = Math.max(1.25, asset.radius * 1.18);
-    this.jammerField.scale.setScalar(jr / 1.45);
+    // Compact Jammer field radius (~15% tighter) so it fits cleanly inside default modal framing
+    const jr = Math.max(1.06, asset.radius * 1.02);
+    this.jammerField.scale.setScalar(jr / 1.42);
     this.engineGlow.position.set(0, -0.02, -asset.radius * 0.85);
 
     this.applyUniforms();
@@ -524,13 +567,16 @@ export class ShipPreviewRenderer {
     const cargoCol = isFreight
       ? new THREE.Color(MINERAL_COLORS[this.state.cargoMineralType ?? 0] ?? '#60a5fa')
       : empCol;
+    const cloakClamped = Math.max(0, Math.min(1, this.state.cloakPct));
 
     this.solidMat.uniforms.uEmpireColor.value.copy(empCol);
     this.solidMat.uniforms.uAccentColor.value.copy(cargoCol);
     this.solidMat.uniforms.uHasCargoAccent.value = isFreight ? 1.0 : 0.0;
-    this.solidMat.uniforms.uCloak.value = Math.max(0, Math.min(1, this.state.cloakPct));
+    this.solidMat.uniforms.uCloak.value = cloakClamped;
     this.solidMat.uniforms.uHpRatio.value = Math.max(0, Math.min(1, this.state.hpRatio));
-    this.solidMat.depthWrite = true;
+
+    this.cloakMat.uniforms.uEmpireColor.value.copy(empCol);
+    this.cloakMat.uniforms.uCloak.value = cloakClamped;
 
     this.wireMat.color.copy(empCol);
     this.holoMat.uniforms.uEmpireColor.value.copy(empCol);
@@ -542,11 +588,14 @@ export class ShipPreviewRenderer {
       this.jammerMat.uniforms.uColor.value.copy(empCol).lerp(new THREE.Color('#c084fc'), 0.55);
       this.jammerMat.uniforms.uStrength.value = Math.max(0, Math.min(1, this.state.jammerPct));
     }
+
+    this.syncModeVisibility();
   }
 
   private syncModeVisibility(): void {
     const isBlueprint = this.mode === 'blueprint';
     if (this.solidMesh) this.solidMesh.visible = !isBlueprint;
+    if (this.cloakMesh) this.cloakMesh.visible = !isBlueprint && this.state.cloakPct > 0.01;
     if (this.wireMesh) this.wireMesh.visible = isBlueprint;
     if (this.holoMesh) this.holoMesh.visible = isBlueprint;
     this.blueprintGrid.visible = isBlueprint;
@@ -602,6 +651,7 @@ export class ShipPreviewRenderer {
     // Subtle idle float
     this.shipRoot.position.y = Math.sin(t * 1.8) * 0.045;
     this.solidMat.uniforms.uTime.value = t;
+    this.cloakMat.uniforms.uTime.value = t;
 
     // Thruster glow with low-HP flicker
     const hp = Math.max(0, Math.min(1, this.state.hpRatio));
