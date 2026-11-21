@@ -627,7 +627,9 @@ export class UiController {
     });
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        if (getEl('fleetModal').style.display !== 'none') {
+        if (getEl('fleetPreviewBox').classList.contains('expanded')) {
+          this.setFleetPreviewExpanded(false);
+        } else if (getEl('fleetModal').style.display !== 'none') {
           this.closeFleetView();
         } else if (getEl('systemModal').style.display !== 'none') {
           this.closeSystemView();
@@ -644,11 +646,23 @@ export class UiController {
     getEl('btnCloseFleetModal').addEventListener('click', () => this.closeFleetView());
     getEl('fleetModal').addEventListener('click', (e) => {
       if (e.target === getEl('fleetModal')) {
-        this.closeFleetView();
+        if (getEl('fleetPreviewBox').classList.contains('expanded')) {
+          this.setFleetPreviewExpanded(false);
+        } else {
+          this.closeFleetView();
+        }
       }
     });
     getEl('btnResetFleetCam').addEventListener('click', () => {
       this.modalShipRenderer.resetCamera();
+    });
+    getEl('btnToggleFleetExpand').addEventListener('click', () => {
+      const isExp = getEl('fleetPreviewBox').classList.contains('expanded');
+      this.setFleetPreviewExpanded(!isExp);
+    });
+    getEl('fleetPreviewCanvas').addEventListener('dblclick', () => {
+      const isExp = getEl('fleetPreviewBox').classList.contains('expanded');
+      this.setFleetPreviewExpanded(!isExp);
     });
     document.querySelectorAll<HTMLButtonElement>('[data-fleet-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1273,8 +1287,18 @@ export class UiController {
     getEl('fleetModeBlueprint').classList.toggle('active', mode === 'blueprint');
   }
 
+  private setFleetPreviewExpanded(expanded: boolean): void {
+    const box = getEl('fleetPreviewBox');
+    box.classList.toggle('expanded', expanded);
+    getEl('btnToggleFleetExpand').textContent = expanded ? '↙ Collapse' : '⛶ Expand';
+    getEl('fleetPreviewHint').textContent = expanded
+      ? 'Drag to orbit · Scroll to zoom · Dbl-click or Esc to collapse'
+      : 'Drag to orbit · Scroll to zoom · Dbl-click to expand';
+  }
+
   public async openFleetView(fleetId: number): Promise<void> {
     this.activeModalFleetId = fleetId;
+    this.setFleetPreviewExpanded(false);
     this.modalShipRenderer.resetCamera();
     this.setFleetModalMode('solid');
     getEl('fleetModal').style.display = 'flex';
@@ -1287,6 +1311,7 @@ export class UiController {
   public closeFleetView(): void {
     this.activeModalFleetId = null;
     this.fleetModalReqSeq++;
+    this.setFleetPreviewExpanded(false);
     getEl('fleetModal').style.display = 'none';
     this.modalShipRenderer.stop();
   }
