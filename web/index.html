@@ -392,28 +392,42 @@
         <div class="drawer-title" id="sysModalTitle">🌌 System #1</div>
         <div id="sysStarMeta" style="font-size:0.69rem; font-family:monospace; color:var(--muted); margin-top:2px;">G2V • 5780 K • 1.00 M<sub class="astro-sub">☉</sub></div>
       </div>
-      <button class="insp-close" id="btnCloseSystemModal">✕</button>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="hud-btn active" id="sysTabBodies" data-sys-tab="bodies">🪐 Bodies</button>
+        <button class="hud-btn" id="sysTabOrrery" data-sys-tab="orrery">🌀 Orrery</button>
+        <button class="insp-close" id="btnCloseSystemModal">✕</button>
+      </div>
     </div>
 
-    <div class="sys-orbit-strip" id="sysOrbitStrip"></div>
+    <div id="sysBodiesPane" style="display:flex; flex-direction:column; gap:12px;">
+      <div class="sys-orbit-strip" id="sysOrbitStrip"></div>
 
-    <div class="sys-detail-split">
-      <div class="sys-preview-box">
-        <canvas id="sysPreviewCanvas" class="sys-preview-canvas"></canvas>
-        <div class="sys-preview-bar">
-          <span id="sysSelectedLabel" style="font-size:0.74rem; font-weight:700;">System #1 III</span>
-          <button class="hud-btn" id="btnExportPlanetPng" title="Export equirectangular surface texture">⬇ Export 2048×1024 PNG</button>
+      <div class="sys-detail-split">
+        <div class="sys-preview-box">
+          <canvas id="sysPreviewCanvas" class="sys-preview-canvas"></canvas>
+          <div class="sys-preview-bar">
+            <span id="sysSelectedLabel" style="font-size:0.74rem; font-weight:700;">System #1 III</span>
+            <button class="hud-btn" id="btnExportPlanetPng" title="Export equirectangular surface texture">⬇ Export 2048×1024 PNG</button>
+          </div>
+        </div>
+        <div class="sys-stats-pane">
+          <div class="insp-grid" id="sysBodyStats"></div>
+          <div id="sysMoonsWrap" class="sys-moons-wrap" style="display:none;">
+            <div class="sys-moons-head">
+              <span id="sysMoonsTitle">Moons</span>
+              <button class="hud-btn" id="btnBackToParentPlanet" style="display:none;padding:2px 6px;font-size:0.62rem;">← Parent Planet</button>
+            </div>
+            <div class="sys-moons-strip" id="sysMoonsStrip"></div>
+          </div>
         </div>
       </div>
-      <div class="sys-stats-pane">
-        <div class="insp-grid" id="sysBodyStats"></div>
-        <div id="sysMoonsWrap" class="sys-moons-wrap" style="display:none;">
-          <div class="sys-moons-head">
-            <span id="sysMoonsTitle">Moons</span>
-            <button class="hud-btn" id="btnBackToParentPlanet" style="display:none;padding:2px 6px;font-size:0.62rem;">← Parent Planet</button>
-          </div>
-          <div class="sys-moons-strip" id="sysMoonsStrip"></div>
-        </div>
+    </div>
+
+    <div id="sysOrreryPane" style="display:none; flex-direction:column; gap:8px;">
+      <canvas id="sysOrreryCanvas" class="sys-orrery-canvas"></canvas>
+      <div style="display:flex; justify-content:space-between; font-size:0.67rem; color:var(--muted); font-family:monospace;">
+        <span>Click any star, planet, belt or comet to inspect in 3D</span>
+        <span>★ Primary World · 🌀 Stargate · 📡 ECM</span>
       </div>
     </div>
   </div>

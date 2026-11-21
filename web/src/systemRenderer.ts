@@ -292,6 +292,9 @@ uniform vec3 uRingColor;
 uniform int uMoonCount;
 uniform vec4 uMoonOrbit[4]; // (orbitRad, phase, speed, moonRadius)
 uniform vec3 uMoonColor[4];
+uniform int uHasStargate;
+uniform int uHasJammer;
+uniform int uHasStarbase;
 
 ${NOISE_GLSL}
 ${SURFACE_EVAL_GLSL}
@@ -756,6 +759,48 @@ void main() {
     col = mix(col, moonFrontCol, moonFrontAA);
   }
 
+  // Live Orbital Infrastructure around anchored Primary World:
+  // 1. Active ECM Jammer: subtle pulsing cyan-violet interference wave lattice around limb
+  if (uHasJammer == 1) {
+    float rDist = length(p);
+    float shell = exp(-abs(rDist - planetRad * 1.15) * 26.0);
+    float wave = 0.5 + 0.5 * sin(atan(p.y, p.x) * 18.0 - uTime * 3.5);
+    float pulse = 0.55 + 0.45 * sin(uTime * 3.2);
+    col += vec3(0.72, 0.44, 1.0) * shell * wave * pulse * 0.55;
+  }
+
+  // 2. Active Stargate: glowing cyan orbital portal ring gliding around the planet
+  if (uHasStargate == 1) {
+    float gAng = uTime * 0.55 + 0.8;
+    float gR = planetRad * 1.32;
+    vec3 gPos = vec3(cos(gAng) * gR, sin(gAng) * gR * 0.25, sin(gAng) * gR * 0.92);
+    vec2 gScreen = gPos.xy * (2.2 / (2.8 - gPos.z)) / 0.95;
+    float inFront = gPos.z >= 0.0 || disc < 0.0 ? 1.0 : 0.0;
+    if (inFront > 0.5) {
+      float gd = length(p - gScreen);
+      float gRing = exp(-abs(gd - 0.055) * 95.0) * 1.35;
+      float gCore = exp(-gd * 28.0) * 0.45;
+      col += vec3(0.13, 0.88, 0.98) * (gRing + gCore);
+    }
+  }
+
+  // 3. Orbital Starbase: crisp amber-white bastion beacon on close equatorial orbit
+  if (uHasStarbase == 1) {
+    float bAng = -uTime * 0.42 + 2.6;
+    float bR = planetRad * 1.24;
+    vec3 bPos = vec3(cos(bAng) * bR, sin(bAng) * bR * 0.18, sin(bAng) * bR * 0.94);
+    vec2 bScreen = bPos.xy * (2.2 / (2.8 - bPos.z)) / 0.95;
+    float inFront = bPos.z >= 0.0 || disc < 0.0 ? 1.0 : 0.0;
+    if (inFront > 0.5) {
+      vec2 bd = abs(p - bScreen);
+      float diamond = bd.x + bd.y;
+      float hub = smoothstep(0.036, 0.014, diamond);
+      float glow = exp(-length(p - bScreen) * 32.0) * 0.55;
+      col = mix(col, vec3(1.0, 0.92, 0.72), hub);
+      col += vec3(0.38, 0.82, 1.0) * glow;
+    }
+  }
+
   // Gamma tone mapping
   col = pow(clamp(col, 0.0, 1.0), vec3(0.92));
   outColor = vec4(col, 1.0);
@@ -1028,6 +1073,9 @@ export class ProceduralBodyRenderer {
       }
       gl.uniform1i(loc('uHasRings'), 0);
       gl.uniform1i(loc('uMoonCount'), 0);
+      gl.uniform1i(loc('uHasStargate'), 0);
+      gl.uniform1i(loc('uHasJammer'), 0);
+      gl.uniform1i(loc('uHasStarbase'), 0);
     } else {
       const b = this.target.body;
       const st = this.target.star;
@@ -1058,6 +1106,9 @@ export class ProceduralBodyRenderer {
       gl.uniform1f(loc('uRingInner'), b.ringInner);
       gl.uniform1f(loc('uRingOuter'), b.ringOuter);
       gl.uniform3f(loc('uRingColor'), b.ringColorRgb[0], b.ringColorRgb[1], b.ringColorRgb[2]);
+      gl.uniform1i(loc('uHasStargate'), ls?.hasStargate ? 1 : 0);
+      gl.uniform1i(loc('uHasJammer'), ls?.hasJammer ? 1 : 0);
+      gl.uniform1i(loc('uHasStarbase'), ls?.hasStarbase ? 1 : 0);
 
       const moons = b.moons ?? [];
       const mCount = Math.min(4, moons.length);

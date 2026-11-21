@@ -1,4 +1,5 @@
 import { drawPowerChart } from './renderer';
+import { SystemOrreryRenderer } from './orreryRenderer';
 import type { PersistedSettings } from './settingsStorage';
 import {
   exportPlanetTexturePng,
@@ -164,6 +165,7 @@ export class UiController {
   // Procedural 3D globe (Inspector) & Star System View modal state
   private readonly inspGlobeRenderer: ProceduralBodyRenderer;
   private readonly sysPreviewRenderer: ProceduralBodyRenderer;
+  private readonly sysOrreryRenderer: SystemOrreryRenderer;
   private activeModalSystem: StarSystemView | null = null;
   private activeModalSelection: 'star' | 'star2' | { bodyIdx: number; moonIdx: number | null } = {
     bodyIdx: 0,
@@ -189,6 +191,17 @@ export class UiController {
     );
     this.sysPreviewRenderer = new ProceduralBodyRenderer(
       getEl<HTMLCanvasElement>('sysPreviewCanvas'),
+    );
+    this.sysOrreryRenderer = new SystemOrreryRenderer(
+      getEl<HTMLCanvasElement>('sysOrreryCanvas'),
+      (which) => {
+        this.setSystemModalTab('bodies');
+        if (which === 'star' || which === 'star2') {
+          this.selectModalItem(which);
+        } else {
+          this.selectModalItem({ bodyIdx: which, moonIdx: null });
+        }
+      },
     );
 
     this.initStaticControls();
@@ -609,6 +622,12 @@ export class UiController {
         this.selectModalItem({ bodyIdx: this.activeModalSelection.bodyIdx, moonIdx: null });
       }
     });
+    document.querySelectorAll<HTMLButtonElement>('[data-sys-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.sysTab === 'orrery' ? 'orrery' : 'bodies';
+        this.setSystemModalTab(tab);
+      });
+    });
 
     // Tech drawer tabs
     document.querySelectorAll<HTMLButtonElement>('[data-tech-tab]').forEach((btn) => {
@@ -1006,12 +1025,30 @@ export class UiController {
       strip.appendChild(card);
     });
 
+    this.setSystemModalTab('bodies');
     this.selectModalItem({ bodyIdx: sys.primaryIndex, moonIdx: null });
+  }
+
+  private setSystemModalTab(tab: 'bodies' | 'orrery'): void {
+    getEl('sysTabBodies').classList.toggle('active', tab === 'bodies');
+    getEl('sysTabOrrery').classList.toggle('active', tab === 'orrery');
+    getEl('sysBodiesPane').style.display = tab === 'bodies' ? 'flex' : 'none';
+    getEl('sysOrreryPane').style.display = tab === 'orrery' ? 'flex' : 'none';
+    if (tab === 'orrery' && this.activeModalSystem) {
+      this.sysPreviewRenderer.stop();
+      this.sysOrreryRenderer.setSystem(this.activeModalSystem, true);
+    } else {
+      this.sysOrreryRenderer.stop();
+      if (this.activeModalSystem) {
+        this.selectModalItem(this.activeModalSelection);
+      }
+    }
   }
 
   public closeSystemView(): void {
     getEl('systemModal').style.display = 'none';
     this.sysPreviewRenderer.stop();
+    this.sysOrreryRenderer.stop();
     this.activeModalSystem = null;
   }
 
