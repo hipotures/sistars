@@ -779,7 +779,7 @@ async function bootstrap(): Promise<void> {
     } else if (historyViewIndex === null) {
       recordHistoryFrame(lastHud);
       recordYearlyTelemetry(lastHud);
-      ui.update(lastHud, false);
+      ui.update(lastHud, speed === 0 && msg.stepsDone > 0);
       if (debugHistoryEnabled) syncHistoryBar();
     }
     if (debugPerfEnabled) {

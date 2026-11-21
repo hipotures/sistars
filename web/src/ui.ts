@@ -157,6 +157,7 @@ export class UiController {
   private lastEventsSignature = '';
   private lastHudUpdateMs = 0;
   private lastDrawerUpdateMs = 0;
+  private lastDrawerFleetCount = -1;
   private inspectorReqSeq = 0;
   private reportsInFlight = false;
   private powerHistoryInFlight = false;
@@ -410,8 +411,10 @@ export class UiController {
       }
     }
 
-    if (forceDrawers || now - this.lastDrawerUpdateMs >= 250) {
+    const fleetCountChanged = hud.fleetCount !== this.lastDrawerFleetCount;
+    if (forceDrawers || fleetCountChanged || now - this.lastDrawerUpdateMs >= 150) {
       this.lastDrawerUpdateMs = now;
+      this.lastDrawerFleetCount = hud.fleetCount;
       this.renderOpenDrawers(hud);
     }
   }
@@ -431,8 +434,13 @@ export class UiController {
       void this.callbacks
         .getReportsSnapshot()
         .then((rep) => {
-          this.renderPlanetTable(hud, rep);
-          this.renderFleetTable(hud, rep);
+          getEl('repBtnPlanets').textContent = `Planets (${rep.planets.length})`;
+          getEl('repBtnFleets').textContent = `Fleets in Flight (${rep.fleets.length})`;
+          if (getEl('repPlanetsWrap').style.display !== 'none') {
+            this.renderPlanetTable(hud, rep);
+          } else {
+            this.renderFleetTable(hud, rep);
+          }
         })
         .finally(() => {
           this.reportsInFlight = false;
@@ -808,6 +816,7 @@ export class UiController {
         getEl('repFleetsWrap').style.display = which === 'fleets' ? 'block' : 'none';
         getEl('repBtnPlanets').classList.toggle('active', which === 'planets');
         getEl('repBtnFleets').classList.toggle('active', which === 'fleets');
+        if (this.lastHud) this.renderOpenDrawers(this.lastHud);
       });
     });
 
@@ -1336,9 +1345,10 @@ export class UiController {
     }
     if (xs.length === 0) return;
 
-    // If the fleet already arrived at its destination, select the destination planet instead
+    // If the fleet already arrived at its destination, select the destination planet & refresh table
     if (!fl && targetIdx !== null) {
       this.callbacks.onSelectObject({ kind: 'planet', index: targetIdx });
+      if (this.lastHud) this.renderOpenDrawers(this.lastHud);
     }
 
     const minX = Math.min(...xs);
