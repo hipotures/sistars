@@ -76,12 +76,19 @@ npm run build
 
 ## External Data & Attribution
 
+### 1. Game Data (`data/craig-stars/`)
 Static game data files stored unmodified under `data/craig-stars/` (`techs.json`, `rules.json`, and `LICENSE`) are imported from the **[craig-stars](https://github.com/sirgwain/craig-stars)** project:
 
 - **Source Repository:** <https://github.com/sirgwain/craig-stars>
 - **Upstream Files:** `frontend/src/lib/ssr/techs.json`, `frontend/src/lib/ssr/rules.json` (commit `943ffaea1dd2455180e0054efd420f4c4ff00b85`)
 - **Author:** `sirgwain`
 - **License:** MIT License
+
+### 2. 3D Spaceship Models (`web/public/models/ships/`)
+The low-poly 3D ship hulls (`battleship.glb`, `cruiser.glb`, `bomber.glb`, `freighter.glb`, `colony.glb`) are derived from the **Ultimate Spaceship Pack** by **Quaternius**:
+
+- **Author:** Quaternius (<https://quaternius.com>)
+- **License:** CC0 1.0 Universal (Public Domain Dedication) — see `web/public/models/ships/LICENSE-Quaternius-CC0.txt`
 
 ```text
 MIT License

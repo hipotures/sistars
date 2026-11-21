@@ -77,6 +77,17 @@
       <button class="hud-btn active" id="btnOpenSystemView" style="padding:3px 7px;font-size:0.65rem;">🌌 System View</button>
     </div>
   </div>
+  <div id="inspShipWrap" class="insp-globe-wrap" style="display:none;">
+    <canvas id="inspShipCanvas" class="insp-planet-canvas"></canvas>
+    <div class="insp-globe-top">
+      <span id="inspShipClassBadge" class="insp-badge">Cruiser</span>
+      <span id="inspShipEwBadge" class="insp-badge">HP 100%</span>
+    </div>
+    <div class="insp-globe-bottom">
+      <span id="inspShipHullBadge" class="insp-badge">Cruiser Hull</span>
+      <button class="hud-btn active" id="btnOpenFleetView" style="padding:3px 7px;font-size:0.65rem;">🚀 Fleet View</button>
+    </div>
+  </div>
   <div class="insp-grid">
     <div class="insp-stat"><span id="inspLbl0">Owner</span><b id="inspVal0">Uninhabited</b></div>
     <div class="insp-stat"><span id="inspLbl1">Habitability</span><b id="inspVal1">100%</b></div>
@@ -428,6 +439,41 @@
       <div style="display:flex; justify-content:space-between; font-size:0.67rem; color:var(--muted); font-family:monospace;">
         <span>Click any star, planet, belt or comet to inspect in 3D</span>
         <span>★ Primary World · 🌀 Stargate · 📡 ECM</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FLEET / SHIP 3D VIEW MODAL -->
+<div id="fleetModal" class="sys-modal" style="display:none;">
+  <div class="sys-modal-card">
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-title" id="fleetModalTitle">🚀 Fleet F#1</div>
+        <div id="fleetModalSub" style="font-size:0.69rem; font-family:monospace; color:var(--muted); margin-top:2px;">Cruiser • En Route</div>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="hud-btn active" id="fleetModeSolid" data-fleet-mode="solid">Solid</button>
+        <button class="hud-btn" id="fleetModeBlueprint" data-fleet-mode="blueprint">Blueprint</button>
+        <button class="insp-close" id="btnCloseFleetModal">✕</button>
+      </div>
+    </div>
+
+    <div class="sys-detail-split">
+      <div class="sys-preview-box">
+        <canvas id="fleetPreviewCanvas" class="fleet-preview-canvas"></canvas>
+        <div class="sys-preview-bar">
+          <span style="font-size:0.67rem; color:var(--muted); font-family:monospace;">Drag to orbit · Scroll to zoom</span>
+          <button class="hud-btn" id="btnResetFleetCam" style="padding:2px 7px;font-size:0.64rem;">↺ Reset Cam</button>
+        </div>
+      </div>
+
+      <div class="sys-stats-pane">
+        <div class="insp-grid" id="fleetModalStats"></div>
+        <div class="fleet-tech-section">
+          <div class="fleet-tech-section-title">Empire Tech Loadout</div>
+          <div class="insp-grid" id="fleetModalLoadout"></div>
+        </div>
       </div>
     </div>
   </div>

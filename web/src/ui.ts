@@ -1,5 +1,6 @@
 import { drawPowerChart } from './renderer';
 import { SystemOrreryRenderer } from './orreryRenderer';
+import { ShipPreviewRenderer, type ShipViewMode } from './shipRenderer';
 import type { PersistedSettings } from './settingsStorage';
 import {
   exportPlanetTexturePng,
@@ -173,6 +174,12 @@ export class UiController {
   };
   private modalReqSeq = 0;
 
+  // 3D Spaceship preview (Fleet Inspector) & Fleet View modal state
+  private readonly inspShipRenderer: ShipPreviewRenderer;
+  private readonly modalShipRenderer: ShipPreviewRenderer;
+  private activeModalFleetId: number | null = null;
+  private fleetModalReqSeq = 0;
+
   constructor(
     meta: EngineMeta,
     catalog: TechCatalogView,
@@ -202,6 +209,14 @@ export class UiController {
           this.selectModalItem({ bodyIdx: which, moonIdx: null });
         }
       },
+    );
+    this.inspShipRenderer = new ShipPreviewRenderer(
+      getEl<HTMLCanvasElement>('inspShipCanvas'),
+      false,
+    );
+    this.modalShipRenderer = new ShipPreviewRenderer(
+      getEl<HTMLCanvasElement>('fleetPreviewCanvas'),
+      true,
     );
 
     this.initStaticControls();
@@ -263,7 +278,9 @@ export class UiController {
     if (!sel) {
       getEl('planetInspector').style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
+      getEl('inspShipWrap').style.display = 'none';
       this.inspGlobeRenderer.stop();
+      this.inspShipRenderer.stop();
     } else if (this.lastHud) {
       void this.updateInspector(this.lastHud);
     }
@@ -380,6 +397,9 @@ export class UiController {
       this.renderEvents(hud);
       if (this.selection !== null) {
         void this.updateInspector(hud);
+      }
+      if (this.activeModalFleetId !== null) {
+        void this.refreshFleetModal(hud, false);
       }
     }
 
@@ -606,9 +626,35 @@ export class UiController {
       }
     });
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && getEl('systemModal').style.display !== 'none') {
-        this.closeSystemView();
+      if (e.key === 'Escape') {
+        if (getEl('fleetModal').style.display !== 'none') {
+          this.closeFleetView();
+        } else if (getEl('systemModal').style.display !== 'none') {
+          this.closeSystemView();
+        }
       }
+    });
+
+    // Fleet Inspector -> Fleet 3D View modal events
+    getEl('btnOpenFleetView').addEventListener('click', () => {
+      if (this.selection?.kind === 'fleet') {
+        void this.openFleetView(this.selection.id);
+      }
+    });
+    getEl('btnCloseFleetModal').addEventListener('click', () => this.closeFleetView());
+    getEl('fleetModal').addEventListener('click', (e) => {
+      if (e.target === getEl('fleetModal')) {
+        this.closeFleetView();
+      }
+    });
+    getEl('btnResetFleetCam').addEventListener('click', () => {
+      this.modalShipRenderer.resetCamera();
+    });
+    document.querySelectorAll<HTMLButtonElement>('[data-fleet-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode: ShipViewMode = btn.dataset.fleetMode === 'blueprint' ? 'blueprint' : 'solid';
+        this.setFleetModalMode(mode);
+      });
     });
     getEl('btnExportPlanetPng').addEventListener('click', () => {
       const sys = this.activeModalSystem;
@@ -772,7 +818,10 @@ export class UiController {
       const row = (e.target as HTMLElement).closest('tr');
       if (!row || !row.dataset.fleetId) return;
       const id = Number(row.dataset.fleetId);
-      if (!Number.isNaN(id)) this.callbacks.onSelectObject({ kind: 'fleet', id });
+      if (!Number.isNaN(id)) {
+        this.callbacks.onSelectObject({ kind: 'fleet', id });
+        void this.openFleetView(id);
+      }
     });
 
     // Lab actions
@@ -1218,6 +1267,123 @@ export class UiController {
     `;
   }
 
+  private setFleetModalMode(mode: ShipViewMode): void {
+    this.modalShipRenderer.setMode(mode);
+    getEl('fleetModeSolid').classList.toggle('active', mode === 'solid');
+    getEl('fleetModeBlueprint').classList.toggle('active', mode === 'blueprint');
+  }
+
+  public async openFleetView(fleetId: number): Promise<void> {
+    this.activeModalFleetId = fleetId;
+    this.modalShipRenderer.resetCamera();
+    this.setFleetModalMode('solid');
+    getEl('fleetModal').style.display = 'flex';
+    this.modalShipRenderer.start();
+    if (this.lastHud) {
+      await this.refreshFleetModal(this.lastHud, true);
+    }
+  }
+
+  public closeFleetView(): void {
+    this.activeModalFleetId = null;
+    this.fleetModalReqSeq++;
+    getEl('fleetModal').style.display = 'none';
+    this.modalShipRenderer.stop();
+  }
+
+  private async refreshFleetModal(hud: HudSnapshot, isInitial: boolean): Promise<void> {
+    const fleetId = this.activeModalFleetId;
+    if (fleetId === null) return;
+    const seq = ++this.fleetModalReqSeq;
+    const fl = await this.callbacks.getFleetById(fleetId);
+    if (seq !== this.fleetModalReqSeq || this.activeModalFleetId !== fleetId) return;
+
+    if (!fl) {
+      if (isInitial) {
+        this.closeFleetView();
+      } else {
+        getEl('fleetModalSub').textContent = 'Fleet arrived at destination or destroyed in combat';
+      }
+      return;
+    }
+
+    const emp = hud.empires[fl.emp - 1];
+    const minNames = ['Ironium', 'Boranium', 'Germanium'];
+    const hullName = emp
+      ? fl.type === 'battleship'
+        ? emp.loadout.battleshipHull
+        : fl.type === 'cruiser'
+          ? emp.loadout.cruiserHull
+          : fl.type === 'bomber'
+            ? emp.loadout.bomberHull
+            : fl.type === 'freight'
+              ? `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
+              : 'Colony Ship'
+      : FLEET_LABELS[fl.type];
+
+    const hpRatio = fl.maxPower > 0 ? Math.max(0, Math.min(1, fl.power / fl.maxPower)) : 1;
+    const hpPct = Math.round(hpRatio * 100);
+    const isArmed = fl.type === 'cruiser' || fl.type === 'battleship' || fl.type === 'bomber';
+    const cloakFrac = emp ? (isArmed ? emp.loadout.cloakArmedPct : emp.loadout.cloakUnarmedPct) : 0;
+    const tachFrac = emp ? emp.loadout.tachyonReductionPct : 0;
+    const jamFrac = emp ? emp.loadout.torpedoJammingPct : 0;
+
+    this.modalShipRenderer.setState({
+      fleetClass: fl.type,
+      empireColor: emp?.color ?? '#38bdf8',
+      hpRatio,
+      cloakPct: cloakFrac,
+      jammerPct: jamFrac,
+      cargoMineralType: fl.type === 'freight' ? fl.minType : undefined,
+    });
+
+    const targetPl = await this.callbacks.getPlanetDetail(fl.target);
+    if (seq !== this.fleetModalReqSeq || this.activeModalFleetId !== fleetId) return;
+    const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
+    const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
+    const statusTxt = fl.hunting
+      ? '🎯 Intercepting'
+      : fl.whRoute >= 0
+        ? '🌀 Wormhole Route'
+        : fl.usedWh
+          ? '⚡ Gate / WH Jump'
+          : 'En Route';
+
+    getEl('fleetModalTitle').textContent = `🚀 Fleet F#${fl.id} • ${FLEET_LABELS[fl.type]}`;
+    getEl('fleetModalSub').textContent = `${hullName} • ${emp ? emp.name : `Empire #${fl.emp}`} • ${statusTxt}`;
+
+    getEl('fleetModalStats').innerHTML = `
+      <div class="insp-stat"><span>Owner</span><b style="color:${emp?.color ?? '#e2e8f0'}">${emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`}</b></div>
+      <div class="insp-stat"><span>Hull / Class</span><b>${hullName}</b></div>
+      <div class="insp-stat"><span>Route &amp; ETA</span><b>#${fl.from + 1} → #${fl.target + 1} (${eta.toFixed(1)} yr)</b></div>
+      <div class="insp-stat"><span>Orders / Dist</span><b>${statusTxt} · ${Math.round(dist)} ly</b></div>
+      <div class="insp-stat"><span>${fl.type === 'freight' ? 'Cargo Hold' : 'Power / HP'}</span><b style="color:var(--accent)">${fl.type === 'freight' ? `${Math.round(fl.power)} kT ${minNames[fl.minType] ?? ''}` : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`}</b></div>
+      <div class="insp-stat"><span>EW (Cloak / Tach / Jam)</span><b>${Math.round(cloakFrac * 100)}% / ${Math.round(tachFrac * 100)}% / ${Math.round(jamFrac * 100)}%</b></div>
+    `;
+
+    if (emp) {
+      const lo = emp.loadout;
+      const rangeVal =
+        fl.type === 'battleship'
+          ? lo.rangeBattleship
+          : fl.type === 'cruiser'
+            ? lo.rangeCruiser
+            : fl.type === 'bomber'
+              ? lo.rangeBomber
+              : lo.rangeCol;
+      getEl('fleetModalLoadout').innerHTML = `
+        <div class="insp-stat"><span>Propulsion</span><b>${lo.engine}</b></div>
+        <div class="insp-stat"><span>${fl.type === 'bomber' ? 'Ordnance / Bombs' : 'Weapons'}</span><b>${fl.type === 'bomber' ? lo.bomb : lo.weapon}</b></div>
+        <div class="insp-stat"><span>Armor / Shields</span><b>${lo.armor} / ${lo.shield}</b></div>
+        <div class="insp-stat"><span>Scanner / Range</span><b>${lo.scanner} (${Math.round(lo.scannerRange)} ly)</b></div>
+        <div class="insp-stat"><span>Fuel Range</span><b>${Math.round(rangeVal)} ly</b></div>
+        <div class="insp-stat"><span>Stargate Network</span><b>${lo.stargate}</b></div>
+      `;
+    } else {
+      getEl('fleetModalLoadout').innerHTML = '';
+    }
+  }
+
   private async updateInspector(hud: HudSnapshot): Promise<void> {
     const sel = this.selection;
     const reqSeq = ++this.inspectorReqSeq;
@@ -1226,11 +1392,15 @@ export class UiController {
     if (!sel) {
       insp.style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
+      getEl('inspShipWrap').style.display = 'none';
       this.inspGlobeRenderer.stop();
+      this.inspShipRenderer.stop();
       return;
     }
 
     if (sel.kind === 'planet') {
+      getEl('inspShipWrap').style.display = 'none';
+      this.inspShipRenderer.stop();
       if (sel.index < 0 || sel.index >= hud.planetCount) {
         insp.style.display = 'none';
         getEl('inspGlobeWrap').style.display = 'none';
@@ -1307,6 +1477,8 @@ export class UiController {
       if (!fl) {
         this.selection = null;
         insp.style.display = 'none';
+        getEl('inspShipWrap').style.display = 'none';
+        this.inspShipRenderer.stop();
         return;
       }
       insp.style.display = 'flex';
@@ -1325,10 +1497,37 @@ export class UiController {
                 ? `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
                 : 'Colony Ship'
         : FLEET_LABELS[fl.type];
+      const hpRatio = fl.maxPower > 0 ? Math.max(0, Math.min(1, fl.power / fl.maxPower)) : 1;
+      const hpPct = Math.round(hpRatio * 100);
+      const isArmed = fl.type === 'cruiser' || fl.type === 'battleship' || fl.type === 'bomber';
+      const cloakFrac = emp ? (isArmed ? emp.loadout.cloakArmedPct : emp.loadout.cloakUnarmedPct) : 0;
+      const tachFrac = emp ? emp.loadout.tachyonReductionPct : 0;
+      const jamFrac = emp ? emp.loadout.torpedoJammingPct : 0;
+      const cloakPct = Math.round(cloakFrac * 100);
+      const tachPct = Math.round(tachFrac * 100);
+      const jamPct = Math.round(jamFrac * 100);
+
+      getEl('inspShipWrap').style.display = 'block';
+      getEl('inspShipClassBadge').textContent = FLEET_LABELS[fl.type];
+      getEl('inspShipHullBadge').textContent = hullName;
+      const ewBadges: string[] = [];
+      if (cloakPct > 0) ewBadges.push(`Cloak ${cloakPct}%`);
+      if (jamPct > 0) ewBadges.push(`Jam ${jamPct}%`);
+      ewBadges.push(`HP ${hpPct}%`);
+      getEl('inspShipEwBadge').textContent = ewBadges.join(' · ');
+      this.inspShipRenderer.setState({
+        fleetClass: fl.type,
+        empireColor: emp?.color ?? '#38bdf8',
+        hpRatio,
+        cloakPct: cloakFrac,
+        jammerPct: jamFrac,
+        cargoMineralType: fl.type === 'freight' ? fl.minType : undefined,
+      });
+      this.inspShipRenderer.start();
+
       getEl('inspTitle').textContent = `Fleet F#${fl.id} • ${FLEET_LABELS[fl.type]}`;
       this.setInspCell(0, 'Owner', emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`, emp ? emp.color : '#e2e8f0');
       this.setInspCell(1, 'Hull / Class', hullName);
-      const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
       this.setInspCell(2, fl.type === 'freight' ? 'Cargo' : 'Power / HP', fl.type === 'freight' ? `${Math.round(fl.power)} kT` : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`, 'var(--accent)');
       const targetPl = await this.callbacks.getPlanetDetail(fl.target);
       if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
@@ -1337,16 +1536,14 @@ export class UiController {
       this.setInspCell(3, 'Route / ETA', `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`);
       const statusTxt = fl.hunting ? '🎯 Intercepting' : fl.whRoute >= 0 ? '🌀 Wormhole Route' : fl.usedWh ? '⚡ Gate/WH Jump' : 'En Route';
       this.setInspCell(4, 'Orders / Dist', `${statusTxt} • ${Math.round(dist)}ly`);
-      const isArmed = fl.type === 'cruiser' || fl.type === 'battleship' || fl.type === 'bomber';
-      const cloakPct = emp ? Math.round((isArmed ? emp.loadout.cloakArmedPct : emp.loadout.cloakUnarmedPct) * 100) : 0;
-      const tachPct = emp ? Math.round(emp.loadout.tachyonReductionPct * 100) : 0;
-      const jamPct = emp ? Math.round(emp.loadout.torpedoJammingPct * 100) : 0;
       this.setInspCell(5, 'EW (Cloak/Tach/Jam)', `${cloakPct}% / ${tachPct}% / ${jamPct}%`);
       return;
     }
 
     getEl('inspGlobeWrap').style.display = 'none';
+    getEl('inspShipWrap').style.display = 'none';
     this.inspGlobeRenderer.stop();
+    this.inspShipRenderer.stop();
 
     if (sel.kind === 'wormhole') {
       const wh = hud.wormholes[sel.index];

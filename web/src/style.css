@@ -505,6 +505,34 @@ header.hud-top {
   display: block;
 }
 
+.fleet-preview-canvas {
+  width: 100%;
+  height: 310px;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.fleet-preview-canvas:active {
+  cursor: grabbing;
+}
+
+.fleet-tech-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid #182336;
+  padding-top: 8px;
+}
+
+.fleet-tech-section-title {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
 .sys-orrery-canvas {
   width: 100%;
   height: 410px;
