@@ -495,6 +495,10 @@ async function bootstrap(): Promise<void> {
     onSelectObject: (sel) => {
       applySelection(sel);
     },
+    onFocusWorldRegion: (minX, minY, maxX, maxY, rightInsetPx) => {
+      renderer.focusOnWorldRegion(minX, minY, maxX, maxY, rightInsetPx);
+      scheduleRender();
+    },
     onLaunchRaces: (races) => {
       hudLensEmpires.clear();
       applySelection(null);

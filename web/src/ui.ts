@@ -37,6 +37,13 @@ export interface UiCallbacks {
   onGalaxyChange: (size: string, shape: string) => void;
   onLabAction: (action: LabAction) => void;
   onSelectObject: (sel: MapSelection) => void;
+  onFocusWorldRegion: (
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+    rightInsetPx: number,
+  ) => void;
   onLaunchRaces: (races: RaceDef[]) => void;
   onToggleEmpireLens: (empIndex: number) => void;
   onEquilibriumModeChange: (mode: EquilibriumMode) => void;
@@ -829,13 +836,20 @@ export class UiController {
     });
 
     getEl('fleetTableBody').addEventListener('click', (e) => {
-      const row = (e.target as HTMLElement).closest('tr');
+      const target = e.target as HTMLElement;
+      const row = target.closest('tr');
       if (!row || !row.dataset.fleetId) return;
       const id = Number(row.dataset.fleetId);
-      if (!Number.isNaN(id)) {
+      if (Number.isNaN(id)) return;
+
+      if (target.closest('[data-route-focus]')) {
         this.callbacks.onSelectObject({ kind: 'fleet', id });
-        void this.openFleetView(id);
+        void this.focusFleetRouteOnMap(id);
+        return;
       }
+
+      this.callbacks.onSelectObject({ kind: 'fleet', id });
+      void this.openFleetView(id);
     });
 
     // Lab actions
@@ -1285,6 +1299,36 @@ export class UiController {
     this.modalShipRenderer.setMode(mode);
     getEl('fleetModeSolid').classList.toggle('active', mode === 'solid');
     getEl('fleetModeBlueprint').classList.toggle('active', mode === 'blueprint');
+  }
+
+  private async focusFleetRouteOnMap(fleetId: number): Promise<void> {
+    const fl = await this.callbacks.getFleetById(fleetId);
+    if (!fl) return;
+    const [fromPl, targetPl] = await Promise.all([
+      this.callbacks.getPlanetDetail(fl.from),
+      this.callbacks.getPlanetDetail(fl.target),
+    ]);
+    const xs = [fl.x];
+    const ys = [fl.y];
+    if (fromPl) {
+      xs.push(fromPl.x);
+      ys.push(fromPl.y);
+    }
+    if (targetPl) {
+      xs.push(targetPl.x);
+      ys.push(targetPl.y);
+    }
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    const drawer = getEl('drawerReports');
+    const rightInset =
+      drawer.classList.contains('open') && window.innerWidth > 768
+        ? drawer.getBoundingClientRect().width
+        : 0;
+    this.callbacks.onFocusWorldRegion(minX, minY, maxX, maxY, rightInset);
   }
 
   private setFleetPreviewExpanded(expanded: boolean): void {
@@ -1843,7 +1887,7 @@ export class UiController {
           <td>F${fl.id}</td>
           <td><span class="dot" style="background:${empCol}"></span></td>
           <td style="color:${col};font-weight:bold;">${label}</td>
-          <td>#${fl.from + 1}→#${fl.target + 1}</td>
+          <td class="fleet-route-cell" data-route-focus="1" title="Focus route on galaxy map">#${fl.from + 1}→#${fl.target + 1}</td>
           <td>${Math.round(fl.power)} (${hpPct}%)</td>
           <td>${Math.round(dist)}ly</td>
           <td>${eta.toFixed(1)}yr</td>

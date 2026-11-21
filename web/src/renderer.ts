@@ -198,6 +198,36 @@ export class GalaxyRenderer {
     this.panY += dy;
   }
 
+  public focusOnWorldRegion(
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+    rightInsetPx = 0,
+  ): void {
+    const base = this.getBaseTransform();
+    const padTop = this.getHudTopHeight() + 24;
+    const padBot = 46;
+    const padLeft = 36;
+    const padRight = Math.max(36, rightInsetPx + 24);
+    const visW = Math.max(120, this.cssW - padLeft - padRight);
+    const visH = Math.max(120, this.cssH - padTop - padBot);
+
+    const spanX = Math.max(140, (maxX - minX) * 2.6);
+    const spanY = Math.max(140, (maxY - minY) * 2.6);
+    const desiredScale = Math.min(visW / spanX, visH / spanY);
+    this.zoom = Math.max(1.2, Math.min(18.0, desiredScale / base.scale));
+
+    const newScale = base.scale * this.zoom;
+    const cx = (minX + maxX) * 0.5;
+    const cy = (minY + maxY) * 0.5;
+    const targetScreenX = padLeft + visW * 0.5;
+    const targetScreenY = padTop + visH * 0.5;
+
+    this.panX = targetScreenX - cx * newScale - base.offX;
+    this.panY = targetScreenY - cy * newScale - base.offY;
+  }
+
   public zoomAt(clientX: number, clientY: number, factor: number): void {
     const rect = this.canvas.getBoundingClientRect();
     const mx = clientX - rect.left;
