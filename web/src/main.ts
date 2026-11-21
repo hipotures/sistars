@@ -541,6 +541,7 @@ async function bootstrap(): Promise<void> {
       debugPerfEnabled = enabled;
       persisted.debugPerf = enabled;
       persistSettings();
+      postToWorker({ type: 'setProfiling', enabled });
       perfFrames = 0;
       perfUiSum = 0;
       perfDrawSum = 0;
@@ -556,6 +557,7 @@ async function bootstrap(): Promise<void> {
         latestPerf.drawMs,
         f.hud.planetCount,
         f.hud.fleetCount,
+        f.hud.stepProfile,
       );
     },
     onDebugHistoryToggle: (enabled) => {
@@ -971,6 +973,7 @@ async function bootstrap(): Promise<void> {
 
   ui.applyPersistedSettings(persisted);
   if (debugPerfEnabled) {
+    postToWorker({ type: 'setProfiling', enabled: true });
     ui.updatePerfHud(
       true,
       renderer.backendName,
@@ -981,6 +984,7 @@ async function bootstrap(): Promise<void> {
       0,
       lastHud.planetCount,
       lastHud.fleetCount,
+      lastHud.stepProfile,
     );
   }
   if (debugHistoryEnabled) {
@@ -1050,6 +1054,7 @@ async function bootstrap(): Promise<void> {
             latestPerf.drawMs,
             cur.hud.planetCount,
             cur.hud.fleetCount,
+            cur.hud.stepProfile,
           );
         }
         perfFrames = 0;

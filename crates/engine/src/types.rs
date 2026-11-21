@@ -212,6 +212,17 @@ pub struct PlanetView {
     pub defense: f32,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepProfile {
+    pub econ_ms: f64,
+    pub ai_ms: f64,
+    pub move_ms: f64,
+    pub ew_scan_ms: f64,
+    pub combat_ms: f64,
+    pub total_ms: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HudSnapshot {
@@ -232,6 +243,8 @@ pub struct HudSnapshot {
     pub invasions_count: u32,
     pub total_salvaged: u32,
     pub gate_jumps_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_profile: Option<StepProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -370,6 +370,11 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
       break;
     }
 
+    case 'setProfiling': {
+      engine.set_profiling(msg.enabled);
+      break;
+    }
+
     case 'getPlanetDetail': {
       const data = engine.get_planet_detail(msg.index) as PlanetView | null;
       post({ type: 'planetDetail', reqId: msg.reqId, data });

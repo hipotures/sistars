@@ -14,10 +14,10 @@ pub fn run_tournament(
 
     for g in 0..games {
         sim.init(80000u32.wrapping_add(g.wrapping_mul(7919)), true);
-        let mut st = Vec::new();
         for _ in 0..ticks_per_game {
-            st = sim.step_tick(true);
+            sim.step_tick(true);
         }
+        let st = &sim.tick_stats;
 
         let mut winner = 0usize;
         for e in 1..num_emp {
@@ -56,19 +56,19 @@ pub fn evaluate_empire_fitness(sim: &mut Simulation, emp_idx: usize, seeds: &[u3
     let mut score = 0.0f32;
     for &seed in seeds {
         sim.init(seed, true);
-        let mut st_mid = Vec::new();
-        let mut st_end = Vec::new();
         for _ in 0..600 {
-            st_mid = sim.step_tick(true);
+            sim.step_tick(true);
         }
+        let mid_res = sim.tick_stats[emp_idx].res;
         for _ in 0..600 {
-            st_end = sim.step_tick(true);
+            sim.step_tick(true);
         }
+        let st_end = &sim.tick_stats;
         let sum_end: f32 = st_end.iter().map(|s| s.res).sum::<f32>() + 1.0;
         let my_end = st_end[emp_idx].res;
         let max_end = st_end.iter().map(|s| s.res).fold(0.0f32, f32::max);
         let is_winner = if my_end >= max_end { 1.0 } else { 0.0 };
-        score += (my_end / sum_end) * 1000.0 + is_winner * 350.0 + (st_mid[emp_idx].res * 0.05);
+        score += (my_end / sum_end) * 1000.0 + is_winner * 350.0 + (mid_res * 0.05);
     }
     score / (seeds.len().max(1) as f32)
 }
