@@ -517,6 +517,22 @@ header.hud-top {
   cursor: grabbing;
 }
 
+#fleetPreviewBox.expanded {
+  position: fixed;
+  inset: 20px;
+  z-index: 65;
+  background: rgba(5, 8, 20, 0.98);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.92);
+  padding: 10px;
+}
+
+#fleetPreviewBox.expanded .fleet-preview-canvas {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
 .fleet-tech-section {
   display: flex;
   flex-direction: column;

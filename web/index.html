@@ -460,11 +460,14 @@
     </div>
 
     <div class="sys-detail-split">
-      <div class="sys-preview-box">
+      <div class="sys-preview-box" id="fleetPreviewBox">
         <canvas id="fleetPreviewCanvas" class="fleet-preview-canvas"></canvas>
         <div class="sys-preview-bar">
-          <span style="font-size:0.67rem; color:var(--muted); font-family:monospace;">Drag to orbit · Scroll to zoom</span>
-          <button class="hud-btn" id="btnResetFleetCam" style="padding:2px 7px;font-size:0.64rem;">↺ Reset Cam</button>
+          <span id="fleetPreviewHint" style="font-size:0.67rem; color:var(--muted); font-family:monospace;">Drag to orbit · Scroll to zoom · Dbl-click to expand</span>
+          <div style="display:flex; gap:5px; align-items:center;">
+            <button class="hud-btn" id="btnResetFleetCam" style="padding:2px 7px;font-size:0.64rem;">↺ Reset</button>
+            <button class="hud-btn" id="btnToggleFleetExpand" style="padding:2px 7px;font-size:0.64rem;" title="Expand / collapse 3D hangar view">⛶ Expand</button>
+          </div>
         </div>
       </div>
 

@@ -454,7 +454,7 @@ export class ShipPreviewRenderer {
       (e) => {
         e.preventDefault();
         const factor = e.deltaY > 0 ? 1.1 : 1 / 1.1;
-        this.camDist = Math.max(2.1, Math.min(7.5, this.camDist * factor));
+        this.camDist = Math.max(1.35, Math.min(8.5, this.camDist * factor));
       },
       { passive: false },
     );
