@@ -37,6 +37,7 @@ export type MainToWorkerMsg =
   | { type: 'setRaces'; races: RaceDef[]; seed: number }
   | { type: 'setSelectedFleet'; fleetId: number | null }
   | { type: 'setScrubIndex'; index: number | null }
+  | { type: 'setProfiling'; enabled: boolean }
   | {
       type: 'returnBuffers';
       planets: ArrayBuffer;

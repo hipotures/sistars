@@ -255,6 +255,15 @@ export interface SimEventView {
   color: string;
 }
 
+export interface StepProfile {
+  econMs: number;
+  aiMs: number;
+  moveMs: number;
+  ewScanMs: number;
+  combatMs: number;
+  totalMs: number;
+}
+
 export interface HudSnapshot {
   year: number;
   ticks: number;
@@ -273,6 +282,7 @@ export interface HudSnapshot {
   invasionsCount: number;
   totalSalvaged: number;
   gateJumpsCount: number;
+  stepProfile?: StepProfile;
 }
 
 export interface ReportsSnapshot {

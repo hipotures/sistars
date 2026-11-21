@@ -325,6 +325,7 @@ export class UiController {
     drawMs: number,
     planets: number,
     fleets: number,
+    stepProfile?: HudSnapshot['stepProfile'],
   ): void {
     const hud = getEl('perfHud');
     hud.classList.toggle('visible', enabled);
@@ -339,7 +340,11 @@ export class UiController {
     fpsEl.style.color = fps >= 50 ? 'var(--green)' : fps >= 28 ? 'var(--yellow)' : 'var(--red)';
 
     getEl('perfTps').textContent = String(Math.round(tps));
-    getEl('perfWasm').textContent = `${wasmMs.toFixed(2)}ms`;
+    const wasmEl = getEl('perfWasm');
+    wasmEl.textContent = `${wasmMs.toFixed(2)}ms`;
+    if (stepProfile) {
+      wasmEl.title = `Step phases (ms): econ ${stepProfile.econMs.toFixed(3)} | ai ${stepProfile.aiMs.toFixed(3)} | move ${stepProfile.moveMs.toFixed(3)} | ew ${stepProfile.ewScanMs.toFixed(3)} | combat ${stepProfile.combatMs.toFixed(3)} (total ${stepProfile.totalMs.toFixed(3)})`;
+    }
     getEl('perfUi').textContent = `${uiMs.toFixed(2)}ms`;
     getEl('perfDraw').textContent = `${drawMs.toFixed(2)}ms`;
     getEl('perfEnt').textContent = `${planets}p / ${fleets}f`;

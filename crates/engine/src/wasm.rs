@@ -44,6 +44,10 @@ impl WasmEngine {
         }
     }
 
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.sim.profile_enabled = enabled;
+    }
+
     pub fn get_metadata(&self) -> JsValue {
         let meta = EngineMetadata {
             world_w: WORLD_W,
