@@ -306,9 +306,19 @@ pub enum BodyType {
     Comet,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StarKind {
+    MainSequence,
+    BrownDwarf,
+    WhiteDwarf,
+    Pulsar,
+    BlackHole,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StarView {
+    pub star_kind: StarKind,
     pub spectral_class: String,
     pub temp_k: f32,
     pub mass_solar: f32,
@@ -381,6 +391,7 @@ pub struct StarSystemView {
     pub planet_id: usize,
     pub system_seed: u32,
     pub star: StarView,
+    pub companion_star: Option<StarView>,
     pub primary_index: usize,
     pub bodies: Vec<SystemBodyView>,
 }

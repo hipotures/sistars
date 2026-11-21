@@ -1,4 +1,4 @@
-import type { BodyType, MoonView, StarView, SystemBodyView } from './types';
+import type { BodyType, MoonView, StarKind, StarView, SystemBodyView } from './types';
 
 // Procedural GPU Planet & Star Renderer (WebGL2 ray-sphere + 3D Simplex fBm)
 // Zero static PNG assets: generates planets, rings, stars, and 2048x1024 equirectangular
@@ -271,6 +271,7 @@ out vec4 outColor;
 uniform vec2 uRes;
 uniform float uTime;
 uniform int uIsStar;
+uniform int uStarKind; // 0=MainSeq, 1=BrownDwarf, 2=WhiteDwarf, 3=Pulsar, 4=BlackHole
 uniform int uBodyType;
 uniform float uSeed;
 uniform float uTempK;
@@ -282,6 +283,8 @@ uniform float uCloudPct;
 uniform float uPopNorm;
 uniform vec3 uMineralTint;
 uniform vec3 uStarColor;
+uniform int uHasStar2;
+uniform vec3 uStar2Color;
 uniform int uHasRings;
 uniform float uRingInner;
 uniform float uRingOuter;
@@ -306,8 +309,131 @@ void main() {
 
   if (uIsStar == 1) {
     float r = length(p);
+
+    if (uStarKind == 4) {
+      // Black Hole: pitch-black event horizon, blazing photon ring & gravitationally lensed accretion disk
+      float rs = 0.34;
+      vec3 col = bg;
+
+      // Tilted horizontal accretion disk (swirling relativistic plasma)
+      vec2 dp = vec2(p.x * 0.72, p.y * 3.8 + p.x * 0.32);
+      float dr = length(dp);
+      float dang = atan(dp.y, dp.x);
+      float diskMask = smoothstep(0.28, 0.38, dr) * (1.0 - smoothstep(0.68, 1.05, dr));
+      float swirl = fbm(vec3(cos(dang - uTime * 0.85) * dr * 5.0, sin(dang - uTime * 0.85) * dr * 5.0, uSeed * 0.01)) * 0.5 + 0.5;
+      // Relativistic Doppler beaming (left side brighter)
+      float doppler = 0.72 + 0.45 * smoothstep(0.5, -0.5, p.x);
+      vec3 diskCol = mix(vec3(0.95, 0.36, 0.08), vec3(1.0, 0.88, 0.58), smoothstep(0.25, 0.85, swirl)) * doppler;
+
+      // Gravitationally lensed upper & lower Einstein arches over the shadow
+      float lensR = abs(r - (rs * 1.18 + 0.06 * abs(p.y)));
+      float lensArch = exp(-lensR * 22.0) * smoothstep(0.08, 0.38, abs(p.y)) * (0.55 + 0.45 * swirl);
+      col += diskCol * lensArch * 0.88;
+
+      // Background disk half (behind shadow)
+      if (p.y > -0.02) {
+        col += diskCol * diskMask * (0.45 + 0.65 * swirl);
+      }
+
+      // Razor-sharp photon ring around event horizon
+      float photonRing = exp(-abs(r - rs * 1.04) * 58.0) * 1.65;
+      float outerHalo = exp(-max(0.0, r - rs) * 7.5) * 0.42;
+      col += vec3(1.0, 0.86, 0.56) * photonRing + vec3(1.0, 0.54, 0.18) * outerHalo;
+
+      // Pure black event horizon core
+      float horizon = smoothstep(rs + 0.014, rs - 0.012, r);
+      col = mix(col, vec3(0.0), horizon);
+
+      // Foreground disk half crossing in front of the black hole shadow
+      if (p.y <= 0.06) {
+        float frontFade = smoothstep(0.06, -0.03, p.y);
+        col += diskCol * diskMask * (0.65 + 0.75 * swirl) * frontFade;
+      }
+
+      outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      return;
+    }
+
+    if (uStarKind == 3) {
+      // Pulsar / Neutron Star: compact blazing core + dual sweeping relativistic jet cones
+      float rad = 0.22;
+      vec3 col = bg;
+      float spin = uTime * 3.8;
+      float sweep = sin(spin) * 0.28;
+      vec2 jetAxis = normalize(vec2(0.46 + sweep, 0.88));
+      vec2 jetPerp = vec2(-jetAxis.y, jetAxis.x);
+      float along = dot(p, jetAxis);
+      float across = abs(dot(p, jetPerp));
+      float distA = abs(along);
+      float coneW = 0.035 + distA * 0.22;
+      float beamNoise = 0.78 + 0.22 * snoise(vec3(along * 8.0 - sign(along) * uTime * 6.0, across * 16.0, uSeed * 0.01));
+      float jet = exp(-(across * across) / (coneW * coneW)) * exp(-distA * 1.35) * smoothstep(0.10, 0.24, distA);
+      float pulse = 0.75 + 0.25 * cos(spin);
+      col += vec3(0.42, 0.84, 1.0) * jet * beamNoise * pulse * 1.35;
+
+      // Subtle dipole magnetic field rings
+      float magR = length(vec2(abs(dot(p, jetPerp)) - 0.34, along * 0.85));
+      float magArc = exp(-abs(magR - 0.26) * 28.0) * 0.22 * smoothstep(0.16, 0.35, r);
+      col += vec3(0.55, 0.78, 1.0) * magArc;
+
+      // Intense corona + neutron core
+      col += vec3(0.52, 0.86, 1.0) * exp(-max(0.0, r - rad) * 7.0) * 0.95;
+      if (r <= rad) {
+        vec2 sp = p / rad;
+        float z = sqrt(max(0.0, 1.0 - dot(sp, sp)));
+        vec3 core = mix(vec3(0.58, 0.88, 1.0), vec3(1.0, 1.0, 1.0), pow(z, 0.55));
+        col = core * (0.7 + 0.5 * z);
+      }
+      outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      return;
+    }
+
+    if (uStarKind == 2) {
+      // White Dwarf: compact dazzling blue-white sphere + sharp corona + subtle diffraction spikes
+      float rad = 0.38;
+      float corona = exp(-max(0.0, r - rad) * 7.8) * 1.05;
+      float spikeX = exp(-abs(p.y) * 34.0) * exp(-abs(p.x) * 2.8) * 0.55;
+      float spikeY = exp(-abs(p.x) * 34.0) * exp(-abs(p.y) * 2.8) * 0.55;
+      vec3 col = bg + uStarColor * (corona + spikeX + spikeY);
+      if (r <= rad) {
+        vec2 sp = p / rad;
+        float z = sqrt(max(0.0, 1.0 - dot(sp, sp)));
+        vec3 n = vec3(sp.x, sp.y, z);
+        float gran = fbm(n * 8.0 + seedOff + vec3(0.0, 0.0, uTime * 0.18)) * 0.5 + 0.5;
+        vec3 surf = mix(vec3(0.76, 0.88, 1.0), vec3(1.0, 1.0, 1.0), smoothstep(0.15, 0.85, gran * 0.4 + z * 0.7));
+        col = surf * (0.65 + 0.55 * pow(z, 0.35));
+      }
+      outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      return;
+    }
+
+    if (uStarKind == 1) {
+      // Brown Dwarf (L/T/Y): stormy dark cloud bands with crimson-magenta thermal glow in fissures
+      float rad = 0.64;
+      float dimGlow = exp(-max(0.0, r - rad) * 6.5) * 0.45;
+      vec3 col = bg + vec3(0.88, 0.22, 0.34) * dimGlow;
+      if (r <= rad) {
+        vec2 sp = p / rad;
+        float z = sqrt(max(0.0, 1.0 - dot(sp, sp)));
+        vec3 n = vec3(sp.x, sp.y, z);
+        float ang = uTime * 0.18;
+        vec3 rn = vec3(n.x * cos(ang) - n.z * sin(ang), n.y, n.x * sin(ang) + n.z * cos(ang));
+        float warp = fbm(rn * 2.8 + seedOff) * 0.45;
+        float bands = sin(rn.y * 14.0 + warp * 5.0) * 0.5 + 0.5;
+        float cracks = fbm(vec3(rn.x * 4.5, rn.y * 11.0 + warp * 3.0, rn.z * 4.5) + seedOff) * 0.5 + 0.5;
+        vec3 darkCloud = mix(vec3(0.16, 0.06, 0.10), vec3(0.36, 0.14, 0.20), bands);
+        float heat = smoothstep(0.56, 0.88, cracks);
+        vec3 magmaGlow = mix(vec3(0.88, 0.18, 0.32), vec3(1.0, 0.58, 0.28), smoothstep(0.72, 0.96, cracks));
+        float limb = pow(max(0.0, z), 0.55);
+        col = mix(darkCloud * (0.45 + 0.7 * limb), magmaGlow, heat * 0.85);
+        col += vec3(0.72, 0.18, 0.32) * pow(1.0 - z, 3.0) * 0.35;
+      }
+      outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      return;
+    }
+
+    // Main Sequence Star (O/B/A/F/G/K/M)
     float rad = 0.64;
-    // Corona glow outside star disc
     float corona = exp(-max(0.0, r - rad) * 5.2) * 0.85;
     float rays = 0.88 + 0.12 * snoise(vec3(normalize(p + 1e-4) * 4.5, uTime * 0.35));
     vec3 col = bg + uStarColor * corona * rays;
@@ -559,7 +685,11 @@ void main() {
 
     float ndl = dot(nWorld, lightDir);
     float diff = smoothstep(-0.12, 0.88, ndl);
-    float nightMask = smoothstep(0.08, -0.22, ndl);
+    vec3 lightDir2 = normalize(vec3(0.76, -0.24, 0.44));
+    float ndl2 = dot(nWorld, lightDir2);
+    float diff2 = uHasStar2 == 1 ? smoothstep(-0.12, 0.88, ndl2) * 0.46 : 0.0;
+    float totalIllum = clamp(diff + diff2, 0.0, 1.0);
+    float nightMask = smoothstep(0.14, -0.18, ndl) * (1.0 - smoothstep(0.15, 0.65, diff2));
 
     // Ring shadow cast onto planet
     float ringShadow = 1.0;
@@ -578,12 +708,16 @@ void main() {
 
     vec3 halfV = normalize(lightDir - rd);
     float spec = pow(max(0.0, dot(nWorld, halfV)), 28.0) * s.spec * max(0.0, ndl);
+    vec3 halfV2 = normalize(lightDir2 - rd);
+    float spec2 = uHasStar2 == 1 ? pow(max(0.0, dot(nWorld, halfV2)), 24.0) * s.spec * max(0.0, ndl2) * 0.45 : 0.0;
 
-    vec3 lit = s.albedo * uStarColor * (0.045 + diff * 0.98 * ringShadow) + uStarColor * spec * ringShadow;
+    vec3 lightTint = uStarColor * (0.045 + diff * 0.96 * ringShadow)
+                   + (uHasStar2 == 1 ? uStar2Color * diff2 : vec3(0.0));
+    vec3 lit = s.albedo * lightTint + uStarColor * spec * ringShadow + uStar2Color * spec2;
 
     // Cloud layer + subtle shadow
     if (s.cloudMask > 0.01) {
-      vec3 cloudCol = mix(vec3(0.92, 0.95, 1.0), uAtmoColor, 0.18) * uStarColor * (0.06 + diff * 0.96 * ringShadow);
+      vec3 cloudCol = mix(vec3(0.92, 0.95, 1.0), uAtmoColor, 0.18) * lightTint;
       lit = mix(lit, cloudCol, s.cloudMask * 0.82);
     }
 
@@ -594,9 +728,11 @@ void main() {
       lit += s.emissiveCol * s.emissive * nightMask * (1.0 - s.cloudMask * 0.6);
     }
 
-    // Fresnel atmospheric rim lighting
+    // Fresnel atmospheric rim lighting (dual-tinted in binary systems)
     float fresnel = pow(1.0 - max(0.0, dot(nWorld, -rd)), 3.2);
-    lit += uAtmoColor * uStarColor * fresnel * uAtmoDensity * (0.28 + 0.72 * max(0.0, ndl + 0.25));
+    vec3 rimLight = uStarColor * (0.24 + 0.76 * max(0.0, ndl + 0.25))
+                  + (uHasStar2 == 1 ? uStar2Color * (0.14 + 0.48 * max(0.0, ndl2 + 0.2)) : vec3(0.0));
+    lit += uAtmoColor * rimLight * fresnel * uAtmoDensity * (0.45 + 0.55 * totalIllum);
 
     // Smooth anti-aliased sphere limb
     float limbAA = smoothstep(0.0, 0.045, sqrt(max(0.0, disc)) / planetRad);
@@ -744,10 +880,25 @@ function compileProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string
   return prog;
 }
 
+function starKindToInt(k: StarKind): number {
+  switch (k) {
+    case 'MainSequence':
+      return 0;
+    case 'BrownDwarf':
+      return 1;
+    case 'WhiteDwarf':
+      return 2;
+    case 'Pulsar':
+      return 3;
+    case 'BlackHole':
+      return 4;
+  }
+}
+
 export type ProceduralTarget =
   | { kind: 'star'; star: StarView }
-  | { kind: 'body'; body: SystemBodyView; star: StarView }
-  | { kind: 'moon'; moon: MoonView; star: StarView };
+  | { kind: 'body'; body: SystemBodyView; star: StarView; companionStar?: StarView | null }
+  | { kind: 'moon'; moon: MoonView; star: StarView; companionStar?: StarView | null };
 
 function moonBaseRgb(m: MoonView): [number, number, number] {
   if (m.bodyType === 'Volcanic') return [0.85, 0.44, 0.24];
@@ -851,11 +1002,14 @@ export class ProceduralBodyRenderer {
     if (this.target.kind === 'star') {
       const st = this.target.star;
       gl.uniform1i(loc('uIsStar'), 1);
+      gl.uniform1i(loc('uStarKind'), starKindToInt(st.starKind));
       gl.uniform1f(loc('uSeed'), st.seed % 100000);
       gl.uniform3f(loc('uStarColor'), st.colorRgb[0], st.colorRgb[1], st.colorRgb[2]);
+      gl.uniform1i(loc('uHasStar2'), 0);
     } else if (this.target.kind === 'moon') {
       const m = this.target.moon;
       const st = this.target.star;
+      const st2 = this.target.companionStar;
       gl.uniform1i(loc('uIsStar'), 0);
       gl.uniform1i(loc('uBodyType'), bodyTypeToInt(m.bodyType));
       gl.uniform1f(loc('uSeed'), m.seed % 100000);
@@ -868,11 +1022,16 @@ export class ProceduralBodyRenderer {
       gl.uniform1f(loc('uPopNorm'), 0);
       gl.uniform3f(loc('uMineralTint'), 0, 0, 0);
       gl.uniform3f(loc('uStarColor'), st.colorRgb[0], st.colorRgb[1], st.colorRgb[2]);
+      gl.uniform1i(loc('uHasStar2'), st2 ? 1 : 0);
+      if (st2) {
+        gl.uniform3f(loc('uStar2Color'), st2.colorRgb[0], st2.colorRgb[1], st2.colorRgb[2]);
+      }
       gl.uniform1i(loc('uHasRings'), 0);
       gl.uniform1i(loc('uMoonCount'), 0);
     } else {
       const b = this.target.body;
       const st = this.target.star;
+      const st2 = this.target.companionStar;
       const ls = b.liveState;
       gl.uniform1i(loc('uIsStar'), 0);
       gl.uniform1i(loc('uBodyType'), bodyTypeToInt(b.bodyType));
@@ -891,6 +1050,10 @@ export class ProceduralBodyRenderer {
         ls ? ls.mineralTint[2] : 0,
       );
       gl.uniform3f(loc('uStarColor'), st.colorRgb[0], st.colorRgb[1], st.colorRgb[2]);
+      gl.uniform1i(loc('uHasStar2'), st2 ? 1 : 0);
+      if (st2) {
+        gl.uniform3f(loc('uStar2Color'), st2.colorRgb[0], st2.colorRgb[1], st2.colorRgb[2]);
+      }
       gl.uniform1i(loc('uHasRings'), b.hasRings ? 1 : 0);
       gl.uniform1f(loc('uRingInner'), b.ringInner);
       gl.uniform1f(loc('uRingOuter'), b.ringOuter);

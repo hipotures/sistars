@@ -352,7 +352,10 @@ export type BodyType =
   | 'KuiperBelt'
   | 'Comet';
 
+export type StarKind = 'MainSequence' | 'BrownDwarf' | 'WhiteDwarf' | 'Pulsar' | 'BlackHole';
+
 export interface StarView {
+  starKind: StarKind;
   spectralClass: string;
   tempK: number;
   massSolar: number;
@@ -417,6 +420,7 @@ export interface StarSystemView {
   planetId: number;
   systemSeed: number;
   star: StarView;
+  companionStar: StarView | null;
   primaryIndex: number;
   bodies: SystemBodyView[];
 }

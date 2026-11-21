@@ -165,7 +165,7 @@ export class UiController {
   private readonly inspGlobeRenderer: ProceduralBodyRenderer;
   private readonly sysPreviewRenderer: ProceduralBodyRenderer;
   private activeModalSystem: StarSystemView | null = null;
-  private activeModalSelection: 'star' | { bodyIdx: number; moonIdx: number | null } = {
+  private activeModalSelection: 'star' | 'star2' | { bodyIdx: number; moonIdx: number | null } = {
     bodyIdx: 0,
     moonIdx: null,
   };
@@ -594,7 +594,7 @@ export class UiController {
     });
     getEl('btnExportPlanetPng').addEventListener('click', () => {
       const sys = this.activeModalSystem;
-      if (!sys || this.activeModalSelection === 'star') return;
+      if (!sys || this.activeModalSelection === 'star' || this.activeModalSelection === 'star2') return;
       const body = sys.bodies[this.activeModalSelection.bodyIdx];
       if (!body) return;
       if (this.activeModalSelection.moonIdx !== null) {
@@ -605,7 +605,7 @@ export class UiController {
       }
     });
     getEl('btnBackToParentPlanet').addEventListener('click', () => {
-      if (this.activeModalSelection !== 'star') {
+      if (this.activeModalSelection !== 'star' && this.activeModalSelection !== 'star2') {
         this.selectModalItem({ bodyIdx: this.activeModalSelection.bodyIdx, moonIdx: null });
       }
     });
@@ -922,21 +922,33 @@ export class UiController {
     this.activeModalSystem = sys;
     this.activeModalSelection = { bodyIdx: sys.primaryIndex, moonIdx: null };
     getEl('systemModal').style.display = 'flex';
-    getEl('sysModalTitle').textContent = `🌌 System #${sys.planetId} (${sys.bodies.length} bodies)`;
+    const binaryTag = sys.companionStar ? ' • Binary' : '';
+    getEl('sysModalTitle').textContent = `🌌 System #${sys.planetId} (${sys.bodies.length} bodies${binaryTag})`;
+    const star2Meta = sys.companionStar ? ` + ${sys.companionStar.spectralClass}` : '';
     getEl('sysStarMeta').innerHTML =
-      `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub> • ${sys.star.luminositySolar.toFixed(2)} L<sub class="astro-sub">☉</sub>`;
+      `${sys.star.spectralClass}${star2Meta} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub> • ${sys.star.luminositySolar.toFixed(2)} L<sub class="astro-sub">☉</sub>`;
 
     const strip = getEl('sysOrbitStrip');
     strip.innerHTML = '';
 
-    // 1. Star card
+    // 1. Primary Star card
+    const starLabel =
+      sys.star.starKind === 'BlackHole'
+        ? 'Black Hole'
+        : sys.star.starKind === 'Pulsar'
+          ? 'Pulsar'
+          : sys.star.starKind === 'WhiteDwarf'
+            ? `${sys.star.spectralClass} WD`
+            : sys.star.starKind === 'BrownDwarf'
+              ? `${sys.star.spectralClass} BD`
+              : `${sys.star.spectralClass} Star`;
     const starCard = document.createElement('div');
     starCard.className = 'sys-body-card';
     starCard.dataset.sysItem = 'star';
     starCard.innerHTML = `
       <canvas class="sys-body-thumb" width="96" height="96"></canvas>
-      <div class="sys-body-name">${sys.star.spectralClass} Star</div>
-      <div class="sys-body-sub">${Math.round(sys.star.tempK)} K</div>
+      <div class="sys-body-name">${starLabel}</div>
+      <div class="sys-body-sub">${sys.star.starKind === 'BlackHole' ? `${sys.star.massSolar.toFixed(1)} M☉` : `${Math.round(sys.star.tempK)} K`}</div>
     `;
     const starCanvas = starCard.querySelector<HTMLCanvasElement>('canvas');
     if (starCanvas) {
@@ -944,6 +956,25 @@ export class UiController {
     }
     starCard.addEventListener('click', () => this.selectModalItem('star'));
     strip.appendChild(starCard);
+
+    // 1b. Optional Binary Companion Star card
+    if (sys.companionStar) {
+      const st2 = sys.companionStar;
+      const st2Card = document.createElement('div');
+      st2Card.className = 'sys-body-card';
+      st2Card.dataset.sysItem = 'star2';
+      st2Card.innerHTML = `
+        <canvas class="sys-body-thumb" width="96" height="96"></canvas>
+        <div class="sys-body-name">${st2.spectralClass} B</div>
+        <div class="sys-body-sub">${Math.round(st2.tempK)} K</div>
+      `;
+      const st2Canvas = st2Card.querySelector<HTMLCanvasElement>('canvas');
+      if (st2Canvas) {
+        renderProceduralThumbnailTo2d(st2Canvas, { kind: 'star', star: st2 });
+      }
+      st2Card.addEventListener('click', () => this.selectModalItem('star2'));
+      strip.appendChild(st2Card);
+    }
 
     // 2. Orbiting planets in ascending AU order
     sys.bodies.forEach((body, idx) => {
@@ -964,7 +995,12 @@ export class UiController {
       `;
       const c = card.querySelector<HTMLCanvasElement>('canvas');
       if (c) {
-        renderProceduralThumbnailTo2d(c, { kind: 'body', body, star: sys.star });
+        renderProceduralThumbnailTo2d(c, {
+          kind: 'body',
+          body,
+          star: sys.star,
+          companionStar: sys.companionStar,
+        });
       }
       card.addEventListener('click', () => this.selectModalItem({ bodyIdx: idx, moonIdx: null }));
       strip.appendChild(card);
@@ -979,12 +1015,13 @@ export class UiController {
     this.activeModalSystem = null;
   }
 
-  private selectModalItem(which: 'star' | { bodyIdx: number; moonIdx: number | null }): void {
+  private selectModalItem(which: 'star' | 'star2' | { bodyIdx: number; moonIdx: number | null }): void {
     const sys = this.activeModalSystem;
     if (!sys) return;
     this.activeModalSelection = which;
 
-    const selectedOrbitKey = which === 'star' ? 'star' : String(which.bodyIdx);
+    const selectedOrbitKey =
+      which === 'star' || which === 'star2' ? which : String(which.bodyIdx);
     getEl('sysOrbitStrip')
       .querySelectorAll<HTMLElement>('.sys-body-card')
       .forEach((el) => {
@@ -996,18 +1033,30 @@ export class UiController {
     const moonsWrap = getEl('sysMoonsWrap');
     const backBtn = getEl('btnBackToParentPlanet');
 
-    if (which === 'star') {
-      getEl('sysSelectedLabel').textContent = `Host Star • ${sys.star.spectralClass}`;
+    if (which === 'star' || which === 'star2') {
+      const st = which === 'star2' && sys.companionStar ? sys.companionStar : sys.star;
+      const kindLabel =
+        st.starKind === 'BlackHole'
+          ? 'Stellar Black Hole'
+          : st.starKind === 'Pulsar'
+            ? 'Pulsar / Neutron Star'
+            : st.starKind === 'WhiteDwarf'
+              ? 'White Dwarf'
+              : st.starKind === 'BrownDwarf'
+                ? 'Brown Dwarf'
+                : 'Main Sequence Star';
+      getEl('sysSelectedLabel').textContent =
+        `${which === 'star2' ? 'Companion Star B' : 'Primary Host'} • ${st.spectralClass}`;
       exportBtn.style.display = 'none';
       moonsWrap.style.display = 'none';
-      this.sysPreviewRenderer.setTarget({ kind: 'star', star: sys.star }, true);
+      this.sysPreviewRenderer.setTarget({ kind: 'star', star: st }, true);
       statsEl.innerHTML = `
-        <div class="insp-stat"><span>Spectral Class</span><b>${sys.star.spectralClass}</b></div>
-        <div class="insp-stat"><span>Surface Temp</span><b>${Math.round(sys.star.tempK)} K</b></div>
-        <div class="insp-stat"><span>Mass</span><b>${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub></b></div>
-        <div class="insp-stat"><span>Radius</span><b>${sys.star.radiusSolar.toFixed(2)} R<sub class="astro-sub">☉</sub></b></div>
-        <div class="insp-stat"><span>Luminosity</span><b>${sys.star.luminositySolar.toFixed(3)} L<sub class="astro-sub">☉</sub></b></div>
-        <div class="insp-stat"><span>System Bodies</span><b>${sys.bodies.length} planets</b></div>
+        <div class="insp-stat"><span>Object Type</span><b>${kindLabel}</b></div>
+        <div class="insp-stat"><span>Spectral Class</span><b>${st.spectralClass}</b></div>
+        <div class="insp-stat"><span>${st.starKind === 'BlackHole' ? 'Disk Temp' : 'Surface Temp'}</span><b>${Math.round(st.tempK)} K</b></div>
+        <div class="insp-stat"><span>Mass</span><b>${st.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub></b></div>
+        <div class="insp-stat"><span>Radius</span><b>${st.radiusSolar < 0.01 ? `${(st.radiusSolar * 696340).toFixed(0)} km` : `${st.radiusSolar.toFixed(2)} R<sub class="astro-sub">☉</sub>`}</b></div>
+        <div class="insp-stat"><span>Luminosity</span><b>${st.luminositySolar.toFixed(3)} L<sub class="astro-sub">☉</sub></b></div>
       `;
       return;
     }
@@ -1039,7 +1088,12 @@ export class UiController {
         `;
         const mc = card.querySelector<HTMLCanvasElement>('canvas');
         if (mc) {
-          renderProceduralThumbnailTo2d(mc, { kind: 'moon', moon, star: sys.star });
+          renderProceduralThumbnailTo2d(mc, {
+            kind: 'moon',
+            moon,
+            star: sys.star,
+            companionStar: sys.companionStar,
+          });
         }
         card.addEventListener('click', () =>
           this.selectModalItem({ bodyIdx: which.bodyIdx, moonIdx: mIdx }),
@@ -1054,7 +1108,10 @@ export class UiController {
       const moon = moons[which.moonIdx];
       if (!moon) return;
       getEl('sysSelectedLabel').textContent = `${moon.name} (Moon)`;
-      this.sysPreviewRenderer.setTarget({ kind: 'moon', moon, star: sys.star }, true);
+      this.sysPreviewRenderer.setTarget(
+        { kind: 'moon', moon, star: sys.star, companionStar: sys.companionStar },
+        true,
+      );
       statsEl.innerHTML = `
         <div class="insp-stat"><span>Classification</span><b>${moon.bodyType} Moon</b></div>
         <div class="insp-stat"><span>Parent Orbit</span><b>${moon.orbitRadiusPlanet.toFixed(2)} R<sub class="astro-sub">p</sub></b></div>
@@ -1069,7 +1126,10 @@ export class UiController {
     const isPrimary = which.bodyIdx === sys.primaryIndex;
     const ls = body.liveState;
     getEl('sysSelectedLabel').textContent = `${body.name}${isPrimary ? ' (Primary World)' : ''}`;
-    this.sysPreviewRenderer.setTarget({ kind: 'body', body, star: sys.star }, true);
+    this.sysPreviewRenderer.setTarget(
+      { kind: 'body', body, star: sys.star, companionStar: sys.companionStar },
+      true,
+    );
 
     if (body.bodyType === 'AsteroidBelt' || body.bodyType === 'KuiperBelt') {
       const isKuiper = body.bodyType === 'KuiperBelt';
@@ -1151,7 +1211,11 @@ export class UiController {
       if (sys) {
         const primary = sys.bodies[sys.primaryIndex];
         getEl('inspGlobeWrap').style.display = 'block';
-        getEl('inspStarBadge').textContent = `${sys.star.spectralClass} • ${Math.round(sys.star.tempK)}K`;
+        const compTag = sys.companionStar ? ` + ${sys.companionStar.spectralClass}` : '';
+        getEl('inspStarBadge').textContent =
+          sys.star.starKind === 'BlackHole'
+            ? `BH • ${sys.star.massSolar.toFixed(1)} M☉`
+            : `${sys.star.spectralClass}${compTag} • ${Math.round(sys.star.tempK)}K`;
         getEl('inspBodyTypeBadge').textContent = primary ? `${primary.bodyType} • ${Math.round(primary.tempK)}K` : '';
         const ls = primary?.liveState;
         const badges: string[] = [];
@@ -1160,7 +1224,10 @@ export class UiController {
         if (ls?.hasStarbase) badges.push('<span class="insp-badge" title="Orbital Starbase">🛡</span>');
         getEl('inspOrbitBadges').innerHTML = badges.join('');
         if (primary) {
-          this.inspGlobeRenderer.setTarget({ kind: 'body', body: primary, star: sys.star }, true);
+          this.inspGlobeRenderer.setTarget(
+            { kind: 'body', body: primary, star: sys.star, companionStar: sys.companionStar },
+            true,
+          );
         }
       } else {
         getEl('inspGlobeWrap').style.display = 'none';
