@@ -347,22 +347,425 @@ impl Default for Doctrine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedTechLevels {
+    pub ene: f32,
+    pub wep: f32,
+    pub pro: f32,
+    pub con: f32,
+    pub ele: f32,
+    pub bio: f32,
+}
+
+impl NamedTechLevels {
+    pub fn from_array(a: [f32; NUM_TECH_FIELDS]) -> Self {
+        Self {
+            ene: a[0],
+            wep: a[1],
+            pro: a[2],
+            con: a[3],
+            ele: a[4],
+            bio: a[5],
+        }
+    }
+
+    pub fn to_array(self) -> [f32; NUM_TECH_FIELDS] {
+        [self.ene, self.wep, self.pro, self.con, self.ele, self.bio]
+    }
+
+    pub fn round1(self) -> Self {
+        Self {
+            ene: round1(self.ene),
+            wep: round1(self.wep),
+            pro: round1(self.pro),
+            con: round1(self.con),
+            ele: round1(self.ele),
+            bio: round1(self.bio),
+        }
+    }
+
+    pub fn round2(self) -> Self {
+        Self {
+            ene: round2(self.ene),
+            wep: round2(self.wep),
+            pro: round2(self.pro),
+            con: round2(self.con),
+            ele: round2(self.ele),
+            bio: round2(self.bio),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedTechLevelsPatch {
+    #[serde(default)]
+    pub ene: Option<f32>,
+    #[serde(default)]
+    pub wep: Option<f32>,
+    #[serde(default)]
+    pub pro: Option<f32>,
+    #[serde(default)]
+    pub con: Option<f32>,
+    #[serde(default)]
+    pub ele: Option<f32>,
+    #[serde(default)]
+    pub bio: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedMinerals {
+    pub iron: f32,
+    pub bora: f32,
+    pub germ: f32,
+}
+
+impl NamedMinerals {
+    pub fn from_array(a: [f32; 3]) -> Self {
+        Self {
+            iron: a[0],
+            bora: a[1],
+            germ: a[2],
+        }
+    }
+
+    pub fn round1(self) -> Self {
+        Self {
+            iron: round1(self.iron),
+            bora: round1(self.bora),
+            germ: round1(self.germ),
+        }
+    }
+
+    pub fn round2(self) -> Self {
+        Self {
+            iron: round2(self.iron),
+            bora: round2(self.bora),
+            germ: round2(self.germ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedMineralsPatch {
+    #[serde(default)]
+    pub iron: Option<f32>,
+    #[serde(default)]
+    pub bora: Option<f32>,
+    #[serde(default)]
+    pub germ: Option<f32>,
+}
+
+#[inline]
+pub fn round1(v: f32) -> f32 {
+    if !v.is_finite() {
+        return 0.0;
+    }
+    let r = (v * 10.0).round() / 10.0;
+    if r == -0.0 { 0.0 } else { r }
+}
+
+#[inline]
+pub fn round2(v: f32) -> f32 {
+    if !v.is_finite() {
+        return 0.0;
+    }
+    let r = (v * 100.0).round() / 100.0;
+    if r == -0.0 { 0.0 } else { r }
+}
+
+/// Clean LLM-facing view of an empire's active strategic policy (zero evolutionary tournament noise).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPolicyView {
+    pub fac_share: f32,
+    pub ship_share: f32,
+    pub tech_share: f32,
+    pub mine_share: f32,
+    pub col_pop_req: f32,
+    pub min_shipyard_pop_ratio: f32,
+    pub dist_exp: f32,
+    pub qual_exp: f32,
+    pub cruiser_share: f32,
+    pub bship_share: f32,
+    pub bomber_share: f32,
+    pub intercept_bias: f32,
+    pub tech_alloc: NamedTechLevels,
+    pub surplus_def_share: f32,
+    pub surplus_ship_share: f32,
+    pub surplus_alch_share: f32,
+    pub max_upkeep_ratio: f32,
+    pub freight_export_threshold: f32,
+    pub freight_import_threshold: f32,
+    pub colonize_vs_attack_bias: f32,
+    pub min_colonize_hab: f32,
+    pub mineral_weights: NamedMinerals,
+    pub min_force_ratio: f32,
+    pub min_garrison_count: u16,
+}
+
+impl From<&Doctrine> for AgentPolicyView {
+    fn from(d: &Doctrine) -> Self {
+        Self {
+            fac_share: round2(d.fac_share),
+            ship_share: round2(d.ship_share),
+            tech_share: round2(d.tech_share),
+            mine_share: round2(d.mine_share),
+            col_pop_req: round2(d.col_pop_req),
+            min_shipyard_pop_ratio: round2(d.min_shipyard_pop_ratio),
+            dist_exp: round2(d.dist_exp),
+            qual_exp: round2(d.qual_exp),
+            cruiser_share: round2(d.cruiser_share),
+            bship_share: round2(d.bship_share),
+            bomber_share: round2(d.bomber_share),
+            intercept_bias: round2(d.intercept_bias),
+            tech_alloc: NamedTechLevels::from_array(d.tech_alloc).round2(),
+            surplus_def_share: round2(d.surplus_def_share),
+            surplus_ship_share: round2(d.surplus_ship_share),
+            surplus_alch_share: round2(d.surplus_alch_share),
+            max_upkeep_ratio: round2(d.max_upkeep_ratio),
+            freight_export_threshold: round1(d.freight_export_threshold),
+            freight_import_threshold: round1(d.freight_import_threshold),
+            colonize_vs_attack_bias: round2(d.colonize_vs_attack_bias),
+            min_colonize_hab: round2(d.min_colonize_hab),
+            mineral_weights: NamedMinerals::from_array(d.mineral_weights).round2(),
+            min_force_ratio: round2(d.min_force_ratio),
+            min_garrison_count: d.min_garrison_count,
+        }
+    }
+}
+
+/// Partial policy patch accepted by `StrategicCommand::SetPolicy`.
+/// Omitted fields are preserved untouched on the empire's live `Doctrine`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPolicyPatch {
+    #[serde(default)]
+    pub fac_share: Option<f32>,
+    #[serde(default)]
+    pub ship_share: Option<f32>,
+    #[serde(default)]
+    pub tech_share: Option<f32>,
+    #[serde(default)]
+    pub mine_share: Option<f32>,
+    #[serde(default)]
+    pub col_pop_req: Option<f32>,
+    #[serde(default)]
+    pub min_shipyard_pop_ratio: Option<f32>,
+    #[serde(default)]
+    pub dist_exp: Option<f32>,
+    #[serde(default)]
+    pub qual_exp: Option<f32>,
+    #[serde(default)]
+    pub cruiser_share: Option<f32>,
+    #[serde(default)]
+    pub bship_share: Option<f32>,
+    #[serde(default)]
+    pub bomber_share: Option<f32>,
+    #[serde(default)]
+    pub intercept_bias: Option<f32>,
+    #[serde(default)]
+    pub tech_alloc: Option<NamedTechLevelsPatch>,
+    #[serde(default)]
+    pub surplus_def_share: Option<f32>,
+    #[serde(default)]
+    pub surplus_ship_share: Option<f32>,
+    #[serde(default)]
+    pub surplus_alch_share: Option<f32>,
+    #[serde(default)]
+    pub max_upkeep_ratio: Option<f32>,
+    #[serde(default)]
+    pub freight_export_threshold: Option<f32>,
+    #[serde(default)]
+    pub freight_import_threshold: Option<f32>,
+    #[serde(default)]
+    pub colonize_vs_attack_bias: Option<f32>,
+    #[serde(default)]
+    pub min_colonize_hab: Option<f32>,
+    #[serde(default)]
+    pub mineral_weights: Option<NamedMineralsPatch>,
+    #[serde(default)]
+    pub min_force_ratio: Option<f32>,
+    #[serde(default)]
+    pub min_garrison_count: Option<u16>,
+}
+
+impl Doctrine {
+    /// Applies a partial `AgentPolicyPatch` onto this doctrine without overwriting omitted fields.
+    pub fn apply_patch(&mut self, patch: &AgentPolicyPatch) {
+        let mut budget_touched = false;
+        if let Some(v) = patch.fac_share {
+            self.fac_share = v.clamp(0.0, 1.0);
+            budget_touched = true;
+        }
+        if let Some(v) = patch.ship_share {
+            self.ship_share = v.clamp(0.0, 1.0);
+            budget_touched = true;
+        }
+        if let Some(v) = patch.tech_share {
+            self.tech_share = v.clamp(0.0, 1.0);
+            budget_touched = true;
+        }
+        if let Some(v) = patch.mine_share {
+            self.mine_share = v.clamp(0.0, 1.0);
+            budget_touched = true;
+        }
+        if budget_touched {
+            let sum = self.fac_share + self.ship_share + self.tech_share + self.mine_share;
+            if sum > 1e-4 {
+                self.fac_share /= sum;
+                self.ship_share /= sum;
+                self.tech_share /= sum;
+                self.mine_share /= sum;
+            }
+        }
+        if let Some(v) = patch.col_pop_req {
+            self.col_pop_req = v.clamp(0.05, 0.95);
+        }
+        if let Some(v) = patch.min_shipyard_pop_ratio {
+            self.min_shipyard_pop_ratio = v.clamp(0.05, 0.95);
+        }
+        if let Some(v) = patch.dist_exp {
+            self.dist_exp = v.clamp(0.2, 4.0);
+        }
+        if let Some(v) = patch.qual_exp {
+            self.qual_exp = v.clamp(0.2, 4.0);
+        }
+        let mut fleet_touched = false;
+        if let Some(v) = patch.cruiser_share {
+            self.cruiser_share = v.clamp(0.0, 1.0);
+            fleet_touched = true;
+        }
+        if let Some(v) = patch.bship_share {
+            self.bship_share = v.clamp(0.0, 1.0);
+            fleet_touched = true;
+        }
+        if let Some(v) = patch.bomber_share {
+            self.bomber_share = v.clamp(0.0, 1.0);
+            fleet_touched = true;
+        }
+        if fleet_touched {
+            let sum = self.cruiser_share + self.bship_share + self.bomber_share;
+            if sum > 1e-4 {
+                self.cruiser_share /= sum;
+                self.bship_share /= sum;
+                self.bomber_share /= sum;
+            }
+        }
+        if let Some(v) = patch.intercept_bias {
+            self.intercept_bias = v.clamp(0.0, 1.0);
+        }
+        if let Some(ta) = patch.tech_alloc {
+            if let Some(v) = ta.ene { self.tech_alloc[0] = v.clamp(0.0, 1.0); }
+            if let Some(v) = ta.wep { self.tech_alloc[1] = v.clamp(0.0, 1.0); }
+            if let Some(v) = ta.pro { self.tech_alloc[2] = v.clamp(0.0, 1.0); }
+            if let Some(v) = ta.con { self.tech_alloc[3] = v.clamp(0.0, 1.0); }
+            if let Some(v) = ta.ele { self.tech_alloc[4] = v.clamp(0.0, 1.0); }
+            if let Some(v) = ta.bio { self.tech_alloc[5] = v.clamp(0.0, 1.0); }
+            let sum: f32 = self.tech_alloc.iter().sum();
+            if sum > 1e-4 {
+                for x in &mut self.tech_alloc {
+                    *x /= sum;
+                }
+            }
+        }
+        if let Some(v) = patch.surplus_def_share {
+            self.surplus_def_share = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = patch.surplus_ship_share {
+            self.surplus_ship_share = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = patch.surplus_alch_share {
+            self.surplus_alch_share = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = patch.max_upkeep_ratio {
+            self.max_upkeep_ratio = v.clamp(0.1, 0.95);
+        }
+        if let Some(v) = patch.freight_export_threshold {
+            self.freight_export_threshold = v.clamp(10.0, 500.0);
+        }
+        if let Some(v) = patch.freight_import_threshold {
+            self.freight_import_threshold = v.clamp(0.0, 200.0);
+        }
+        if let Some(v) = patch.colonize_vs_attack_bias {
+            self.colonize_vs_attack_bias = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = patch.min_colonize_hab {
+            self.min_colonize_hab = v.clamp(0.0, 1.0);
+        }
+        if let Some(mw) = patch.mineral_weights {
+            if let Some(v) = mw.iron { self.mineral_weights[0] = v.clamp(0.1, 5.0); }
+            if let Some(v) = mw.bora { self.mineral_weights[1] = v.clamp(0.1, 5.0); }
+            if let Some(v) = mw.germ { self.mineral_weights[2] = v.clamp(0.1, 5.0); }
+        }
+        if let Some(v) = patch.min_force_ratio {
+            self.min_force_ratio = v.clamp(0.5, 4.0);
+        }
+        if let Some(v) = patch.min_garrison_count {
+            self.min_garrison_count = v.min(10);
+        }
+    }
+}
+
+/// Private strategic continuity memory persisted per empire across macro-epochs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyMemory {
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub priorities: Vec<String>,
+    #[serde(default)]
+    pub rationale: String,
+    #[serde(default)]
+    pub diplomacy_notes: String,
+    #[serde(default)]
+    pub pivot_triggers: Vec<String>,
+}
+
+/// Deterministic epoch-over-epoch delta computed server-side for each empire.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpochDelta {
+    pub res_per_year_delta: f32,
+    pub planets_delta: i32,
+    pub fleets_delta: i32,
+    pub upkeep_ratio_delta: f32,
+    pub minerals_delta: NamedMinerals,
+    pub tech_levels_delta: NamedTechLevels,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub new_contacts: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planets_gained: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planets_lost: Vec<usize>,
+    pub new_messages_count: usize,
+    pub new_alerts_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StrategicCommand {
-    SetPolicy(EmpirePolicy),
+    SetPolicy(AgentPolicyPatch),
+    #[serde(rename_all = "camelCase")]
     SetDiplomacy {
         target_emp: usize,
         stance: DiplomaticStance,
     },
+    #[serde(rename_all = "camelCase")]
     SetSectorDirective {
         sector_id: u16,
         mode: SectorMode,
     },
+    #[serde(rename_all = "camelCase")]
     BuildHub {
         planet_idx: usize,
         kind: HubKind,
     },
+    #[serde(rename_all = "camelCase")]
     SendDipMessage {
         to_emp: usize,
         text: String,
@@ -1149,6 +1552,38 @@ pub struct StarSystemView {
 // Compressed Fog-of-War Intelligence Observation for External AI / LLM Agents
 // ---------------------------------------------------------------------------
 
+#[inline]
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
+#[inline]
+fn is_zero_f32(v: &f32) -> bool {
+    v.abs() < 1e-6
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VictoryGoalView {
+    pub planet_dominance_pct: f32,
+    pub resource_dominance_pct: f32,
+    pub max_year: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalaxyOverview {
+    pub total_planets: usize,
+    pub grid_rows: u16,
+    pub grid_cols: u16,
+    pub explored_planets: usize,
+    pub unexplored_planets: usize,
+    pub own_planets: usize,
+    pub neutral_known_planets: usize,
+    pub enemy_known_planets: usize,
+    pub victory_goal: VictoryGoalView,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEmpireSummary {
@@ -1158,15 +1593,14 @@ pub struct AgentEmpireSummary {
     pub year: f32,
     pub tick: u64,
     pub res_per_year: f32,
-    pub surf_iron: f32,
-    pub surf_bora: f32,
-    pub surf_germ: f32,
+    pub minerals: NamedMinerals,
     pub upkeep_ratio: f32,
     pub planet_count: u32,
     pub fleet_count: u32,
     pub orbiting_fleet_count: u32,
-    pub tech_levels: [f32; NUM_TECH_FIELDS],
-    pub policy: EmpirePolicy,
+    pub tech_levels: NamedTechLevels,
+    pub policy: AgentPolicyView,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub winner_emp: Option<u8>,
 }
 
@@ -1176,53 +1610,57 @@ pub struct SectorSummary {
     pub sector_id: u16,
     pub row: u8,
     pub col: u8,
-    pub own_planets: u16,
-    pub own_res_per_year: f32,
-    pub own_factories: f32,
-    pub unexplored_stars: u16,
-    pub neutral_explored_planets: u16,
-    pub foreign_planets_by_emp: Vec<(u8, u16)>,
-    pub avg_intel_age_years: f32,
-    pub detected_enemy_fleet_power: f32,
     pub directive: SectorMode,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub unexplored_stars: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub own_planets: u16,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub own_res_per_year: f32,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub neutral_known: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub neutral_pen_scanned: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_neutral_hab: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enemy_planets_by_emp: Vec<(u8, u16)>,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub detected_enemy_fleet_power: f32,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub avg_intel_age_years: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OwnPlanetBrief {
-    pub planet_idx: usize,
+pub struct OwnHubBrief {
+    pub planet_id: usize,
     pub sector_id: u16,
-    pub x: f32,
-    pub y: f32,
     pub pop: f32,
     pub factories: f32,
     pub defense: f32,
     pub starbase_tier: u8,
     pub has_gate: bool,
-    pub ship_prod_buf: f32,
-    pub min_surf: [f32; 3],
+    pub minerals: NamedMinerals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KnownStargateBrief {
-    pub planet_idx: usize,
-    pub owner: u8,
+pub struct AgentStargateBrief {
+    pub planet_id: usize,
+    pub owner_emp: u8,
     pub sector_id: u16,
-    pub x: f32,
-    pub y: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DiscoveredWormholeBrief {
+pub struct AgentWormholeBrief {
     pub wormhole_id: usize,
-    pub x1: f32,
-    pub y1: f32,
-    pub x2: f32,
-    pub y2: f32,
+    pub from_sector: u16,
+    pub to_sector: Option<u16>,
 }
 
+/// Internal tactical enemy fleet record used by `governor.rs` (retains Euclidean coordinates).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedEnemyFleet {
@@ -1239,6 +1677,21 @@ pub struct DetectedEnemyFleet {
     pub sector_id: u16,
 }
 
+/// Topology-only enemy fleet record serialized to `AgentObservation` (no raw x/y).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEnemyFleetBrief {
+    pub fleet_id: u32,
+    pub owner_emp: u8,
+    pub fleet_type: FleetClass,
+    pub sector_id: u16,
+    pub power: f32,
+    pub ship_count: u16,
+    pub orbiting: bool,
+    pub dist_from_nearest_own_ly: u32,
+}
+
+/// Internal tactical debris record used by `governor.rs` (retains Euclidean coordinates).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisibleDebrisBrief {
@@ -1252,39 +1705,33 @@ pub struct VisibleDebrisBrief {
     pub sector_id: u16,
 }
 
+/// Topology-only debris record serialized to `AgentObservation` (no raw x/y).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ForeignPlanetIntelBrief {
-    pub planet_idx: usize,
+pub struct AgentDebrisBrief {
+    pub debris_idx: usize,
     pub sector_id: u16,
-    pub x: f32,
-    pub y: f32,
-    pub owner: u8,
+    pub minerals: NamedMinerals,
+    pub ttl: f32,
+}
+
+/// Strictly foreign (enemy) planet intel record (`owner_emp != 0 && owner_emp != self`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnemyPlanetBrief {
+    pub planet_id: usize,
+    pub sector_id: u16,
+    pub owner_emp: u8,
     pub starbase_tier: u8,
     pub has_stargate: bool,
-    pub last_seen_tick: u32,
+    pub intel_age_years: f32,
     pub pen_scanned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pop_est: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub def_est: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub fac_est: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hab_est: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub crust_sum_est: Option<f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentKeyPoints {
-    pub top_own_planets: Vec<OwnPlanetBrief>,
-    pub known_foreign_planets: Vec<ForeignPlanetIntelBrief>,
-    pub known_stargates: Vec<KnownStargateBrief>,
-    pub discovered_wormholes: Vec<DiscoveredWormholeBrief>,
-    pub detected_enemy_fleets: Vec<DetectedEnemyFleet>,
-    pub visible_debris: Vec<VisibleDebrisBrief>,
+    pub def_est: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1297,15 +1744,30 @@ pub struct KnownEmpireSummary {
     pub estimated_factories: f32,
     pub estimated_pop: f32,
     pub detected_fleet_power: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inbox: Vec<DipMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentObservation {
+    pub galaxy_overview: GalaxyOverview,
     pub empire: AgentEmpireSummary,
     pub sectors: Vec<SectorSummary>,
-    pub key_points: AgentKeyPoints,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub own_hubs: Vec<OwnHubBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enemy_planets: Vec<EnemyPlanetBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wormholes: Vec<AgentWormholeBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stargates: Vec<AgentStargateBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detected_enemy_fleets: Vec<AgentEnemyFleetBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visible_debris: Vec<AgentDebrisBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub known_empires: Vec<KnownEmpireSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_alerts: Vec<String>,
 }

@@ -5,8 +5,8 @@ use sistars_engine::config::{
     BreakthroughMeta, SimConfig, TechFieldMeta, MAX_TECH_LEVEL, NUM_TECH_FIELDS,
 };
 use sistars_engine::types::{
-    AgentObservation, HudSnapshot, RaceDef, ScenarioModifiers, StrategicCommand, TechCatalogView,
-    VictoryConfig,
+    AgentObservation, EpochDelta, HudSnapshot, RaceDef, ScenarioModifiers, StrategicCommand,
+    StrategyMemory, TechCatalogView, VictoryConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +122,8 @@ pub struct ObservationEnvelope {
     pub status: MatchStatus,
     pub deadline_ms: Option<u64>,
     pub already_submitted: bool,
+    pub previous_strategy: Option<StrategyMemory>,
+    pub delta: Option<EpochDelta>,
     pub observation: AgentObservation,
 }
 
@@ -131,6 +133,7 @@ pub struct SubmitCommandsRequest {
     pub epoch: Option<u64>,
     #[serde(default)]
     pub commands: Vec<StrategicCommand>,
+    pub strategy_memory: Option<StrategyMemory>,
     pub reasoning_note: Option<String>,
 }
 
@@ -147,6 +150,7 @@ pub struct SubmitCommandsResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArenaFeedKind {
+    StrategyUpdate,
     Reasoning,
     DipMessage,
     DiplomacyChange,
@@ -171,6 +175,8 @@ pub struct ArenaFeedEvent {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<StrategyMemory>,
 }
 
 #[derive(Debug, Clone, Serialize)]

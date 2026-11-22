@@ -13,13 +13,14 @@ use crate::tech::{
     LRT_GR, LRT_IFE, LRT_ISB, LRT_LSP, LRT_MA, LRT_OBRM, LRT_RS, LRT_TT, LRT_UR,
 };
 use crate::types::{
-    AgentEmpireSummary, AgentKeyPoints, AgentObservation, CombatFx, DebrisField,
-    DetectedEnemyFleet, DipMessage, DiplomaticStance, DiscoveredWormholeBrief,
-    EmpireStats, EmpireSummaryView, Fleet, ForeignPlanetIntelBrief, HubKind, HudEvent,
-    HudSnapshot, JumpFx, KnownEmpireSummary, KnownStargateBrief, LiveAuditor, OwnPlanetBrief,
-    PlanetIntel, PlanetView, RaceDef, ReportsSnapshot, SandboxPlanet, SectorMode, SectorSummary,
-    SimAnomaly, SimEvent, SimSnapshot, StarSystemView, StepProfile, StrategicCommand,
-    VictoryConfig, VisibleDebrisBrief, Wormhole, WreckEntry, INTEL_FLAG_EXPLORED,
+    round1, round2, AgentDebrisBrief, AgentEmpireSummary, AgentEnemyFleetBrief, AgentObservation,
+    AgentPolicyView, AgentStargateBrief, AgentWormholeBrief, CombatFx, DebrisField,
+    DetectedEnemyFleet, DipMessage, DiplomaticStance, EmpireStats, EmpireSummaryView,
+    EnemyPlanetBrief, Fleet, GalaxyOverview, HubKind, HudEvent, HudSnapshot, JumpFx,
+    KnownEmpireSummary, LiveAuditor, NamedMinerals, NamedTechLevels, OwnHubBrief, PlanetIntel,
+    PlanetView, RaceDef, ReportsSnapshot, SandboxPlanet, SectorMode, SectorSummary, SimAnomaly,
+    SimEvent, SimSnapshot, StarSystemView, StepProfile, StrategicCommand, VictoryConfig,
+    VictoryGoalView, VisibleDebrisBrief, Wormhole, WreckEntry, INTEL_FLAG_EXPLORED,
     INTEL_FLAG_HAS_STARGATE, INTEL_FLAG_PEN_SCANNED,
 };
 
@@ -422,8 +423,10 @@ pub struct Simulation {
     pub explored_mask: Vec<u16>,
     /// Per-empire intelligence table of size `num_empires * num_planets` (`e * n + p`).
     pub intel_planets: Vec<PlanetIntel>,
-    /// Per-wormhole bitmask (`1 << e`) of empires that have discovered each wormhole.
-    pub discovered_wormholes: Vec<u16>,
+    /// Per-wormhole bitmask (`1 << e`) of empires that have discovered endpoint A (x1, y1).
+    pub discovered_wh_a: Vec<u16>,
+    /// Per-wormhole bitmask (`1 << e`) of empires that have discovered endpoint B (x2, y2).
+    pub discovered_wh_b: Vec<u16>,
 
     // Precomputed flat CSR sorted nearest-neighbor lists per planet & wormhole endpoints
     neighbor_offsets: Vec<u32>,
@@ -541,7 +544,8 @@ impl Simulation {
             claim_mask: Vec::new(),
             explored_mask: Vec::new(),
             intel_planets: Vec::new(),
-            discovered_wormholes: Vec::new(),
+            discovered_wh_a: Vec::new(),
+            discovered_wh_b: Vec::new(),
             neighbor_offsets: Vec::new(),
             neighbor_data: Vec::new(),
             wh_near_a: Vec::new(),
@@ -856,7 +860,8 @@ impl Simulation {
             sim.empires[e].last_stats.res = sim.empires[e].res_total;
         }
 
-        sim.discovered_wormholes.resize(sim.wormholes.len(), 0);
+        sim.discovered_wh_a.resize(sim.wormholes.len(), 0);
+        sim.discovered_wh_b.resize(sim.wormholes.len(), 0);
         sim.refresh_initial_fow();
 
         sim
@@ -1130,8 +1135,10 @@ impl Simulation {
         self.intel_planets.clear();
         self.intel_planets
             .resize(num_emp * n, PlanetIntel::default());
-        self.discovered_wormholes.clear();
-        self.discovered_wormholes.resize(self.wormholes.len(), 0);
+        self.discovered_wh_a.clear();
+        self.discovered_wh_a.resize(self.wormholes.len(), 0);
+        self.discovered_wh_b.clear();
+        self.discovered_wh_b.resize(self.wormholes.len(), 0);
 
         self.build_planet_neighbors();
 
@@ -2221,8 +2228,9 @@ impl Simulation {
                         self.fleets[f_idx].used_wh = true;
                         self.fleets[f_idx].wh_route = -1;
                         self.gate_jumps_count += 1;
-                        if w < self.discovered_wormholes.len() {
-                            self.discovered_wormholes[w] |= 1u16 << e;
+                        if w < self.discovered_wh_a.len() {
+                            self.discovered_wh_a[w] |= 1u16 << e;
+                            self.discovered_wh_b[w] |= 1u16 << e;
                         }
                         self.scan_area_for_empire(
                             ox,
@@ -3043,10 +3051,27 @@ impl Simulation {
 
     #[inline]
     pub fn is_wormhole_discovered(&self, emp_idx: usize, wh_idx: usize) -> bool {
-        if emp_idx >= self.empires.len() || wh_idx >= self.discovered_wormholes.len() {
+        if emp_idx >= self.empires.len() || wh_idx >= self.discovered_wh_a.len() {
             return false;
         }
-        (self.discovered_wormholes[wh_idx] & (1u16 << emp_idx)) != 0
+        let bit = 1u16 << emp_idx;
+        ((self.discovered_wh_a[wh_idx] | self.discovered_wh_b[wh_idx]) & bit) != 0
+    }
+
+    #[inline]
+    pub fn is_wormhole_end_a_discovered(&self, emp_idx: usize, wh_idx: usize) -> bool {
+        if emp_idx >= self.empires.len() || wh_idx >= self.discovered_wh_a.len() {
+            return false;
+        }
+        (self.discovered_wh_a[wh_idx] & (1u16 << emp_idx)) != 0
+    }
+
+    #[inline]
+    pub fn is_wormhole_end_b_discovered(&self, emp_idx: usize, wh_idx: usize) -> bool {
+        if emp_idx >= self.empires.len() || wh_idx >= self.discovered_wh_b.len() {
+            return false;
+        }
+        (self.discovered_wh_b[wh_idx] & (1u16 << emp_idx)) != 0
     }
 
     pub fn push_empire_alert(&mut self, emp_idx: usize, msg: String) {
@@ -3220,17 +3245,23 @@ impl Simulation {
             return;
         }
 
-        // 2. Discover wormhole endpoints within scanner radius
+        // 2. Discover wormhole endpoints within scanner radius (strictly per-endpoint, no leaking the far end!)
         if !self.wormholes.is_empty() && non_pen_radius > 0.0 {
             let r_sq = non_pen_radius * non_pen_radius;
-            let disc_wh = &mut self.discovered_wormholes;
+            let disc_a = &mut self.discovered_wh_a;
+            let disc_b = &mut self.discovered_wh_b;
             self.wh_grid.for_each_in_radius(cx, cy, non_pen_radius, |entry| {
                 let dx = entry.x - cx;
                 let dy = entry.y - cy;
                 if dx * dx + dy * dy <= r_sq {
                     let w = (entry.idx / 2) as usize;
-                    if w < disc_wh.len() {
-                        disc_wh[w] |= bit;
+                    let is_b = (entry.idx & 1) == 1;
+                    if w < disc_a.len() {
+                        if is_b {
+                            disc_b[w] |= bit;
+                        } else {
+                            disc_a[w] |= bit;
+                        }
                     }
                 }
             });
@@ -3351,8 +3382,10 @@ impl Simulation {
         self.intel_planets.clear();
         self.intel_planets
             .resize(num_emp * n, PlanetIntel::default());
-        self.discovered_wormholes.clear();
-        self.discovered_wormholes.resize(self.wormholes.len(), 0);
+        self.discovered_wh_a.clear();
+        self.discovered_wh_a.resize(self.wormholes.len(), 0);
+        self.discovered_wh_b.clear();
+        self.discovered_wh_b.resize(self.wormholes.len(), 0);
         self.max_active_ecm_range = self
             .empires
             .iter()
@@ -3749,7 +3782,10 @@ impl Simulation {
 
             let mut visible_wormholes = Vec::new();
             for (w, &wh) in self.wormholes.iter().enumerate() {
-                if (self.discovered_wormholes.get(w).copied().unwrap_or(0) & (1u16 << e)) != 0 {
+                let bit = 1u16 << e;
+                let mask = self.discovered_wh_a.get(w).copied().unwrap_or(0)
+                    | self.discovered_wh_b.get(w).copied().unwrap_or(0);
+                if (mask & bit) != 0 {
                     visible_wormholes.push(VisibleWormhole {
                         wormhole_id: w,
                         wh,
@@ -4322,8 +4358,8 @@ impl Simulation {
         }
         for cmd in cmds {
             match cmd {
-                StrategicCommand::SetPolicy(policy) => {
-                    self.empires[empire_idx].race.doctrine = policy;
+                StrategicCommand::SetPolicy(patch) => {
+                    self.empires[empire_idx].race.doctrine.apply_patch(&patch);
                 }
                 StrategicCommand::SetDiplomacy {
                     target_emp,
@@ -4390,7 +4426,7 @@ impl Simulation {
         }
     }
 
-    /// Generates a compact, strictly Fog-of-War-isolated observation report (~2-4 KB JSON) for `empire_idx`.
+    /// Generates a compact, strictly Fog-of-War-isolated, topology-only observation report for `empire_idx`.
     pub fn take_agent_observation(&self, empire_idx: usize) -> AgentObservation {
         let num_emp = self.empires.len();
         let e = empire_idx.min(num_emp.saturating_sub(1));
@@ -4404,33 +4440,42 @@ impl Simulation {
                 sector_id: s as u16,
                 row: (s / sector_cols) as u8,
                 col: (s % sector_cols) as u8,
-                own_planets: 0,
-                own_res_per_year: 0.0,
-                own_factories: 0.0,
-                unexplored_stars: 0,
-                neutral_explored_planets: 0,
-                foreign_planets_by_emp: Vec::new(),
-                avg_intel_age_years: 0.0,
-                detected_enemy_fleet_power: 0.0,
                 directive: self.empires[e]
                     .sector_directives
                     .get(s)
                     .copied()
                     .unwrap_or(SectorMode::Expand),
+                unexplored_stars: 0,
+                own_planets: 0,
+                own_res_per_year: 0.0,
+                neutral_known: 0,
+                neutral_pen_scanned: 0,
+                avg_neutral_hab: None,
+                enemy_planets_by_emp: Vec::new(),
+                detected_enemy_fleet_power: 0.0,
+                avg_intel_age_years: 0.0,
             })
             .collect();
 
         let mut sector_intel_age_sum = vec![0.0f32; num_sectors];
         let mut sector_intel_count = vec![0u32; num_sectors];
+        let mut sector_neutral_hab_sum = vec![0.0f32; num_sectors];
+        let mut sector_neutral_hab_cnt = vec![0u32; num_sectors];
 
-        let mut own_planets_count = 0u32;
+        let mut own_planets_count = 0usize;
+        let mut explored_foreign_or_neutral = 0usize;
+        let mut unexplored_planets_count = 0usize;
+        let mut neutral_known_planets = 0usize;
+        let mut enemy_known_planets = 0usize;
+
         let mut own_res_sum = 0.0f32;
         let mut own_surf_iron = 0.0f32;
         let mut own_surf_bora = 0.0f32;
         let mut own_surf_germ = 0.0f32;
-        let mut top_own_planets: Vec<OwnPlanetBrief> = Vec::new();
-        let mut known_stargates: Vec<KnownStargateBrief> = Vec::new();
-        let mut known_foreign_planets: Vec<ForeignPlanetIntelBrief> = Vec::new();
+        let mut own_coords: Vec<(f32, f32)> = Vec::new();
+        let mut own_hubs: Vec<OwnHubBrief> = Vec::new();
+        let mut stargates: Vec<AgentStargateBrief> = Vec::new();
+        let mut enemy_planets_raw: Vec<(u32, EnemyPlanetBrief)> = Vec::new();
 
         let intel_slice = &self.intel_planets[e * n..(e + 1) * n];
         for i in 0..n {
@@ -4441,6 +4486,7 @@ impl Simulation {
                     as usize;
             if self.owner[i] == emp_u8 {
                 own_planets_count += 1;
+                own_coords.push((px, py));
                 let p_res = if self.last_res[i] > 0.0 {
                     self.last_res[i]
                 } else {
@@ -4454,102 +4500,117 @@ impl Simulation {
 
                 sectors[sec_id].own_planets += 1;
                 sectors[sec_id].own_res_per_year += p_res;
-                sectors[sec_id].own_factories += self.factories[i];
 
-                top_own_planets.push(OwnPlanetBrief {
-                    planet_idx: i,
+                own_hubs.push(OwnHubBrief {
+                    planet_id: i,
                     sector_id: sec_id as u16,
-                    x: px,
-                    y: py,
-                    pop: self.pop[i],
-                    factories: self.factories[i],
-                    defense: self.defense[i],
+                    pop: round1(self.pop[i]),
+                    factories: round1(self.factories[i]),
+                    defense: round1(self.defense[i]),
                     starbase_tier: self.starbase_tier[i],
                     has_gate: self.has_gate[i] != 0,
-                    ship_prod_buf: self.ship_prod_buf[i],
-                    min_surf: [self.min_surf[b], self.min_surf[b + 1], self.min_surf[b + 2]],
+                    minerals: NamedMinerals::from_array([
+                        self.min_surf[b],
+                        self.min_surf[b + 1],
+                        self.min_surf[b + 2],
+                    ])
+                    .round1(),
                 });
                 if self.has_gate[i] != 0 {
-                    known_stargates.push(KnownStargateBrief {
-                        planet_idx: i,
-                        owner: emp_u8,
+                    stargates.push(AgentStargateBrief {
+                        planet_id: i,
+                        owner_emp: emp_u8,
                         sector_id: sec_id as u16,
-                        x: px,
-                        y: py,
                     });
                 }
             } else {
                 let intel = &intel_slice[i];
                 if !intel.is_explored() {
+                    unexplored_planets_count += 1;
                     sectors[sec_id].unexplored_stars += 1;
                 } else {
+                    explored_foreign_or_neutral += 1;
                     let age_ticks = (self.ticks as u32).saturating_sub(intel.last_seen_tick);
-                    sector_intel_age_sum[sec_id] += (age_ticks as f32) * DT;
+                    let age_years = (age_ticks as f32) * DT;
+                    sector_intel_age_sum[sec_id] += age_years;
                     sector_intel_count[sec_id] += 1;
+                    let pen = intel.is_pen_scanned();
+
                     if intel.owner == 0 {
-                        sectors[sec_id].neutral_explored_planets += 1;
-                    } else {
+                        neutral_known_planets += 1;
+                        sectors[sec_id].neutral_known += 1;
+                        if pen {
+                            sectors[sec_id].neutral_pen_scanned += 1;
+                            sector_neutral_hab_sum[sec_id] += intel.hab_est;
+                            sector_neutral_hab_cnt[sec_id] += 1;
+                        }
+                    } else if intel.owner != emp_u8 {
+                        enemy_known_planets += 1;
                         if let Some(pair) = sectors[sec_id]
-                            .foreign_planets_by_emp
+                            .enemy_planets_by_emp
                             .iter_mut()
                             .find(|(o, _)| *o == intel.owner)
                         {
                             pair.1 += 1;
                         } else {
-                            sectors[sec_id].foreign_planets_by_emp.push((intel.owner, 1));
+                            sectors[sec_id].enemy_planets_by_emp.push((intel.owner, 1));
                         }
+                        if intel.has_stargate() {
+                            stargates.push(AgentStargateBrief {
+                                planet_id: i,
+                                owner_emp: intel.owner,
+                                sector_id: sec_id as u16,
+                            });
+                        }
+                        enemy_planets_raw.push((
+                            intel.last_seen_tick,
+                            EnemyPlanetBrief {
+                                planet_id: i,
+                                sector_id: sec_id as u16,
+                                owner_emp: intel.owner,
+                                starbase_tier: intel.starbase_tier,
+                                has_stargate: intel.has_stargate(),
+                                intel_age_years: round1(age_years),
+                                pen_scanned: pen,
+                                pop_est: if pen { Some(round1(intel.pop_est)) } else { None },
+                                fac_est: if pen { Some(round1(intel.fac_est)) } else { None },
+                                def_est: if pen { Some(round1(intel.def_est)) } else { None },
+                            },
+                        ));
                     }
-                    if intel.has_stargate() {
-                        known_stargates.push(KnownStargateBrief {
-                            planet_idx: i,
-                            owner: intel.owner,
-                            sector_id: sec_id as u16,
-                            x: px,
-                            y: py,
-                        });
-                    }
-                    let pen = intel.is_pen_scanned();
-                    known_foreign_planets.push(ForeignPlanetIntelBrief {
-                        planet_idx: i,
-                        sector_id: sec_id as u16,
-                        x: px,
-                        y: py,
-                        owner: intel.owner,
-                        starbase_tier: intel.starbase_tier,
-                        has_stargate: intel.has_stargate(),
-                        last_seen_tick: intel.last_seen_tick,
-                        pen_scanned: pen,
-                        pop_est: if pen { Some(intel.pop_est) } else { None },
-                        def_est: if pen { Some(intel.def_est) } else { None },
-                        fac_est: if pen { Some(intel.fac_est) } else { None },
-                        hab_est: if pen { Some(intel.hab_est) } else { None },
-                        crust_sum_est: if pen {
-                            Some(intel.crust_sum_est)
-                        } else {
-                            None
-                        },
-                    });
                 }
             }
         }
 
         for s in 0..num_sectors {
+            sectors[s].own_res_per_year = round1(sectors[s].own_res_per_year);
             if sector_intel_count[s] > 0 {
                 sectors[s].avg_intel_age_years =
-                    sector_intel_age_sum[s] / (sector_intel_count[s] as f32);
+                    round1(sector_intel_age_sum[s] / (sector_intel_count[s] as f32));
             }
+            if sector_neutral_hab_cnt[s] > 0 {
+                sectors[s].avg_neutral_hab =
+                    Some(round2(sector_neutral_hab_sum[s] / (sector_neutral_hab_cnt[s] as f32)));
+            }
+            sectors[s].enemy_planets_by_emp.sort_by_key(|&(o, _)| o);
         }
 
-        // Keep only top 8 major production worlds & 12 most recent foreign planet intel records so JSON stays ~2-4 KB
-        top_own_planets.sort_by(|a, b| {
-            (b.factories + b.pop * 0.3)
-                .partial_cmp(&(a.factories + a.pop * 0.3))
-                .unwrap_or(std::cmp::Ordering::Equal)
+        // Top 10 own hubs (prioritizing production, starbases, gates)
+        own_hubs.sort_by(|a, b| {
+            let sa = a.factories + a.pop * 0.3 + (a.starbase_tier as f32) * 15.0 + if a.has_gate { 20.0 } else { 0.0 };
+            let sb = b.factories + b.pop * 0.3 + (b.starbase_tier as f32) * 15.0 + if b.has_gate { 20.0 } else { 0.0 };
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
-        top_own_planets.truncate(8);
-        known_stargates.truncate(12);
-        known_foreign_planets.sort_by(|a, b| b.last_seen_tick.cmp(&a.last_seen_tick));
-        known_foreign_planets.truncate(12);
+        own_hubs.truncate(10);
+        stargates.truncate(12);
+
+        // Most recent strictly foreign enemy planets (max 12)
+        enemy_planets_raw.sort_by(|a, b| b.0.cmp(&a.0));
+        let enemy_planets: Vec<EnemyPlanetBrief> = enemy_planets_raw
+            .into_iter()
+            .take(12)
+            .map(|(_, brief)| brief)
+            .collect();
 
         let mut own_fleets_count = 0u32;
         let mut own_orbiting_count = 0u32;
@@ -4564,41 +4625,102 @@ impl Simulation {
             }
         }
 
-        let mut detected_enemy_fleets =
+        let mut raw_enemy_fleets =
             self.compute_detected_enemy_fleets(e, sector_cols, sector_rows);
-        for ef in &detected_enemy_fleets {
+        for ef in &raw_enemy_fleets {
             if (ef.sector_id as usize) < sectors.len() {
                 sectors[ef.sector_id as usize].detected_enemy_fleet_power += ef.power;
             }
         }
-        detected_enemy_fleets.sort_by(|a, b| {
+        for sec in &mut sectors {
+            sec.detected_enemy_fleet_power = round1(sec.detected_enemy_fleet_power);
+        }
+
+        // Omit completely empty sectors
+        sectors.retain(|s| {
+            s.unexplored_stars > 0
+                || s.own_planets > 0
+                || s.neutral_known > 0
+                || !s.enemy_planets_by_emp.is_empty()
+                || s.detected_enemy_fleet_power > 0.0
+        });
+
+        raw_enemy_fleets.sort_by(|a, b| {
             b.power
                 .partial_cmp(&a.power)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        detected_enemy_fleets.truncate(16);
+        let detected_enemy_fleets: Vec<AgentEnemyFleetBrief> = raw_enemy_fleets
+            .iter()
+            .take(16)
+            .map(|ef| {
+                let nearest_sq = own_coords
+                    .iter()
+                    .map(|&(ox, oy)| {
+                        let dx = ef.x - ox;
+                        let dy = ef.y - oy;
+                        dx * dx + dy * dy
+                    })
+                    .fold(f32::INFINITY, f32::min);
+                let dist_ly = if nearest_sq.is_finite() {
+                    nearest_sq.sqrt().round() as u32
+                } else {
+                    0
+                };
+                AgentEnemyFleetBrief {
+                    fleet_id: ef.fleet_id,
+                    owner_emp: ef.emp,
+                    fleet_type: ef.fleet_type,
+                    sector_id: ef.sector_id,
+                    power: round1(ef.power),
+                    ship_count: ef.ship_count,
+                    orbiting: ef.orbiting,
+                    dist_from_nearest_own_ly: dist_ly,
+                }
+            })
+            .collect();
 
-        let mut visible_debris = self.compute_visible_debris(e);
-        visible_debris.sort_by(|a, b| {
+        let mut raw_debris = self.compute_visible_debris(e);
+        raw_debris.sort_by(|a, b| {
             (b.iron + b.bora + b.germ)
                 .partial_cmp(&(a.iron + a.bora + a.germ))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        visible_debris.truncate(12);
+        let visible_debris: Vec<AgentDebrisBrief> = raw_debris
+            .into_iter()
+            .take(12)
+            .map(|d| AgentDebrisBrief {
+                debris_idx: d.debris_idx,
+                sector_id: d.sector_id,
+                minerals: NamedMinerals::from_array([d.iron, d.bora, d.germ]).round1(),
+                ttl: round1(d.ttl),
+            })
+            .collect();
 
-        let mut discovered_wormholes = Vec::new();
+        // Topology-only wormholes: strictly hide far endpoint (`to_sector: None`) until discovered
+        let bit = 1u16 << e;
+        let mut wormholes = Vec::new();
         for (w, &wh) in self.wormholes.iter().enumerate() {
-            if (self.discovered_wormholes.get(w).copied().unwrap_or(0) & (1u16 << e)) != 0 {
-                discovered_wormholes.push(DiscoveredWormholeBrief {
-                    wormhole_id: w,
-                    x1: wh.x1,
-                    y1: wh.y1,
-                    x2: wh.x2,
-                    y2: wh.y2,
-                });
+            let has_a = (self.discovered_wh_a.get(w).copied().unwrap_or(0) & bit) != 0;
+            let has_b = (self.discovered_wh_b.get(w).copied().unwrap_or(0) & bit) != 0;
+            if !has_a && !has_b {
+                continue;
             }
+            let sec_a = sector_for_xy(wh.x1, wh.y1, self.world_w, self.world_h, sector_cols, sector_rows);
+            let sec_b = sector_for_xy(wh.x2, wh.y2, self.world_w, self.world_h, sector_cols, sector_rows);
+            let (from_sector, to_sector) = match (has_a, has_b) {
+                (true, true) => (sec_a, Some(sec_b)),
+                (true, false) => (sec_a, None),
+                (false, true) => (sec_b, None),
+                (false, false) => unreachable!(),
+            };
+            wormholes.push(AgentWormholeBrief {
+                wormhole_id: w,
+                from_sector,
+                to_sector,
+            });
         }
-        discovered_wormholes.truncate(12);
+        wormholes.truncate(12);
 
         // Build known_empires strictly from PlanetIntel, detected fleets, and diplomatic contact/inbox
         let mut known_empires = Vec::new();
@@ -4622,7 +4744,7 @@ impl Simulation {
                     }
                 }
             }
-            let spotted_fl_pow: f32 = detected_enemy_fleets
+            let spotted_fl_pow: f32 = raw_enemy_fleets
                 .iter()
                 .filter(|ef| ef.emp == other_u8)
                 .map(|ef| ef.power)
@@ -4644,9 +4766,9 @@ impl Simulation {
                     name: self.empires[other_e].race.name.clone(),
                     stance: self.relations[e][other_e],
                     known_planets_count: known_p,
-                    estimated_factories: est_fac,
-                    estimated_pop: est_pop,
-                    detected_fleet_power: spotted_fl_pow,
+                    estimated_factories: round1(est_fac),
+                    estimated_pop: round1(est_pop),
+                    detected_fleet_power: round1(spotted_fl_pow),
                     inbox: inbox_from_other,
                 });
             }
@@ -4654,33 +4776,45 @@ impl Simulation {
 
         let emp = &self.empires[e];
         AgentObservation {
+            galaxy_overview: GalaxyOverview {
+                total_planets: n,
+                grid_rows: sector_rows as u16,
+                grid_cols: sector_cols as u16,
+                explored_planets: own_planets_count + explored_foreign_or_neutral,
+                unexplored_planets: unexplored_planets_count,
+                own_planets: own_planets_count,
+                neutral_known_planets,
+                enemy_known_planets,
+                victory_goal: VictoryGoalView {
+                    planet_dominance_pct: round1(self.victory_cfg.planet_share_threshold * 100.0),
+                    resource_dominance_pct: round1(self.victory_cfg.res_share_threshold * 100.0),
+                    max_year: round1(self.victory_cfg.max_year.unwrap_or(0.0)),
+                },
+            },
             empire: AgentEmpireSummary {
                 empire_id: emp_u8,
                 name: emp.race.name.clone(),
                 prt: emp.race.prt.clone(),
-                year: self.year,
+                year: round1(self.year),
                 tick: self.ticks,
-                res_per_year: own_res_sum,
-                surf_iron: own_surf_iron,
-                surf_bora: own_surf_bora,
-                surf_germ: own_surf_germ,
-                upkeep_ratio: own_upkeep / own_res_sum.max(1.0),
-                planet_count: own_planets_count,
+                res_per_year: round1(own_res_sum),
+                minerals: NamedMinerals::from_array([own_surf_iron, own_surf_bora, own_surf_germ])
+                    .round1(),
+                upkeep_ratio: round2(own_upkeep / own_res_sum.max(1.0)),
+                planet_count: own_planets_count as u32,
                 fleet_count: own_fleets_count,
                 orbiting_fleet_count: own_orbiting_count,
-                tech_levels: emp.tech_lv,
-                policy: emp.race.doctrine.clone(),
+                tech_levels: NamedTechLevels::from_array(emp.tech_lv).round1(),
+                policy: AgentPolicyView::from(&emp.race.doctrine),
                 winner_emp: self.winner.map(|w| (w + 1) as u8),
             },
             sectors,
-            key_points: AgentKeyPoints {
-                top_own_planets,
-                known_foreign_planets,
-                known_stargates,
-                discovered_wormholes,
-                detected_enemy_fleets,
-                visible_debris,
-            },
+            own_hubs,
+            enemy_planets,
+            wormholes,
+            stargates,
+            detected_enemy_fleets,
+            visible_debris,
             known_empires,
             recent_alerts: emp.recent_alerts.clone(),
         }

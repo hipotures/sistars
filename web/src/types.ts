@@ -524,7 +524,16 @@ export interface CreateArenaMatchResponse {
   debugAudit: boolean;
 }
 
+export interface StrategyMemory {
+  phase: string;
+  priorities: string[];
+  rationale: string;
+  diplomacyNotes: string;
+  pivotTriggers: string[];
+}
+
 export type ArenaFeedKind =
+  | 'StrategyUpdate'
   | 'Reasoning'
   | 'DipMessage'
   | 'DiplomacyChange'
@@ -545,4 +554,5 @@ export interface ArenaFeedEvent {
   kind: ArenaFeedKind;
   summary: string;
   detail?: string;
+  strategy?: StrategyMemory;
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -9,7 +9,10 @@ use rand::Rng;
 use sistars_engine::config::SimConfig;
 use sistars_engine::sim::Simulation;
 use sistars_engine::tech::{classic_races, tech_store, LRT_LIST, PRT_LIST};
-use sistars_engine::types::{StrategicCommand, TechCatalogView, VictoryConfig};
+use sistars_engine::types::{
+    round1, round2, AgentObservation, EpochDelta, NamedMinerals, NamedTechLevels,
+    StrategicCommand, StrategyMemory, TechCatalogView, VictoryConfig,
+};
 use tokio::sync::{broadcast, watch, Notify, RwLock};
 
 use crate::models::{
@@ -40,7 +43,22 @@ pub fn generate_secret_token() -> String {
 #[derive(Debug, Clone)]
 pub struct QueuedDecision {
     pub commands: Vec<StrategicCommand>,
+    pub strategy_memory: Option<StrategyMemory>,
     pub reasoning_note: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmpireEpochSnapshot {
+    pub res_per_year: f32,
+    pub planet_count: usize,
+    pub fleet_count: u32,
+    pub upkeep_ratio: f32,
+    pub minerals: NamedMinerals,
+    pub tech_levels: NamedTechLevels,
+    pub known_contacts: HashSet<usize>,
+    pub owned_planets: HashSet<usize>,
+    pub prev_inbox: Vec<(u64, u8, String)>,
+    pub prev_alerts: Vec<String>,
 }
 
 pub struct MatchInner {
@@ -56,6 +74,8 @@ pub struct MatchInner {
     pub tick_delay_ms: u64,
     pub agent_seats: Vec<usize>,
     pub pending_submissions: BTreeMap<usize, QueuedDecision>,
+    pub latest_strategy: HashMap<usize, StrategyMemory>,
+    pub prev_epoch_snapshots: HashMap<usize, EmpireEpochSnapshot>,
     pub epoch_deadline_ms: Option<u64>,
     pub feed_history: Vec<ArenaFeedEvent>,
     pub next_feed_id: u64,
@@ -103,12 +123,143 @@ impl MatchInner {
         }
     }
 
+    pub fn capture_empire_snapshot(&self, empire_idx: usize) -> EmpireEpochSnapshot {
+        let obs = self.sim.take_agent_observation(empire_idx);
+        let emp_u8 = (empire_idx + 1) as u8;
+        let owned_planets: HashSet<usize> = self
+            .sim
+            .owner
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &o)| if o == emp_u8 { Some(idx) } else { None })
+            .collect();
+        let known_contacts: HashSet<usize> = obs
+            .known_empires
+            .iter()
+            .map(|ke| ke.emp_id as usize)
+            .collect();
+        let prev_inbox: Vec<(u64, u8, String)> = self
+            .sim
+            .empires
+            .get(empire_idx)
+            .map(|emp| {
+                emp.inbox
+                    .iter()
+                    .map(|m| (m.tick, m.from_emp, m.text.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        EmpireEpochSnapshot {
+            res_per_year: obs.empire.res_per_year,
+            planet_count: obs.empire.planet_count as usize,
+            fleet_count: obs.empire.fleet_count,
+            upkeep_ratio: obs.empire.upkeep_ratio,
+            minerals: obs.empire.minerals,
+            tech_levels: obs.empire.tech_levels,
+            known_contacts,
+            owned_planets,
+            prev_inbox,
+            prev_alerts: obs.recent_alerts,
+        }
+    }
+
+    pub fn compute_epoch_delta(
+        &self,
+        empire_idx: usize,
+        cur_obs: &AgentObservation,
+    ) -> Option<EpochDelta> {
+        if self.epoch == 0 {
+            return None;
+        }
+        let prev = self.prev_epoch_snapshots.get(&empire_idx)?;
+        let emp_u8 = (empire_idx + 1) as u8;
+        let cur_owned: HashSet<usize> = self
+            .sim
+            .owner
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &o)| if o == emp_u8 { Some(idx) } else { None })
+            .collect();
+        let mut planets_gained: Vec<usize> = cur_owned.difference(&prev.owned_planets).copied().collect();
+        planets_gained.sort_unstable();
+        let mut planets_lost: Vec<usize> = prev.owned_planets.difference(&cur_owned).copied().collect();
+        planets_lost.sort_unstable();
+
+        let mut new_contacts: Vec<usize> = cur_obs
+            .known_empires
+            .iter()
+            .map(|ke| ke.emp_id as usize)
+            .filter(|id| !prev.known_contacts.contains(id))
+            .collect();
+        new_contacts.sort_unstable();
+
+        let cur_inbox: Vec<(u64, u8, String)> = self
+            .sim
+            .empires
+            .get(empire_idx)
+            .map(|emp| {
+                emp.inbox
+                    .iter()
+                    .map(|m| (m.tick, m.from_emp, m.text.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let inbox_overlap = (0..=prev.prev_inbox.len().min(cur_inbox.len()))
+            .rev()
+            .find(|&k| prev.prev_inbox[prev.prev_inbox.len() - k..] == cur_inbox[..k])
+            .unwrap_or(0);
+        let new_messages_count = cur_inbox.len().saturating_sub(inbox_overlap);
+
+        let cur_alerts = &cur_obs.recent_alerts;
+        let overlap = (0..=prev.prev_alerts.len().min(cur_alerts.len()))
+            .rev()
+            .find(|&k| prev.prev_alerts[prev.prev_alerts.len() - k..] == cur_alerts[..k])
+            .unwrap_or(0);
+        let new_alerts_count = cur_alerts.len().saturating_sub(overlap);
+
+        Some(EpochDelta {
+            res_per_year_delta: round1(cur_obs.empire.res_per_year - prev.res_per_year),
+            planets_delta: cur_obs.empire.planet_count as i32 - prev.planet_count as i32,
+            fleets_delta: cur_obs.empire.fleet_count as i32 - prev.fleet_count as i32,
+            upkeep_ratio_delta: round2(cur_obs.empire.upkeep_ratio - prev.upkeep_ratio),
+            minerals_delta: NamedMinerals {
+                iron: round1(cur_obs.empire.minerals.iron - prev.minerals.iron),
+                bora: round1(cur_obs.empire.minerals.bora - prev.minerals.bora),
+                germ: round1(cur_obs.empire.minerals.germ - prev.minerals.germ),
+            },
+            tech_levels_delta: NamedTechLevels {
+                ene: round1(cur_obs.empire.tech_levels.ene - prev.tech_levels.ene),
+                wep: round1(cur_obs.empire.tech_levels.wep - prev.tech_levels.wep),
+                pro: round1(cur_obs.empire.tech_levels.pro - prev.tech_levels.pro),
+                con: round1(cur_obs.empire.tech_levels.con - prev.tech_levels.con),
+                ele: round1(cur_obs.empire.tech_levels.ele - prev.tech_levels.ele),
+                bio: round1(cur_obs.empire.tech_levels.bio - prev.tech_levels.bio),
+            },
+            new_contacts,
+            planets_gained,
+            planets_lost,
+            new_messages_count,
+            new_alerts_count,
+        })
+    }
+
     pub fn push_feed_event(
         &mut self,
         empire_idx: Option<usize>,
         kind: ArenaFeedKind,
         summary: String,
         detail: Option<String>,
+    ) -> ArenaFeedEvent {
+        self.push_feed_event_with_strategy(empire_idx, kind, summary, detail, None)
+    }
+
+    pub fn push_feed_event_with_strategy(
+        &mut self,
+        empire_idx: Option<usize>,
+        kind: ArenaFeedKind,
+        summary: String,
+        detail: Option<String>,
+        strategy: Option<StrategyMemory>,
     ) -> ArenaFeedEvent {
         let (empire_name, empire_color) = match empire_idx.and_then(|idx| self.sim.empires.get(idx))
         {
@@ -128,6 +279,7 @@ impl MatchInner {
             kind,
             summary,
             detail,
+            strategy,
         };
         self.feed_history.push(ev.clone());
         if self.feed_history.len() > MAX_FEED_HISTORY {
@@ -292,6 +444,8 @@ impl MatchHandle {
             tick_delay_ms,
             agent_seats: agent_seats.clone(),
             pending_submissions: BTreeMap::new(),
+            latest_strategy: HashMap::new(),
+            prev_epoch_snapshots: HashMap::new(),
             epoch_deadline_ms: initial_deadline,
             feed_history: Vec::new(),
             next_feed_id: 1,
@@ -442,8 +596,32 @@ async fn run_match_loop(
             let submissions = std::mem::take(&mut guard.pending_submissions);
             let mut new_feed_events = Vec::new();
 
+            // Capture start-of-epoch baseline snapshot for every empire so EpochDelta at epoch+1 is exact
+            let num_empires = guard.sim.empires.len();
+            for emp_i in 0..num_empires {
+                let snap = guard.capture_empire_snapshot(emp_i);
+                guard.prev_epoch_snapshots.insert(emp_i, snap);
+            }
+
             for (emp_idx, decision) in submissions {
-                if let Some(note) = decision.reasoning_note {
+                if let Some(mem) = decision.strategy_memory {
+                    guard.latest_strategy.insert(emp_idx, mem.clone());
+                    let summary = if mem.phase.is_empty() {
+                        mem.rationale.clone()
+                    } else if mem.rationale.is_empty() {
+                        format!("[{}]", mem.phase)
+                    } else {
+                        format!("[{}] {}", mem.phase, mem.rationale)
+                    };
+                    let ev = guard.push_feed_event_with_strategy(
+                        Some(emp_idx),
+                        ArenaFeedKind::StrategyUpdate,
+                        summary,
+                        None,
+                        Some(mem),
+                    );
+                    new_feed_events.push(ev);
+                } else if let Some(note) = decision.reasoning_note {
                     let trimmed = note.trim();
                     if !trimmed.is_empty() {
                         let ev = guard.push_feed_event(
@@ -458,18 +636,39 @@ async fn run_match_loop(
 
                 for cmd in &decision.commands {
                     let ev = match cmd {
-                        StrategicCommand::SetPolicy(pol) => guard.push_feed_event(
-                            Some(emp_idx),
-                            ArenaFeedKind::PolicyUpdate,
-                            format!(
-                                "Updated policy (fac {:.0}% / ship {:.0}% / tech {:.0}%, minForce {:.2}x)",
-                                pol.fac_share * 100.0,
-                                pol.ship_share * 100.0,
-                                pol.tech_share * 100.0,
-                                pol.min_force_ratio
-                            ),
-                            None,
-                        ),
+                        StrategicCommand::SetPolicy(patch) => {
+                            let mut parts = Vec::new();
+                            if let Some(v) = patch.fac_share {
+                                parts.push(format!("fac {:.0}%", v * 100.0));
+                            }
+                            if let Some(v) = patch.ship_share {
+                                parts.push(format!("ship {:.0}%", v * 100.0));
+                            }
+                            if let Some(v) = patch.tech_share {
+                                parts.push(format!("tech {:.0}%", v * 100.0));
+                            }
+                            if let Some(v) = patch.mine_share {
+                                parts.push(format!("mine {:.0}%", v * 100.0));
+                            }
+                            if let Some(v) = patch.colonize_vs_attack_bias {
+                                parts.push(format!("colBias {:.2}", v));
+                            }
+                            if let Some(v) = patch.min_force_ratio {
+                                parts.push(format!("minForce {:.2}x", v));
+                            }
+                            if patch.tech_alloc.is_some() {
+                                parts.push("techAlloc".to_string());
+                            }
+                            if patch.mineral_weights.is_some() {
+                                parts.push("mineralWeights".to_string());
+                            }
+                            let desc = if parts.is_empty() {
+                                "Updated policy sliders".to_string()
+                            } else {
+                                format!("Updated policy ({})", parts.join(", "))
+                            };
+                            guard.push_feed_event(Some(emp_idx), ArenaFeedKind::PolicyUpdate, desc, None)
+                        }
                         StrategicCommand::SetDiplomacy { target_emp, stance } => {
                             let target_name = guard
                                 .sim

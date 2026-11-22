@@ -3515,6 +3515,7 @@ export class UiController {
     this.arenaFeedCount += 1;
 
     const kindIcons: Record<ArenaFeedEvent['kind'], string> = {
+      StrategyUpdate: '♟️',
       Reasoning: '🧠',
       DipMessage: '📨',
       DiplomacyChange: '🤝',
@@ -3543,13 +3544,78 @@ export class UiController {
 
     meta.appendChild(empSpan);
     meta.appendChild(tagSpan);
-
-    const text = document.createElement('div');
-    text.className = 'arena-feed-text';
-    text.textContent = ev.summary;
-
     item.appendChild(meta);
-    item.appendChild(text);
+
+    if (ev.kind === 'StrategyUpdate' && ev.strategy) {
+      const strat = ev.strategy;
+      const head = document.createElement('div');
+      head.className = 'arena-strategy-head';
+
+      if (strat.phase) {
+        const badge = document.createElement('span');
+        badge.className = 'arena-phase-badge';
+        badge.textContent = strat.phase;
+        head.appendChild(badge);
+      }
+
+      const rat = document.createElement('span');
+      rat.className = 'arena-feed-text';
+      rat.textContent = strat.rationale || ev.summary;
+      head.appendChild(rat);
+      item.appendChild(head);
+
+      if (strat.priorities.length > 0 || strat.pivotTriggers.length > 0 || strat.diplomacyNotes) {
+        const details = document.createElement('details');
+        details.className = 'arena-strategy-details';
+        const sum = document.createElement('summary');
+        sum.textContent = `Priorities (${strat.priorities.length}) • Pivot Triggers (${strat.pivotTriggers.length})`;
+        details.appendChild(sum);
+
+        if (strat.priorities.length > 0) {
+          const secTitle = document.createElement('div');
+          secTitle.className = 'arena-strategy-sub';
+          secTitle.textContent = 'PRIORITIES';
+          details.appendChild(secTitle);
+          const ul = document.createElement('ul');
+          ul.className = 'arena-strategy-list';
+          for (const p of strat.priorities) {
+            const li = document.createElement('li');
+            li.textContent = p;
+            ul.appendChild(li);
+          }
+          details.appendChild(ul);
+        }
+
+        if (strat.pivotTriggers.length > 0) {
+          const secTitle = document.createElement('div');
+          secTitle.className = 'arena-strategy-sub';
+          secTitle.textContent = 'PIVOT TRIGGERS';
+          details.appendChild(secTitle);
+          const ul = document.createElement('ul');
+          ul.className = 'arena-strategy-list';
+          for (const t of strat.pivotTriggers) {
+            const li = document.createElement('li');
+            li.textContent = t;
+            ul.appendChild(li);
+          }
+          details.appendChild(ul);
+        }
+
+        if (strat.diplomacyNotes) {
+          const dip = document.createElement('div');
+          dip.className = 'arena-strategy-dip';
+          dip.textContent = `DIPLOMACY: ${strat.diplomacyNotes}`;
+          details.appendChild(dip);
+        }
+
+        item.appendChild(details);
+      }
+    } else {
+      const text = document.createElement('div');
+      text.className = 'arena-feed-text';
+      text.textContent = ev.summary;
+      item.appendChild(text);
+    }
 
     body.prepend(item);
     while (body.children.length > 150) {

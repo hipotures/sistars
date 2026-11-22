@@ -327,14 +327,18 @@ async fn get_observation(
     let guard = handle.inner.read().await;
     let observation = guard.sim.take_agent_observation(empire_idx);
     let already_submitted = guard.pending_submissions.contains_key(&empire_idx);
+    let previous_strategy = guard.latest_strategy.get(&empire_idx).cloned();
+    let delta = guard.compute_epoch_delta(empire_idx, &observation);
     Ok(Json(ObservationEnvelope {
         match_id: guard.match_id.clone(),
         epoch: guard.epoch,
         tick: guard.sim.ticks,
-        year: guard.sim.year,
+        year: sistars_engine::types::round1(guard.sim.year),
         status: guard.status,
         deadline_ms: guard.epoch_deadline_ms,
         already_submitted,
+        previous_strategy,
+        delta,
         observation,
     }))
 }
@@ -378,6 +382,7 @@ async fn submit_commands(
             empire_idx,
             QueuedDecision {
                 commands: req.commands,
+                strategy_memory: req.strategy_memory,
                 reasoning_note: req.reasoning_note,
             },
         );

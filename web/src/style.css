@@ -1905,3 +1905,63 @@ tr.rep-row-selected:hover {
   word-break: break-all;
   user-select: text;
 }
+
+/* StrategyMemory cards inside AI & DIPLOMACY FEED (Sharp Retro-Tech) */
+.arena-strategy-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.arena-phase-badge {
+  display: inline-block;
+  font-family: monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.arena-strategy-details {
+  margin-top: 4px;
+  font-size: 0.64rem;
+  color: var(--muted);
+}
+
+.arena-strategy-details summary {
+  cursor: pointer;
+  font-family: monospace;
+  color: var(--accent);
+  user-select: none;
+}
+
+.arena-strategy-sub {
+  margin-top: 4px;
+  font-family: monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.arena-strategy-list {
+  margin: 2px 0 2px 14px;
+  padding: 0;
+  color: var(--text);
+}
+
+.arena-strategy-list li {
+  margin-bottom: 1px;
+}
+
+.arena-strategy-dip {
+  margin-top: 4px;
+  font-family: monospace;
+  font-size: 0.6rem;
+  color: var(--yellow);
+}

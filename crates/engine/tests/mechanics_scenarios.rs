@@ -1116,13 +1116,11 @@ fn scenario_fow_scanner_pen_required_for_surface_intel() {
     assert_eq!(intel_enemy.def_est, 0.0);
 
     let obs_non_pen = sim.take_agent_observation(0);
-    for fp in &obs_non_pen.key_points.known_foreign_planets {
+    for fp in &obs_non_pen.enemy_planets {
         assert!(!fp.pen_scanned);
         assert!(fp.pop_est.is_none());
         assert!(fp.fac_est.is_none());
         assert!(fp.def_est.is_none());
-        assert!(fp.hab_est.is_none());
-        assert!(fp.crust_sum_est.is_none());
     }
 
     // 2. Unlock penetrating scanner (scanner_pen = 100 ly >= 85 ly) and step 1 tick
@@ -1227,7 +1225,7 @@ fn scenario_fow_cloak_and_ecm_hide_fleet_from_observation_and_intercept() {
     );
     let obs_hidden = sim.take_agent_observation(0);
     assert!(
-        obs_hidden.key_points.detected_enemy_fleets.is_empty(),
+        obs_hidden.detected_enemy_fleets.is_empty(),
         "Cloaked/ECM-jammed fleet must not appear in AgentObservation.detected_enemy_fleets"
     );
 
@@ -1239,7 +1237,7 @@ fn scenario_fow_cloak_and_ecm_hide_fleet_from_observation_and_intercept() {
 
     let obs_revealed = sim.take_agent_observation(0);
     assert_eq!(
-        obs_revealed.key_points.detected_enemy_fleets.len(),
+        obs_revealed.detected_enemy_fleets.len(),
         1,
         "Fleet should now be detected once Tachyon counters cloak outside ECM"
     );
@@ -1330,11 +1328,11 @@ fn scenario_fow_debris_and_wormholes_hidden_outside_scanners() {
 
     let obs_hidden = sim.take_agent_observation(0);
     assert!(
-        obs_hidden.key_points.visible_debris.is_empty(),
+        obs_hidden.visible_debris.is_empty(),
         "Debris at 160 ly must be invisible to an 80 ly scanner"
     );
     assert!(
-        obs_hidden.key_points.discovered_wormholes.is_empty(),
+        obs_hidden.wormholes.is_empty(),
         "Wormhole at 150 ly must remain undiscovered to an 80 ly scanner"
     );
     assert!(
@@ -1362,12 +1360,12 @@ fn scenario_fow_debris_and_wormholes_hidden_outside_scanners() {
 
     let obs_visible = sim.take_agent_observation(0);
     assert_eq!(
-        obs_visible.key_points.discovered_wormholes.len(),
+        obs_visible.wormholes.len(),
         1,
         "Wormhole at 150 ly must be discovered once scanner_range reaches 200 ly"
     );
     assert_eq!(
-        obs_visible.key_points.visible_debris.len(),
+        obs_visible.visible_debris.len(),
         1,
         "Debris at 160 ly must appear in visible_debris once scanner_range reaches 200 ly"
     );
@@ -1642,52 +1640,147 @@ fn scenario_agent_observation_compact_and_isolated() {
         "Expected compact AgentObservation JSON (< 10 KB) on 1,000-planet map, got {} bytes",
         json.len()
     );
-    assert_eq!(obs.sectors.len(), 16);
+    assert!(!obs.sectors.is_empty() && obs.sectors.len() <= 16);
+    assert_eq!(
+        obs.galaxy_overview.grid_rows * obs.galaxy_overview.grid_cols,
+        16
+    );
 
-    // 2. Total planet accounting across all 16 sectors must equal 1,000
+    // 2. Total planet accounting across all sectors must equal 1,000
     let total_sector_planets: u32 = obs
         .sectors
         .iter()
         .map(|s| {
-            let foreign_sum: u32 = s.foreign_planets_by_emp.iter().map(|&(_, cnt)| cnt as u32).sum();
+            let enemy_sum: u32 = s.enemy_planets_by_emp.iter().map(|&(_, cnt)| cnt as u32).sum();
             s.own_planets as u32
-                + foreign_sum
-                + s.neutral_explored_planets as u32
+                + enemy_sum
+                + s.neutral_known as u32
                 + s.unexplored_stars as u32
         })
         .sum();
     assert_eq!(total_sector_planets, 1000);
+    assert_eq!(obs.galaxy_overview.total_planets, 1000);
+    assert_eq!(
+        obs.galaxy_overview.explored_planets + obs.galaxy_overview.unexplored_planets,
+        1000
+    );
 
-    // 3. Strict Fog-of-War isolation:
-    //    - Every planet in `known_foreign_planets` must be explored in Empire 0's PlanetIntel
-    for fp in &obs.key_points.known_foreign_planets {
-        let intel = sim.planet_intel(0, fp.planet_idx);
+    // 3. No tournament noise (`kills`, `gates`, `lastFit`, `winRate`) or raw `x`/`y` coordinates in AgentObservation JSON
+    for forbidden in ["\"kills\"", "\"gates\"", "\"lastFit\"", "\"winRate\"", "\"x\":", "\"y\":"] {
+        assert!(
+            !json.contains(forbidden),
+            "Forbidden field {forbidden} leaked into AgentObservation JSON!"
+        );
+    }
+
+    // 4. Strict Fog-of-War isolation & separation of enemyPlanets (never neutral owner == 0)
+    for ep in &obs.enemy_planets {
+        assert_ne!(ep.owner_emp, 0, "Neutral planet leaked into enemyPlanets!");
+        assert_ne!(ep.owner_emp, 1, "Own planet leaked into enemyPlanets!");
+        let intel = sim.planet_intel(0, ep.planet_id);
         assert!(
             intel.is_explored(),
             "Unexplored planet #{} leaked into AgentObservation!",
-            fp.planet_idx
+            ep.planet_id
         );
         if !intel.is_pen_scanned() {
             assert!(
-                fp.pop_est.is_none()
-                    && fp.fac_est.is_none()
-                    && fp.def_est.is_none()
-                    && fp.hab_est.is_none()
-                    && fp.crust_sum_est.is_none(),
+                ep.pop_est.is_none() && ep.fac_est.is_none() && ep.def_est.is_none(),
                 "Non-pen-scanned planet #{} leaked surface stats into AgentObservation!",
-                fp.planet_idx
+                ep.planet_id
             );
         }
     }
 
-    //    - Every wormhole in `discovered_wormholes` must be discovered by Empire 0
-    for wh in &obs.key_points.discovered_wormholes {
+    //    - Every wormhole in `wormholes` must have at least one endpoint discovered by Empire 0
+    for wh in &obs.wormholes {
         assert!(
             sim.is_wormhole_discovered(0, wh.wormhole_id),
             "Undiscovered wormhole #{} leaked into AgentObservation!",
             wh.wormhole_id
         );
     }
+}
+
+#[test]
+fn scenario_wormhole_one_sided_discovery_and_camelcase_partial_policy() {
+    use sistars_engine::types::{StrategicCommand, Wormhole};
+
+    let races = classic_races().into_iter().take(2).collect();
+    // Place Empire 1 at (100, 100), Empire 2 at (850, 550), and a wormhole from (120, 100) -> (820, 520).
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 50.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 850.0,
+            y: 550.0,
+            owner: 2,
+            pop: 50.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+    ];
+    let wormholes = vec![Wormhole {
+        x1: 120.0,
+        y1: 100.0,
+        x2: 820.0,
+        y2: 520.0,
+    }];
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), false);
+    sim.wormholes = wormholes;
+    sim.build_planet_neighbors();
+    sim.refresh_initial_fow();
+
+    // 1. Endpoint A is within Empire 1's scanner range, Endpoint B is far away -> toSector MUST be None!
+    assert!(sim.is_wormhole_end_a_discovered(0, 0));
+    assert!(!sim.is_wormhole_end_b_discovered(0, 0));
+    let obs_one_end = sim.take_agent_observation(0);
+    assert_eq!(obs_one_end.wormholes.len(), 1);
+    assert_eq!(obs_one_end.wormholes[0].to_sector, None);
+
+    // 2. Scan Endpoint B -> now BOTH ends are discovered and toSector MUST be Some(...)!
+    sim.scan_area_for_empire(820.0, 520.0, 0, 50.0, 0.0, None);
+    assert!(sim.is_wormhole_end_b_discovered(0, 0));
+    let obs_both_ends = sim.take_agent_observation(0);
+    assert_eq!(obs_both_ends.wormholes.len(), 1);
+    assert!(
+        obs_both_ends.wormholes[0].to_sector.is_some(),
+        "Expected toSector to be populated once endpoint B is discovered"
+    );
+
+    // 3. Test 100% camelCase StrategicCommand deserialization + partial SetPolicy merge
+    let orig_min_force = sim.empires[0].race.doctrine.min_force_ratio;
+    let orig_garrison = sim.empires[0].race.doctrine.min_garrison_count;
+    let cmds_json = r#"[
+        {"setPolicy": {"colonizeVsAttackBias": 0.25, "techAlloc": {"pro": 0.40}}},
+        {"setSectorDirective": {"sectorId": 3, "mode": "Fortify"}},
+        {"setDiplomacy": {"targetEmp": 1, "stance": "Ceasefire"}},
+        {"sendDipMessage": {"toEmp": 1, "text": "CamelCase test cable"}},
+        {"buildHub": {"planetIdx": 0, "kind": "Stargate"}}
+    ]"#;
+    let parsed_cmds: Vec<StrategicCommand> =
+        serde_json::from_str(cmds_json).expect("All camelCase StrategicCommands must deserialize");
+    sim.submit_commands(0, parsed_cmds);
+
+    assert!((sim.empires[0].race.doctrine.colonize_vs_attack_bias - 0.25).abs() < 1e-4);
+    assert!(
+        (sim.empires[0].race.doctrine.min_force_ratio - orig_min_force).abs() < 1e-4,
+        "Partial SetPolicy patch must NOT overwrite omitted fields!"
+    );
+    assert_eq!(sim.empires[0].race.doctrine.min_garrison_count, orig_garrison);
+    assert_eq!(sim.empires[0].sector_directives[3], SectorMode::Fortify);
+    assert_eq!(sim.relations[0][1], DiplomaticStance::Ceasefire);
+    assert!(sim.empires[1]
+        .inbox
+        .iter()
+        .any(|m| m.text == "CamelCase test cable"));
 }
 
 

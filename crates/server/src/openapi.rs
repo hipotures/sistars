@@ -47,16 +47,68 @@ pub fn build_openapi_spec() -> Value {
                     "type": "string",
                     "enum": ["col", "cruiser", "battleship", "bomber", "freight"]
                 },
-                "EmpirePolicy": {
+                "NamedTechLevels": {
                     "type": "object",
-                    "description": "Macro-economic, colonization, and military doctrine executed continuously by the empire's low-level Governor.",
+                    "properties": {
+                        "ene": { "type": "number" },
+                        "wep": { "type": "number" },
+                        "pro": { "type": "number" },
+                        "con": { "type": "number" },
+                        "ele": { "type": "number" },
+                        "bio": { "type": "number" }
+                    },
+                    "required": ["ene", "wep", "pro", "con", "ele", "bio"]
+                },
+                "NamedMinerals": {
+                    "type": "object",
+                    "properties": {
+                        "iron": { "type": "number" },
+                        "bora": { "type": "number" },
+                        "germ": { "type": "number" }
+                    },
+                    "required": ["iron", "bora", "germ"]
+                },
+                "AgentPolicyView": {
+                    "type": "object",
+                    "description": "Clean view of active strategic policy sliders executed continuously by the empire's low-level Governor.",
                     "properties": {
                         "facShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "shipShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "techShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "mineShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-                        "colPopReq": { "type": "number", "minimum": 0.05, "maximum": 0.90 },
-                        "minShipyardPopRatio": { "type": "number", "minimum": 0.05, "maximum": 0.90 },
+                        "colPopReq": { "type": "number", "minimum": 0.05, "maximum": 0.95 },
+                        "minShipyardPopRatio": { "type": "number", "minimum": 0.05, "maximum": 0.95 },
+                        "distExp": { "type": "number" },
+                        "qualExp": { "type": "number" },
+                        "cruiserShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "bshipShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "bomberShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "interceptBias": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "techAlloc": { "$ref": "#/components/schemas/NamedTechLevels" },
+                        "surplusDefShare": { "type": "number" },
+                        "surplusShipShare": { "type": "number" },
+                        "surplusAlchShare": { "type": "number" },
+                        "maxUpkeepRatio": { "type": "number" },
+                        "freightExportThreshold": { "type": "number" },
+                        "freightImportThreshold": { "type": "number" },
+                        "colonizeVsAttackBias": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "minColonizeHab": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "mineralWeights": { "$ref": "#/components/schemas/NamedMinerals" },
+                        "minForceRatio": { "type": "number", "minimum": 0.5, "maximum": 4.0 },
+                        "minGarrisonCount": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["facShare", "shipShare", "techShare", "mineShare", "cruiserShare", "bshipShare", "bomberShare", "techAlloc", "mineralWeights"]
+                },
+                "AgentPolicyPatch": {
+                    "type": "object",
+                    "description": "Partial merge patch for active empire policy. Omitted fields remain unchanged.",
+                    "properties": {
+                        "facShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "shipShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "techShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "mineShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "colPopReq": { "type": "number", "minimum": 0.05, "maximum": 0.95 },
+                        "minShipyardPopRatio": { "type": "number", "minimum": 0.05, "maximum": 0.95 },
                         "distExp": { "type": "number" },
                         "qualExp": { "type": "number" },
                         "cruiserShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
@@ -64,11 +116,15 @@ pub fn build_openapi_spec() -> Value {
                         "bomberShare": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "interceptBias": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "techAlloc": {
-                            "type": "array",
-                            "items": { "type": "number" },
-                            "minItems": 6,
-                            "maxItems": 6,
-                            "description": "Research allocation across [ENE, WEP, PRO, CON, ELE, BIO]."
+                            "type": "object",
+                            "properties": {
+                                "ene": { "type": "number" },
+                                "wep": { "type": "number" },
+                                "pro": { "type": "number" },
+                                "con": { "type": "number" },
+                                "ele": { "type": "number" },
+                                "bio": { "type": "number" }
+                            }
                         },
                         "surplusDefShare": { "type": "number" },
                         "surplusShipShare": { "type": "number" },
@@ -79,23 +135,54 @@ pub fn build_openapi_spec() -> Value {
                         "colonizeVsAttackBias": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "minColonizeHab": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "mineralWeights": {
-                            "type": "array",
-                            "items": { "type": "number" },
-                            "minItems": 3,
-                            "maxItems": 3
+                            "type": "object",
+                            "properties": {
+                                "iron": { "type": "number" },
+                                "bora": { "type": "number" },
+                                "germ": { "type": "number" }
+                            }
                         },
-                        "minForceRatio": { "type": "number", "minimum": 0.75, "maximum": 4.0 },
+                        "minForceRatio": { "type": "number", "minimum": 0.5, "maximum": 4.0 },
                         "minGarrisonCount": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "StrategyMemory": {
+                    "type": "object",
+                    "description": "Private strategic continuity memory persisted server-side per empire across epochs.",
+                    "properties": {
+                        "phase": { "type": "string" },
+                        "priorities": { "type": "array", "items": { "type": "string" } },
+                        "rationale": { "type": "string" },
+                        "diplomacyNotes": { "type": "string" },
+                        "pivotTriggers": { "type": "array", "items": { "type": "string" } }
                     },
-                    "required": ["facShare", "shipShare", "techShare", "colPopReq", "distExp", "qualExp", "cruiserShare", "bshipShare", "bomberShare", "interceptBias", "techAlloc"]
+                    "required": ["phase", "priorities", "rationale", "diplomacyNotes", "pivotTriggers"]
+                },
+                "EpochDelta": {
+                    "type": "object",
+                    "description": "Deterministic epoch-over-epoch change metrics computed server-side for the empire.",
+                    "properties": {
+                        "resPerYearDelta": { "type": "number" },
+                        "planetsDelta": { "type": "integer" },
+                        "fleetsDelta": { "type": "integer" },
+                        "upkeepRatioDelta": { "type": "number" },
+                        "mineralsDelta": { "$ref": "#/components/schemas/NamedMinerals" },
+                        "techLevelsDelta": { "$ref": "#/components/schemas/NamedTechLevels" },
+                        "newContacts": { "type": "array", "items": { "type": "integer" } },
+                        "planetsGained": { "type": "array", "items": { "type": "integer" } },
+                        "planetsLost": { "type": "array", "items": { "type": "integer" } },
+                        "newMessagesCount": { "type": "integer" },
+                        "newAlertsCount": { "type": "integer" }
+                    },
+                    "required": ["resPerYearDelta", "planetsDelta", "fleetsDelta", "upkeepRatioDelta", "mineralsDelta", "techLevelsDelta", "newMessagesCount", "newAlertsCount"]
                 },
                 "StrategicCommand": {
-                    "description": "High-level strategic directive submitted by an AI agent at an epoch boundary.",
+                    "description": "High-level strategic directive submitted by an AI agent at an epoch boundary (100% camelCase).",
                     "oneOf": [
                         {
                             "type": "object",
                             "properties": {
-                                "setPolicy": { "$ref": "#/components/schemas/EmpirePolicy" }
+                                "setPolicy": { "$ref": "#/components/schemas/AgentPolicyPatch" }
                             },
                             "required": ["setPolicy"]
                         },
@@ -105,10 +192,10 @@ pub fn build_openapi_spec() -> Value {
                                 "setDiplomacy": {
                                     "type": "object",
                                     "properties": {
-                                        "target_emp": { "type": "integer", "minimum": 0 },
+                                        "targetEmp": { "type": "integer", "minimum": 0 },
                                         "stance": { "$ref": "#/components/schemas/DiplomaticStance" }
                                     },
-                                    "required": ["target_emp", "stance"]
+                                    "required": ["targetEmp", "stance"]
                                 }
                             },
                             "required": ["setDiplomacy"]
@@ -119,10 +206,10 @@ pub fn build_openapi_spec() -> Value {
                                 "setSectorDirective": {
                                     "type": "object",
                                     "properties": {
-                                        "sector_id": { "type": "integer", "minimum": 0 },
+                                        "sectorId": { "type": "integer", "minimum": 0 },
                                         "mode": { "$ref": "#/components/schemas/SectorMode" }
                                     },
-                                    "required": ["sector_id", "mode"]
+                                    "required": ["sectorId", "mode"]
                                 }
                             },
                             "required": ["setSectorDirective"]
@@ -133,10 +220,10 @@ pub fn build_openapi_spec() -> Value {
                                 "buildHub": {
                                     "type": "object",
                                     "properties": {
-                                        "planet_idx": { "type": "integer", "minimum": 0 },
+                                        "planetIdx": { "type": "integer", "minimum": 0 },
                                         "kind": { "$ref": "#/components/schemas/HubKind" }
                                     },
-                                    "required": ["planet_idx", "kind"]
+                                    "required": ["planetIdx", "kind"]
                                 }
                             },
                             "required": ["buildHub"]
@@ -147,10 +234,10 @@ pub fn build_openapi_spec() -> Value {
                                 "sendDipMessage": {
                                     "type": "object",
                                     "properties": {
-                                        "to_emp": { "type": "integer", "minimum": 0 },
+                                        "toEmp": { "type": "integer", "minimum": 0 },
                                         "text": { "type": "string" }
                                     },
-                                    "required": ["to_emp", "text"]
+                                    "required": ["toEmp", "text"]
                                 }
                             },
                             "required": ["sendDipMessage"]
@@ -168,6 +255,29 @@ pub fn build_openapi_spec() -> Value {
                     },
                     "required": ["tick", "year", "fromEmp", "toEmp", "text"]
                 },
+                "GalaxyOverview": {
+                    "type": "object",
+                    "properties": {
+                        "totalPlanets": { "type": "integer" },
+                        "gridRows": { "type": "integer" },
+                        "gridCols": { "type": "integer" },
+                        "exploredPlanets": { "type": "integer" },
+                        "unexploredPlanets": { "type": "integer" },
+                        "ownPlanets": { "type": "integer" },
+                        "neutralKnownPlanets": { "type": "integer" },
+                        "enemyKnownPlanets": { "type": "integer" },
+                        "victoryGoal": {
+                            "type": "object",
+                            "properties": {
+                                "planetDominancePct": { "type": "number" },
+                                "resourceDominancePct": { "type": "number" },
+                                "maxYear": { "type": "number" }
+                            },
+                            "required": ["planetDominancePct", "resourceDominancePct", "maxYear"]
+                        }
+                    },
+                    "required": ["totalPlanets", "gridRows", "gridCols", "exploredPlanets", "unexploredPlanets", "ownPlanets", "neutralKnownPlanets", "enemyKnownPlanets", "victoryGoal"]
+                },
                 "AgentEmpireSummary": {
                     "type": "object",
                     "properties": {
@@ -177,23 +287,16 @@ pub fn build_openapi_spec() -> Value {
                         "year": { "type": "number" },
                         "tick": { "type": "integer" },
                         "resPerYear": { "type": "number" },
-                        "surfIron": { "type": "number" },
-                        "surfBora": { "type": "number" },
-                        "surfGerm": { "type": "number" },
+                        "minerals": { "$ref": "#/components/schemas/NamedMinerals" },
                         "upkeepRatio": { "type": "number" },
                         "planetCount": { "type": "integer" },
                         "fleetCount": { "type": "integer" },
                         "orbitingFleetCount": { "type": "integer" },
-                        "techLevels": {
-                            "type": "array",
-                            "items": { "type": "number" },
-                            "minItems": 6,
-                            "maxItems": 6
-                        },
-                        "policy": { "$ref": "#/components/schemas/EmpirePolicy" },
+                        "techLevels": { "$ref": "#/components/schemas/NamedTechLevels" },
+                        "policy": { "$ref": "#/components/schemas/AgentPolicyView" },
                         "winnerEmp": { "type": "integer", "nullable": true }
                     },
-                    "required": ["empireId", "name", "prt", "year", "tick", "resPerYear", "planetCount", "fleetCount", "techLevels", "policy"]
+                    "required": ["empireId", "name", "prt", "year", "tick", "resPerYear", "minerals", "planetCount", "fleetCount", "techLevels", "policy"]
                 },
                 "SectorSummary": {
                     "type": "object",
@@ -201,12 +304,14 @@ pub fn build_openapi_spec() -> Value {
                         "sectorId": { "type": "integer" },
                         "row": { "type": "integer" },
                         "col": { "type": "integer" },
+                        "directive": { "$ref": "#/components/schemas/SectorMode" },
+                        "unexploredStars": { "type": "integer" },
                         "ownPlanets": { "type": "integer" },
                         "ownResPerYear": { "type": "number" },
-                        "ownFactories": { "type": "number" },
-                        "unexploredStars": { "type": "integer" },
-                        "neutralExploredPlanets": { "type": "integer" },
-                        "foreignPlanetsByEmp": {
+                        "neutralKnown": { "type": "integer" },
+                        "neutralPenScanned": { "type": "integer" },
+                        "avgNeutralHab": { "type": "number", "nullable": true },
+                        "enemyPlanetsByEmp": {
                             "type": "array",
                             "items": {
                                 "type": "array",
@@ -215,23 +320,10 @@ pub fn build_openapi_spec() -> Value {
                                 "maxItems": 2
                             }
                         },
-                        "avgIntelAgeYears": { "type": "number" },
                         "detectedEnemyFleetPower": { "type": "number" },
-                        "directive": { "$ref": "#/components/schemas/SectorMode" }
+                        "avgIntelAgeYears": { "type": "number" }
                     },
-                    "required": ["sectorId", "row", "col", "ownPlanets", "unexploredStars", "directive"]
-                },
-                "AgentKeyPoints": {
-                    "type": "object",
-                    "properties": {
-                        "topOwnPlanets": { "type": "array", "items": { "type": "object" } },
-                        "knownForeignPlanets": { "type": "array", "items": { "type": "object" } },
-                        "knownStargates": { "type": "array", "items": { "type": "object" } },
-                        "discoveredWormholes": { "type": "array", "items": { "type": "object" } },
-                        "detectedEnemyFleets": { "type": "array", "items": { "type": "object" } },
-                        "visibleDebris": { "type": "array", "items": { "type": "object" } }
-                    },
-                    "required": ["topOwnPlanets", "knownForeignPlanets", "knownStargates", "discoveredWormholes", "detectedEnemyFleets", "visibleDebris"]
+                    "required": ["sectorId", "row", "col", "directive"]
                 },
                 "KnownEmpireSummary": {
                     "type": "object",
@@ -248,18 +340,24 @@ pub fn build_openapi_spec() -> Value {
                             "items": { "$ref": "#/components/schemas/DipMessage" }
                         }
                     },
-                    "required": ["empId", "name", "stance", "knownPlanetsCount", "inbox"]
+                    "required": ["empId", "name", "stance", "knownPlanetsCount"]
                 },
                 "AgentObservation": {
                     "type": "object",
-                    "description": "Fog-of-War-isolated intelligence report for a single empire.",
+                    "description": "Fog-of-War-isolated, topology-only intelligence report for a single empire (no raw x/y coordinates).",
                     "properties": {
+                        "galaxyOverview": { "$ref": "#/components/schemas/GalaxyOverview" },
                         "empire": { "$ref": "#/components/schemas/AgentEmpireSummary" },
                         "sectors": {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/SectorSummary" }
                         },
-                        "keyPoints": { "$ref": "#/components/schemas/AgentKeyPoints" },
+                        "ownHubs": { "type": "array", "items": { "type": "object" } },
+                        "enemyPlanets": { "type": "array", "items": { "type": "object" } },
+                        "wormholes": { "type": "array", "items": { "type": "object" } },
+                        "stargates": { "type": "array", "items": { "type": "object" } },
+                        "detectedEnemyFleets": { "type": "array", "items": { "type": "object" } },
+                        "visibleDebris": { "type": "array", "items": { "type": "object" } },
                         "knownEmpires": {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/KnownEmpireSummary" }
@@ -269,7 +367,7 @@ pub fn build_openapi_spec() -> Value {
                             "items": { "type": "string" }
                         }
                     },
-                    "required": ["empire", "sectors", "keyPoints", "knownEmpires", "recentAlerts"]
+                    "required": ["galaxyOverview", "empire", "sectors"]
                 },
                 "ObservationEnvelope": {
                     "type": "object",
@@ -281,6 +379,14 @@ pub fn build_openapi_spec() -> Value {
                         "status": { "$ref": "#/components/schemas/MatchStatus" },
                         "deadlineMs": { "type": "integer", "nullable": true },
                         "alreadySubmitted": { "type": "boolean" },
+                        "previousStrategy": {
+                            "nullable": true,
+                            "allOf": [{ "$ref": "#/components/schemas/StrategyMemory" }]
+                        },
+                        "delta": {
+                            "nullable": true,
+                            "allOf": [{ "$ref": "#/components/schemas/EpochDelta" }]
+                        },
                         "observation": { "$ref": "#/components/schemas/AgentObservation" }
                     },
                     "required": ["matchId", "epoch", "tick", "year", "status", "alreadySubmitted", "observation"]
@@ -289,6 +395,10 @@ pub fn build_openapi_spec() -> Value {
                     "type": "object",
                     "properties": {
                         "epoch": { "type": "integer", "nullable": true },
+                        "strategyMemory": {
+                            "nullable": true,
+                            "allOf": [{ "$ref": "#/components/schemas/StrategyMemory" }]
+                        },
                         "commands": {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/StrategicCommand" }
@@ -296,7 +406,7 @@ pub fn build_openapi_spec() -> Value {
                         "reasoningNote": {
                             "type": "string",
                             "nullable": true,
-                            "description": "Private chain-of-thought or commentary visible only in match logs and Spectator Mode (never exposed to other agents)."
+                            "description": "Optional fallback commentary if strategyMemory is omitted."
                         }
                     },
                     "required": ["commands"]

@@ -175,13 +175,15 @@ async fn e2e_token_isolation_and_fow() {
     assert_eq!(obs0["observation"]["empire"]["empireId"].as_u64(), Some(1));
     assert_eq!(obs1["observation"]["empire"]["empireId"].as_u64(), Some(2));
 
-    let p0_idx = obs0["observation"]["keyPoints"]["topOwnPlanets"][0]["planetIdx"]
+    let p0_idx = obs0["observation"]["ownHubs"][0]["planetId"]
         .as_u64()
         .unwrap();
-    let p1_idx = obs1["observation"]["keyPoints"]["topOwnPlanets"][0]["planetIdx"]
+    let p1_idx = obs1["observation"]["ownHubs"][0]["planetId"]
         .as_u64()
         .unwrap();
     assert_ne!(p0_idx, p1_idx, "Empires 0 and 1 must see their own distinct homeworlds");
+    assert!(obs0["previousStrategy"].is_null(), "Epoch 0 previousStrategy must be null");
+    assert!(obs0["delta"].is_null(), "Epoch 0 delta must be null");
 
     // 5. Private reasoning_note from Empire 0 MUST NEVER leak to Empire 1's observation
     let secret_note = "SECRET_OMEGA_BACKSTAB_PLAN_999";
@@ -366,19 +368,25 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
     assert_eq!(init_json["type"].as_str(), Some("init"));
     assert!(init_json["planetsBuf"].as_array().unwrap().len() >= 120 * 7);
 
-    // Seat 0 sends SendDipMessage + SetDiplomacy(Ceasefire) + private reasoningNote
+    // Seat 0 sends SendDipMessage + SetDiplomacy(Ceasefire) + private strategyMemory (all camelCase!)
     let cable_text = "Ceasefire proposal along northern spiral arm";
-    let reasoning_text = "Secure northern flank while ramping factories";
+    let secret_rationale = "SECRET_STRATEGY_RATIONALE_SECURE_NORTH";
     let res0 = srv
         .client
         .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
         .bearer_auth(&tok0)
         .json(&json!({
             "epoch": 0,
-            "reasoningNote": reasoning_text,
+            "strategyMemory": {
+                "phase": "Early Expansion",
+                "priorities": ["Colonize northern arm", "Push Electronics"],
+                "rationale": secret_rationale,
+                "diplomacyNotes": "Seeking ceasefire with Empire 2",
+                "pivotTriggers": ["Shift to war if Empire 2 violates ceasefire"]
+            },
             "commands": [
-                { "setDiplomacy": { "target_emp": 1, "stance": "Ceasefire" } },
-                { "sendDipMessage": { "to_emp": 1, "text": cable_text } }
+                { "setDiplomacy": { "targetEmp": 1, "stance": "Ceasefire" } },
+                { "sendDipMessage": { "toEmp": 1, "text": cable_text } }
             ]
         }))
         .send()
@@ -386,7 +394,7 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
         .unwrap();
     assert_eq!(res0.status(), StatusCode::OK);
 
-    // Seat 1 sets a SectorDirective
+    // Seat 1 sets a SectorDirective (camelCase)
     let res1 = srv
         .client
         .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
@@ -394,7 +402,7 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
         .json(&json!({
             "epoch": 0,
             "commands": [
-                { "setSectorDirective": { "sector_id": 0, "mode": "Fortify" } }
+                { "setSectorDirective": { "sectorId": 0, "mode": "Fortify" } }
             ]
         }))
         .send()
@@ -405,7 +413,35 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
     // Wait for epoch 1 to complete
     wait_for_epoch(&srv, &match_id, 1, Duration::from_secs(3)).await;
 
-    // Verify Seat 1 received Seat 0's diplomatic message in its inbox & Ceasefire stance
+    // Verify Seat 0 gets its own previousStrategy & non-null EpochDelta at Epoch 1
+    let obs0_ep1: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .bearer_auth(&tok0)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        obs0_ep1["previousStrategy"]["phase"].as_str(),
+        Some("Early Expansion")
+    );
+    assert_eq!(
+        obs0_ep1["previousStrategy"]["rationale"].as_str(),
+        Some(secret_rationale)
+    );
+    assert!(
+        obs0_ep1["delta"].is_object(),
+        "Epoch 1 delta must be populated, got: {}",
+        obs0_ep1["delta"]
+    );
+    assert!(obs0_ep1["delta"]["resPerYearDelta"].is_number());
+    assert!(obs0_ep1["delta"]["planetsDelta"].is_i64());
+
+    // Verify Seat 1 received Seat 0's diplomatic message in its inbox & Ceasefire stance,
+    // and NEVER sees Seat 0's private strategyMemory!
     let obs1: Value = srv
         .client
         .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
@@ -428,20 +464,22 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
         "Expected diplomatic message in Seat 1 inbox, got {inbox:?}"
     );
     assert!(
-        !serde_json::to_string(&obs1).unwrap().contains(reasoning_text),
-        "Private reasoningNote must not leak to Seat 1 observation"
+        !serde_json::to_string(&obs1).unwrap().contains(secret_rationale),
+        "Private strategyMemory must NEVER leak to Seat 1 observation"
     );
+    assert!(obs1["previousStrategy"].is_null());
+    assert!(obs1["delta"]["newMessagesCount"].as_u64().unwrap_or(0) >= 1);
 
-    // Drain Spectator WS messages and verify we received Frames + Reasoning + DipMessage + DiplomacyChange + SectorDirective
+    // Drain Spectator WS messages and verify we received Frames + StrategyUpdate + DipMessage + DiplomacyChange + SectorDirective
     let mut saw_frame = false;
-    let mut saw_reasoning = false;
+    let mut saw_strategy = false;
     let mut saw_dip_msg = false;
     let mut saw_dip_change = false;
     let mut saw_sector_dir = false;
 
     let collect_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < collect_deadline {
-        if saw_frame && saw_reasoning && saw_dip_msg && saw_dip_change && saw_sector_dir {
+        if saw_frame && saw_strategy && saw_dip_msg && saw_dip_change && saw_sector_dir {
             break;
         }
         match tokio::time::timeout(Duration::from_millis(250), ws_stream.next()).await {
@@ -456,10 +494,10 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
                     Some("feed") => {
                         let ev = &v["event"];
                         match ev["kind"].as_str() {
-                            Some("Reasoning")
-                                if ev["summary"].as_str() == Some(reasoning_text) =>
+                            Some("StrategyUpdate")
+                                if ev["strategy"]["rationale"].as_str() == Some(secret_rationale) =>
                             {
-                                saw_reasoning = true;
+                                saw_strategy = true;
                             }
                             Some("DipMessage")
                                 if ev["summary"]
@@ -482,8 +520,8 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
 
     assert!(saw_frame, "Spectator WS must receive live map render frames");
     assert!(
-        saw_reasoning,
-        "Spectator WS must receive private reasoningNote ArenaFeedEvent"
+        saw_strategy,
+        "Spectator WS must receive StrategyUpdate ArenaFeedEvent with full StrategyMemory"
     );
     assert!(saw_dip_msg, "Spectator WS must receive DipMessage ArenaFeedEvent");
     assert!(
@@ -512,7 +550,9 @@ async fn e2e_openapi_system_view_and_live_auditor() {
         .unwrap();
     assert!(spec["openapi"].as_str().unwrap().starts_with("3.0"));
     assert!(spec["components"]["schemas"]["AgentObservation"].is_object());
-    assert!(spec["components"]["schemas"]["EmpirePolicy"].is_object());
+    assert!(spec["components"]["schemas"]["AgentPolicyPatch"].is_object());
+    assert!(spec["components"]["schemas"]["StrategyMemory"].is_object());
+    assert!(spec["components"]["schemas"]["EpochDelta"].is_object());
     assert!(spec["components"]["schemas"]["StrategicCommand"].is_object());
 
     // 2. Create match with debug_audit = true and run 3 epochs
