@@ -3182,7 +3182,7 @@ export class UiController {
       // Pre-fill size/shape from current config
       const sizeSel = document.getElementById('arenaNewSize') as HTMLSelectElement | null;
       const shapeSel = document.getElementById('arenaNewShape') as HTMLSelectElement | null;
-      if (sizeSel && this.lastConfig.galaxySize !== 'galactic') {
+      if (sizeSel) {
         sizeSel.value = this.lastConfig.galaxySize;
       }
       if (shapeSel) {

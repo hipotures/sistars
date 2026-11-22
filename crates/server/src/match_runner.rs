@@ -501,6 +501,7 @@ async fn run_match_loop(
 
         // Phase C: Step simulation for `ticks_per_epoch` ticks (halting immediately on victory, honoring live pause/speed/step)
         let epoch_start = Instant::now();
+        let mut last_ws_broadcast = Instant::now() - Duration::from_secs(1);
         let mut finished = false;
         let mut ticks_done = 0u32;
 
@@ -541,12 +542,20 @@ async fn run_match_loop(
 
                 let cur_stride = guard.frame_stride_ticks.max(1);
                 let cur_delay = guard.tick_delay_ms;
+                let planet_count = guard.sim.owner.len();
+                let min_ws_interval_ms: u64 = if planet_count >= 50_000 {
+                    250
+                } else if planet_count >= 5_000 {
+                    80
+                } else {
+                    33
+                };
+                let ws_due = last_ws_broadcast.elapsed() >= Duration::from_millis(min_ws_interval_ms);
                 let is_victory = guard.sim.winner.is_some();
                 let is_last = step_i + 1 == ticks_per_epoch;
                 let should_broadcast = was_stepped
                     || is_victory
-                    || is_last
-                    || ((step_i + 1) % cur_stride == 0);
+                    || (ws_due && (is_last || ((step_i + 1) % cur_stride == 0)));
 
                 if is_victory {
                     finished = true;
@@ -567,6 +576,7 @@ async fn run_match_loop(
                 }
 
                 let frame = if should_broadcast && ws_tx.receiver_count() > 0 {
+                    last_ws_broadcast = Instant::now();
                     let elapsed = epoch_start.elapsed().as_secs_f32().max(0.001);
                     let tps = if guard.paused {
                         0.0
