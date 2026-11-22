@@ -182,6 +182,7 @@ async function bootstrap(): Promise<void> {
     seed: randomSeed(),
     initialSettings: {
       ignoreRacialTraits: persisted.ignoreRacialTraits,
+      disableStargates: persisted.disableStargates,
       galaxySize: persisted.galaxySize,
       galaxyShape: persisted.galaxyShape,
       wormholePairs: persisted.wormholePairs,
@@ -474,6 +475,7 @@ async function bootstrap(): Promise<void> {
     },
     onParamChange: (key, value) => {
       if (key === 'ignoreRacialTraits') persisted.ignoreRacialTraits = value !== 0;
+      else if (key === 'disableStargates') persisted.disableStargates = value !== 0;
       else if (key === 'wormholePairs') persisted.wormholePairs = value;
       else if (key === 'crustRichness') persisted.crustRichness = value;
       else if (key === 'gateCost') persisted.gateCost = value;

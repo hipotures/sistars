@@ -128,7 +128,7 @@ pub struct Fleet {
     pub used_wh: bool,
     pub steer_x: f32,
     pub steer_y: f32,
-    pub wh_route: i8,
+    pub wh_route: i16,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -252,6 +252,7 @@ pub struct HudSnapshot {
 pub struct ReportsSnapshot {
     pub planets: Vec<PlanetView>,
     pub fleets: Vec<Fleet>,
+    pub debris_fields: Vec<DebrisField>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -29,6 +29,7 @@ export interface PersistedSettings {
 
   // World Rules & Galaxy Generator
   ignoreRacialTraits: boolean;
+  disableStargates: boolean;
   galaxySize: GalaxySize;
   galaxyShape: GalaxyShape;
   wormholePairs: number;
@@ -53,6 +54,7 @@ export const DEFAULT_SETTINGS: PersistedSettings = {
   contourOpacity: 22,
 
   ignoreRacialTraits: false,
+  disableStargates: false,
   galaxySize: 'small',
   galaxyShape: 'spiral',
   wormholePairs: 2,
@@ -108,9 +110,13 @@ export function loadPersistedSettings(): PersistedSettings {
         typeof parsed.ignoreRacialTraits === 'boolean'
           ? parsed.ignoreRacialTraits
           : DEFAULT_SETTINGS.ignoreRacialTraits,
+      disableStargates:
+        typeof parsed.disableStargates === 'boolean'
+          ? parsed.disableStargates
+          : DEFAULT_SETTINGS.disableStargates,
       galaxySize: gs,
       galaxyShape: gsh,
-      wormholePairs: Math.round(clampNum(parsed.wormholePairs, DEFAULT_SETTINGS.wormholePairs, 0, 5)),
+      wormholePairs: Math.round(clampNum(parsed.wormholePairs, DEFAULT_SETTINGS.wormholePairs, 0, 500)),
       crustRichness: Math.round(clampNum(parsed.crustRichness, DEFAULT_SETTINGS.crustRichness, 300, 2500)),
       gateCost: Math.round(clampNum(parsed.gateCost, DEFAULT_SETTINGS.gateCost, 15, 120)),
       interceptRad: Math.round(clampNum(parsed.interceptRad, DEFAULT_SETTINGS.interceptRad, 8, 50)),

@@ -120,6 +120,7 @@ export interface SimConfig {
   growth: number;
   opLimit: number;
   ignoreRacialTraits: boolean;
+  disableStargates: boolean;
 }
 
 export interface EmpireStats {
@@ -288,6 +289,7 @@ export interface HudSnapshot {
 export interface ReportsSnapshot {
   planets: PlanetView[];
   fleets: FleetView[];
+  debrisFields: DebrisFieldView[];
 }
 
 export type MapSelection =

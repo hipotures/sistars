@@ -217,6 +217,7 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
     if (msg.initialSettings) {
       const s = msg.initialSettings;
       if (s.ignoreRacialTraits) engine.update_param('ignoreRacialTraits', 1, msg.seed);
+      if (s.disableStargates) engine.update_param('disableStargates', 1, msg.seed);
       if (s.wormholePairs !== 2) engine.update_param('wormholePairs', s.wormholePairs, msg.seed);
       if (s.crustRichness !== 800) engine.update_param('crustRichness', s.crustRichness, msg.seed);
       if (s.gateCost !== 45) engine.update_param('gateCost', s.gateCost, msg.seed);

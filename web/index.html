@@ -264,9 +264,12 @@
 <div class="drawer wide" id="drawerReports">
   <div class="drawer-head">
     <div class="drawer-title">📋 Empire Reports</div>
-    <div style="display:flex; gap:6px;">
+    <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center;">
       <button class="hud-btn active" id="repBtnPlanets" data-report="planets">Planets (90)</button>
-      <button class="hud-btn" id="repBtnFleets" data-report="fleets">Fleets in Flight (0)</button>
+      <button class="hud-btn" id="repBtnFleets" data-report="fleets">Fleets (0)</button>
+      <button class="hud-btn" id="repBtnStargates" data-report="stargates">🌀 Gates (0)</button>
+      <button class="hud-btn" id="repBtnWormholes" data-report="wormholes">🟣 Wormholes (2)</button>
+      <button class="hud-btn" id="repBtnDebris" data-report="debris">✦ Debris (0)</button>
       <button class="insp-close" data-close-drawer="drawerReports">✕</button>
     </div>
   </div>
@@ -291,6 +294,33 @@
         <tr><th>#</th><th>AI</th><th>Class / Order</th><th>Route</th><th>Power / HP</th><th>Dist</th><th>ETA</th></tr>
       </thead>
       <tbody id="fleetTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap" id="repStargatesWrap" style="display:none;">
+    <table>
+      <thead>
+        <tr><th>Planet</th><th>AI</th><th>Stargate Tech</th><th>Defense</th><th>Res/yr</th><th>Coords</th></tr>
+      </thead>
+      <tbody id="stargateTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap" id="repWormholesWrap" style="display:none;">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Endpoint A</th><th>Endpoint B</th><th>Span</th><th>Focus</th></tr>
+      </thead>
+      <tbody id="wormholeTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap" id="repDebrisWrap" style="display:none;">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Total</th><th class="c-iron">Iron</th><th class="c-bora">Bora</th><th class="c-germ">Germ</th><th>TTL</th><th>Coords</th></tr>
+      </thead>
+      <tbody id="debrisTableBody"></tbody>
     </table>
   </div>
 </div>
@@ -359,7 +389,22 @@
       <option value="elliptical">Elliptical (Dense Bulge)</option>
     </select>
   </div>
-  <div class="field"><div class="field-header"><span>Wormhole pairs</span><span class="val" id="v_wormholePairs">2</span></div><input type="range" id="p_wormholePairs" data-param="wormholePairs" min="0" max="5" step="1" value="2"></div>
+  <div class="field">
+    <div class="field-header"><span>Wormhole pairs</span><span class="val" id="v_wormholePairs">2</span></div>
+    <input type="range" id="p_wormholePairs" data-param="wormholePairs" min="0" max="500" step="1" value="2">
+    <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">
+      <button class="hud-btn" data-wh-preset="0" style="padding:2px 6px;font-size:0.62rem;">0</button>
+      <button class="hud-btn" data-wh-preset="2" style="padding:2px 6px;font-size:0.62rem;">2</button>
+      <button class="hud-btn" data-wh-preset="25" style="padding:2px 6px;font-size:0.62rem;">25</button>
+      <button class="hud-btn" data-wh-preset="100" style="padding:2px 6px;font-size:0.62rem;">100</button>
+      <button class="hud-btn" data-wh-preset="250" style="padding:2px 6px;font-size:0.62rem;">250</button>
+      <button class="hud-btn" data-wh-preset="500" style="padding:2px 6px;font-size:0.62rem;">500</button>
+    </div>
+  </div>
+  <label class="checkbox-row">
+    <input type="checkbox" id="p_disableStargates" />
+    <span>Disable Stargates (Wormhole-only mode)</span>
+  </label>
   <div class="field"><div class="field-header"><span>Crust richness I/B/G (kT)</span><span class="val" id="v_crustRichness">800</span></div><input type="range" id="p_crustRichness" data-param="crustRichness" min="300" max="2500" step="100" value="800"></div>
 
   <h3>4. Stargate &amp; Space Combat</h3>

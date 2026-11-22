@@ -329,6 +329,7 @@ pub struct Simulation {
     // Reusable spatial grids & per-tick scratch buffers (zero per-tick allocations)
     fleet_grid: UniformGrid,
     debris_grid: UniformGrid,
+    wh_grid: UniformGrid,
     gate_lists: Vec<Vec<usize>>,
     p_counts: Vec<u32>,
     pub tick_stats: Vec<EmpireStats>,
@@ -414,6 +415,7 @@ impl Simulation {
             wh_near_b: Vec::new(),
             fleet_grid: UniformGrid::default(),
             debris_grid: UniformGrid::default(),
+            wh_grid: UniformGrid::default(),
             gate_lists: vec![Vec::new(); num_emp],
             p_counts: vec![0; num_emp],
             tick_stats: vec![EmpireStats::default(); num_emp],
@@ -583,28 +585,84 @@ impl Simulation {
             self.neighbor_offsets.push(self.neighbor_data.len() as u32);
         }
 
-        // Precompute closest 20 planets to each wormhole endpoint (O(W * N), <= 5 wormholes)
+        // Precompute closest 20 planets to each wormhole endpoint (grid-accelerated for 100-500 wormholes)
         self.wh_near_a.clear();
         self.wh_near_b.clear();
         let wh_k = 20usize.min(n);
-        for wh in &self.wormholes {
-            for (ex, ey, dest) in [
-                (wh.x1, wh.y1, &mut self.wh_near_a),
-                (wh.x2, wh.y2, &mut self.wh_near_b),
-            ] {
-                scratch.clear();
-                for j in 0..n {
-                    let dx = self.pos_x[j] - ex;
-                    let dy = self.pos_y[j] - ey;
-                    scratch.push((j as u32, dx * dx + dy * dy));
+        if n > 1200 {
+            let wh_search_rad = search_rad;
+            for wh in &self.wormholes {
+                for (ex, ey, dest) in [
+                    (wh.x1, wh.y1, &mut self.wh_near_a),
+                    (wh.x2, wh.y2, &mut self.wh_near_b),
+                ] {
+                    scratch.clear();
+                    grid.for_each_in_radius(ex, ey, wh_search_rad, |entry| {
+                        let dx = entry.x - ex;
+                        let dy = entry.y - ey;
+                        scratch.push((entry.idx, dx * dx + dy * dy));
+                    });
+                    if scratch.len() < wh_k {
+                        scratch.clear();
+                        for j in 0..n {
+                            let dx = self.pos_x[j] - ex;
+                            let dy = self.pos_y[j] - ey;
+                            scratch.push((j as u32, dx * dx + dy * dy));
+                        }
+                    }
+                    if wh_k < scratch.len() {
+                        scratch.select_nth_unstable_by(wh_k, |a, b| a.1.total_cmp(&b.1));
+                        scratch.truncate(wh_k);
+                    }
+                    scratch.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    dest.push(scratch.iter().map(|&(j, d_sq)| (j, d_sq.sqrt())).collect());
                 }
-                if wh_k < scratch.len() {
-                    scratch.select_nth_unstable_by(wh_k, |a, b| a.1.total_cmp(&b.1));
-                    scratch.truncate(wh_k);
-                }
-                scratch.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-                dest.push(scratch.iter().map(|&(j, d_sq)| (j, d_sq.sqrt())).collect());
             }
+        } else {
+            for wh in &self.wormholes {
+                for (ex, ey, dest) in [
+                    (wh.x1, wh.y1, &mut self.wh_near_a),
+                    (wh.x2, wh.y2, &mut self.wh_near_b),
+                ] {
+                    scratch.clear();
+                    for j in 0..n {
+                        let dx = self.pos_x[j] - ex;
+                        let dy = self.pos_y[j] - ey;
+                        scratch.push((j as u32, dx * dx + dy * dy));
+                    }
+                    if wh_k < scratch.len() {
+                        scratch.select_nth_unstable_by(wh_k, |a, b| a.1.total_cmp(&b.1));
+                        scratch.truncate(wh_k);
+                    }
+                    scratch.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    dest.push(scratch.iter().map(|&(j, d_sq)| (j, d_sq.sqrt())).collect());
+                }
+            }
+        }
+
+        // Build static CSR UniformGrid of all wormhole endpoints for O(1) AI relay & fleet jump lookups
+        let wh_endpoints = self.wormholes.len() * 2;
+        if wh_endpoints > 0 {
+            let wormholes = &self.wormholes;
+            self.wh_grid.build(self.world_w, self.world_h, 96.0, wh_endpoints, |idx| {
+                let w = idx / 2;
+                let dir = idx % 2;
+                let wh = wormholes[w];
+                let (x, y) = if dir == 0 {
+                    (wh.x1, wh.y1)
+                } else {
+                    (wh.x2, wh.y2)
+                };
+                GridEntry {
+                    x,
+                    y,
+                    idx: idx as u32,
+                    tag: 0,
+                    flags: 0,
+                }
+            });
+        } else {
+            self.wh_grid.build(self.world_w, self.world_h, 96.0, 0, |_| GridEntry::default());
         }
     }
 
@@ -860,7 +918,7 @@ impl Simulation {
                 alch_mult: (0.45 * prt_alch * lrt_alch * perk_alch) / alch_base,
                 def_cap: 65.0 * (0.7 + tc.defense_coverage * 0.45) * prt_def_mult,
                 def_surplus_rate: if prt_is { 0.22 } else { 0.12 },
-                has_stargate_tech: tc.stargate_name.is_some(),
+                has_stargate_tech: !self.cfg.disable_stargates && tc.stargate_name.is_some(),
                 max_gates: if prt_it {
                     (self.p_counts[e] as usize / 4).max(2)
                 } else {
@@ -1106,7 +1164,7 @@ impl Simulation {
                 {
                     let mut best_target: Option<usize> = None;
                     let mut best_score = -1.0f32;
-                    let mut best_wh_route: i8 = -1;
+                    let mut best_wh_route: i16 = -1;
                     let mut mission = FleetClass::Col;
                     let my_bit = 1u16 << e;
                     let dist_exp = ec.dist_exp;
@@ -1194,48 +1252,64 @@ impl Simulation {
                             }
                         }
 
-                        // Check natural Wormhole relays (jump itself costs 0 fuel; fuel = dist_to_entry + dist_from_exit)
+                        // Check natural Wormhole relays via static CSR wh_grid (O(1) even with 500 wormholes!)
                         if !self.wormholes.is_empty() {
                             let xi = self.pos_x[i];
                             let yi = self.pos_y[i];
-                            for w in 0..self.wormholes.len() {
-                                let wh = self.wormholes[w];
-                                for dir in 0..2u8 {
-                                    let (ex, ey, near_exit) = if dir == 0 {
-                                        (wh.x1, wh.y1, &self.wh_near_b[w])
-                                    } else {
-                                        (wh.x2, wh.y2, &self.wh_near_a[w])
-                                    };
-                                    let d_entry = (ex - xi).hypot(ey - yi);
-                                    if d_entry >= col_range * 0.88 {
-                                        continue;
+                            let max_entry = col_range * 0.88;
+                            let max_entry_sq = max_entry * max_entry;
+                            let wh_near_a = &self.wh_near_a;
+                            let wh_near_b = &self.wh_near_b;
+                            let owner_ref = &self.owner;
+                            let claim_ref = &self.claim_mask;
+                            let min_crust_ref = &self.min_crust;
+                            let hab_ref = &self.hab;
+                            let mut checked_wh = 0u32;
+                            self.wh_grid.for_each_in_radius(xi, yi, max_entry, |entry| {
+                                if checked_wh >= 16 {
+                                    return;
+                                }
+                                let dx = entry.x - xi;
+                                let dy = entry.y - yi;
+                                let d_entry_sq = dx * dx + dy * dy;
+                                if d_entry_sq >= max_entry_sq {
+                                    return;
+                                }
+                                checked_wh += 1;
+                                let d_entry = d_entry_sq.sqrt();
+                                let rem_range = col_range - d_entry;
+                                let w = (entry.idx / 2) as usize;
+                                let dir = (entry.idx % 2) as u8;
+                                let near_exit = if dir == 0 {
+                                    &wh_near_b[w]
+                                } else {
+                                    &wh_near_a[w]
+                                };
+                                for &(j_u32, d_exit) in near_exit {
+                                    if d_exit > rem_range {
+                                        break;
                                     }
-                                    let rem_range = col_range - d_entry;
-                                    for &(j_u32, d_exit) in near_exit {
-                                        if d_exit > rem_range {
-                                            break;
-                                        }
-                                        let j = j_u32 as usize;
-                                        if self.owner[j] == 0 && (self.claim_mask[j] & my_bit) == 0 {
-                                            let d = (d_entry + d_exit).max(25.0);
-                                            let sum_crust = self.min_crust[j * 3]
-                                                + self.min_crust[j * 3 + 1]
-                                                + self.min_crust[j * 3 + 2];
-                                            let h = self.hab[j];
-                                            let quality = (h * h.sqrt()) * (0.4 + sum_crust * inv_crust_norm);
-                                            let score = (quality.powf(qual_exp)
-                                                / (d / 180.0).powf(dist_exp))
-                                                * 1.08;
-                                            if score > best_score {
-                                                best_score = score;
-                                                best_target = Some(j);
-                                                best_wh_route = (w as i8) * 2 + (dir as i8);
-                                                mission = FleetClass::Col;
-                                            }
+                                    let j = j_u32 as usize;
+                                    if owner_ref[j] == 0 && (claim_ref[j] & my_bit) == 0 {
+                                        let d = (d_entry + d_exit).max(25.0);
+                                        let sum_crust = min_crust_ref[j * 3]
+                                            + min_crust_ref[j * 3 + 1]
+                                            + min_crust_ref[j * 3 + 2];
+                                        let h = hab_ref[j];
+                                        let quality =
+                                            (h * h.sqrt()) * (0.4 + sum_crust * inv_crust_norm);
+                                        let score = (quality.powf(qual_exp)
+                                            / (d / 180.0).powf(dist_exp))
+                                            * 1.08;
+                                        if score > best_score {
+                                            best_score = score;
+                                            best_target = Some(j);
+                                            best_wh_route = entry.idx as i16;
+                                            mission = FleetClass::Col;
                                         }
                                     }
                                 }
-                            }
+                            });
                         }
                     }
 
@@ -1391,68 +1465,85 @@ impl Simulation {
                                 }
                             }
 
-                            // Check natural Wormhole invasion relays (0 fuel jump; fuel = dist_to_entry + dist_from_exit)
+                            // Check natural Wormhole invasion relays via static CSR wh_grid (O(1) even with 500 wormholes!)
                             if !self.wormholes.is_empty() {
                                 let xi = self.pos_x[i];
                                 let yi = self.pos_y[i];
-                                for w in 0..self.wormholes.len() {
-                                    let wh = self.wormholes[w];
-                                    for dir in 0..2u8 {
-                                        let (ex, ey, near_exit) = if dir == 0 {
-                                            (wh.x1, wh.y1, &self.wh_near_b[w])
-                                        } else {
-                                            (wh.x2, wh.y2, &self.wh_near_a[w])
-                                        };
-                                        let d_entry = (ex - xi).hypot(ey - yi);
-                                        if d_entry >= ship_range * 0.88 {
-                                            continue;
+                                let max_entry = ship_range * 0.88;
+                                let max_entry_sq = max_entry * max_entry;
+                                let wh_near_a = &self.wh_near_a;
+                                let wh_near_b = &self.wh_near_b;
+                                let owner_ref = &self.owner;
+                                let explored_ref = &self.explored_mask;
+                                let claim_ref = &self.claim_mask;
+                                let defense_ref = &self.defense;
+                                let pop_ref = &self.pop;
+                                let factories_ref = &self.factories;
+                                let empires_ref = &self.empires;
+                                let aggro_bias = self.cfg.aggro_bias;
+                                let mut checked_wh = 0u32;
+                                self.wh_grid.for_each_in_radius(xi, yi, max_entry, |entry| {
+                                    if checked_wh >= 16 {
+                                        return;
+                                    }
+                                    let dx = entry.x - xi;
+                                    let dy = entry.y - yi;
+                                    let d_entry_sq = dx * dx + dy * dy;
+                                    if d_entry_sq >= max_entry_sq {
+                                        return;
+                                    }
+                                    checked_wh += 1;
+                                    let d_entry = d_entry_sq.sqrt();
+                                    let rem_range = ship_range - d_entry;
+                                    let w = (entry.idx / 2) as usize;
+                                    let dir = (entry.idx % 2) as u8;
+                                    let near_exit = if dir == 0 {
+                                        &wh_near_b[w]
+                                    } else {
+                                        &wh_near_a[w]
+                                    };
+                                    for &(j_u32, d_exit) in near_exit {
+                                        if d_exit > rem_range {
+                                            break;
                                         }
-                                        let rem_range = ship_range - d_entry;
-                                        for &(j_u32, d_exit) in near_exit {
-                                            if d_exit > rem_range {
-                                                break;
-                                            }
-                                            let j = j_u32 as usize;
-                                            let target_owner = self.owner[j];
-                                            if target_owner != 0
-                                                && target_owner != emp_u8
-                                                && (self.explored_mask[j] & my_bit) != 0
-                                                && (self.claim_mask[j] & my_bit) == 0
+                                        let j = j_u32 as usize;
+                                        let target_owner = owner_ref[j];
+                                        if target_owner != 0
+                                            && target_owner != emp_u8
+                                            && (explored_ref[j] & my_bit) != 0
+                                            && (claim_ref[j] & my_bit) == 0
+                                        {
+                                            let target_e = (target_owner - 1) as usize;
+                                            let d = (d_entry + d_exit).max(30.0);
+                                            let eff_def = defense_ref[j] * (1.0 - bomb_pen);
+                                            let enemy_def = 20.0 + eff_def + pop_ref[j] * 0.35;
+                                            let target_share =
+                                                empires_ref[target_e].res_total / total_galactic_res;
+                                            let leader_aggro_bonus = if target_e == leader_e
+                                                && target_share > 0.30
                                             {
-                                                let target_e = (target_owner - 1) as usize;
-                                                let d = (d_entry + d_exit).max(30.0);
-                                                let eff_def = self.defense[j] * (1.0 - bomb_pen);
-                                                let enemy_def = 20.0 + eff_def + self.pop[j] * 0.35;
-                                                let target_share = self.empires[target_e].res_total
-                                                    / total_galactic_res;
-                                                let leader_aggro_bonus = if target_e == leader_e
-                                                    && target_share > 0.30
-                                                {
-                                                    1.0 + (target_share - 0.25)
-                                                        * 4.0
-                                                        * self.cfg.aggro_bias
-                                                } else {
-                                                    1.0
-                                                };
-                                                if my_attack_est * leader_aggro_bonus
-                                                    > enemy_def * 0.72
-                                                {
-                                                    let score = (((self.factories[j] + 15.0)
-                                                        * (my_attack_est / enemy_def)
-                                                        * leader_aggro_bonus)
-                                                        / (d / 180.0).powf(1.35))
-                                                        * 1.08;
-                                                    if score > best_score {
-                                                        best_score = score;
-                                                        best_target = Some(j);
-                                                        best_wh_route = (w as i8) * 2 + (dir as i8);
-                                                        mission = c_class;
-                                                    }
+                                                1.0 + (target_share - 0.25) * 4.0 * aggro_bias
+                                            } else {
+                                                1.0
+                                            };
+                                            if my_attack_est * leader_aggro_bonus
+                                                > enemy_def * 0.72
+                                            {
+                                                let score = (((factories_ref[j] + 15.0)
+                                                    * (my_attack_est / enemy_def)
+                                                    * leader_aggro_bonus)
+                                                    / (d / 180.0).powf(1.35))
+                                                    * 1.08;
+                                                if score > best_score {
+                                                    best_score = score;
+                                                    best_target = Some(j);
+                                                    best_wh_route = entry.idx as i16;
+                                                    mission = c_class;
                                                 }
                                             }
                                         }
                                     }
-                                }
+                                });
                             }
                         }
                     }
@@ -1699,49 +1790,43 @@ impl Simulation {
             } else if !self.fleets[f_idx].used_wh && !self.wormholes.is_empty() {
                 let fx = self.fleets[f_idx].x;
                 let fy = self.fleets[f_idx].y;
-                for wh in &self.wormholes {
-                    let d1_sq = (wh.x1 - fx) * (wh.x1 - fx) + (wh.y1 - fy) * (wh.y1 - fy);
-                    if d1_sq <= 784.0 {
+                let mut jump_dest: Option<(f32, f32)> = None;
+                let wormholes_ref = &self.wormholes;
+                self.wh_grid.for_each_in_radius(fx, fy, 28.0, |entry| {
+                    if jump_dest.is_some() {
+                        return;
+                    }
+                    let d_sq = (entry.x - fx) * (entry.x - fx) + (entry.y - fy) * (entry.y - fy);
+                    if d_sq <= 784.0 {
+                        let w = (entry.idx / 2) as usize;
+                        let dir = entry.idx % 2;
+                        let wh = wormholes_ref[w];
+                        let (ox, oy) = if dir == 0 {
+                            (wh.x2, wh.y2)
+                        } else {
+                            (wh.x1, wh.y1)
+                        };
                         let direct_dist = (tx - fx).hypot(ty - fy);
-                        if (tx - wh.x2).hypot(ty - wh.y2) < direct_dist * 0.78 {
-                            if !silent && self.pending_jump_fx.len() < 25 {
-                                self.pending_jump_fx.push(JumpFx {
-                                    x1: fx,
-                                    y1: fy,
-                                    x2: wh.x2,
-                                    y2: wh.y2,
-                                    ttl: 12,
-                                    col: "#d946ef".to_string(),
-                                });
-                            }
-                            self.fleets[f_idx].x = wh.x2;
-                            self.fleets[f_idx].y = wh.y2;
-                            self.fleets[f_idx].used_wh = true;
-                            self.gate_jumps_count += 1;
-                            break;
+                        if (tx - ox).hypot(ty - oy) < direct_dist * 0.78 {
+                            jump_dest = Some((ox, oy));
                         }
                     }
-                    let d2_sq = (wh.x2 - fx) * (wh.x2 - fx) + (wh.y2 - fy) * (wh.y2 - fy);
-                    if d2_sq <= 784.0 {
-                        let direct_dist = (tx - fx).hypot(ty - fy);
-                        if (tx - wh.x1).hypot(ty - wh.y1) < direct_dist * 0.78 {
-                            if !silent && self.pending_jump_fx.len() < 25 {
-                                self.pending_jump_fx.push(JumpFx {
-                                    x1: fx,
-                                    y1: fy,
-                                    x2: wh.x1,
-                                    y2: wh.y1,
-                                    ttl: 12,
-                                    col: "#d946ef".to_string(),
-                                });
-                            }
-                            self.fleets[f_idx].x = wh.x1;
-                            self.fleets[f_idx].y = wh.y1;
-                            self.fleets[f_idx].used_wh = true;
-                            self.gate_jumps_count += 1;
-                            break;
-                        }
+                });
+                if let Some((ox, oy)) = jump_dest {
+                    if !silent && self.pending_jump_fx.len() < 25 {
+                        self.pending_jump_fx.push(JumpFx {
+                            x1: fx,
+                            y1: fy,
+                            x2: ox,
+                            y2: oy,
+                            ttl: 12,
+                            col: "#d946ef".to_string(),
+                        });
                     }
+                    self.fleets[f_idx].x = ox;
+                    self.fleets[f_idx].y = oy;
+                    self.fleets[f_idx].used_wh = true;
+                    self.gate_jumps_count += 1;
                 }
             }
 
@@ -2235,7 +2320,7 @@ impl Simulation {
         fleet_type: FleetClass,
         power: f32,
         min_type: u8,
-        wh_route: i8,
+        wh_route: i16,
         silent: bool,
     ) {
         let e = (emp_u8 - 1) as usize;
@@ -2361,8 +2446,11 @@ impl Simulation {
                 needs_reset = true;
             }
             "wormholePairs" => {
-                self.cfg.wormhole_pairs = (value.round() as usize).clamp(0, 5);
+                self.cfg.wormhole_pairs = (value.round() as usize).clamp(0, 500);
                 needs_reset = true;
+            }
+            "disableStargates" => {
+                self.cfg.disable_stargates = value >= 0.5;
             }
             "crustRichness" => {
                 self.cfg.crust_richness = value.clamp(300.0, 2500.0);
@@ -2585,6 +2673,7 @@ impl Simulation {
         ReportsSnapshot {
             planets,
             fleets: self.fleets.clone(),
+            debris_fields: self.debris_fields.clone(),
         }
     }
 
@@ -2734,5 +2823,24 @@ mod tests {
         let total_planets: u32 = sim.empires.iter().map(|e| e.last_stats.planets).sum();
         assert!(total_planets > 40, "expected expansion, got {total_planets}");
         assert!(max_lv >= 8, "expected tech progression >= 8, got {max_lv}");
+    }
+
+    #[test]
+    fn wormhole_only_mode_with_300_wormholes_and_disabled_stargates() {
+        let mut cfg = SimConfig::default();
+        cfg.galaxy_size = GalaxySize::Large;
+        cfg.wormhole_pairs = 300;
+        cfg.disable_stargates = true;
+        let mut sim = Simulation::new(cfg, classic_races());
+        sim.init(77777, true);
+        assert_eq!(sim.wormholes.len(), 300);
+
+        for _ in 0..300 {
+            sim.step_tick(true);
+        }
+
+        let total_gates: u32 = sim.empires.iter().map(|e| e.last_stats.gates).sum();
+        assert_eq!(total_gates, 0, "expected 0 stargates when disable_stargates=true");
+        assert!(sim.gate_jumps_count > 0, "expected fleets to use wormholes");
     }
 }

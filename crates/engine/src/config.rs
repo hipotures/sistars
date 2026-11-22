@@ -216,6 +216,8 @@ pub struct SimConfig {
     pub growth: f32,
     pub op_limit: f32,
     pub ignore_racial_traits: bool,
+    #[serde(default)]
+    pub disable_stargates: bool,
 }
 
 impl Default for SimConfig {
@@ -242,6 +244,7 @@ impl Default for SimConfig {
             growth: 0.12,
             op_limit: 10.0,
             ignore_racial_traits: false,
+            disable_stargates: false,
         }
     }
 }

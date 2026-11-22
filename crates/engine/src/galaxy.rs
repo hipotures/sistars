@@ -400,6 +400,8 @@ pub fn generate_galaxy(
     //    bridging distant regions (e.g. opposite spiral arms / clusters) so AI fleets can use them!
     let mut wormholes = Vec::with_capacity(wormhole_pairs);
     let min_span = world_w.min(world_h) * 0.42;
+    let min_wh_sep = if wormhole_pairs > 25 { 36.0f32 } else { 110.0f32 };
+    let min_wh_sep_sq = min_wh_sep * min_wh_sep;
     let pool_len = candidates.len().max(1);
     for _ in 0..wormhole_pairs {
         let mut a_star = candidates[(next_rand(rng_seed) * pool_len as f32) as usize % pool_len];
@@ -408,7 +410,9 @@ pub fn generate_galaxy(
             let ax = pos_x[a_star];
             let ay = pos_y[a_star];
             let too_close = wormholes.iter().any(|wh: &Wormhole| {
-                (wh.x1 - ax).hypot(wh.y1 - ay) < 110.0 || (wh.x2 - ax).hypot(wh.y2 - ay) < 110.0
+                let d1 = (wh.x1 - ax) * (wh.x1 - ax) + (wh.y1 - ay) * (wh.y1 - ay);
+                let d2 = (wh.x2 - ax) * (wh.x2 - ax) + (wh.y2 - ay) * (wh.y2 - ay);
+                d1 < min_wh_sep_sq || d2 < min_wh_sep_sq
             });
             if !too_close {
                 break;

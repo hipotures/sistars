@@ -167,6 +167,7 @@ export class UiController {
   private customRaces: RaceDef[] = [];
   private selectedRaceIds: Set<string>;
   private activeTechTab: 'overview' | 'browser' = 'overview';
+  private activeReportTab: 'planets' | 'fleets' | 'stargates' | 'wormholes' | 'debris' = 'planets';
   private activeLensEmpires: Set<number> | null = null;
   private activeContourMode: RangeContourMode = 'subtle';
   private lastNonZeroContourOpacity = 22;
@@ -235,6 +236,7 @@ export class UiController {
   public setConfig(cfg: SimConfig): void {
     this.lastConfig = cfg;
     getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = cfg.ignoreRacialTraits;
+    getEl<HTMLInputElement>('p_disableStargates').checked = cfg.disableStargates;
     getEl<HTMLSelectElement>('p_galaxySize').value = cfg.galaxySize;
     getEl<HTMLSelectElement>('p_galaxyShape').value = cfg.galaxyShape;
   }
@@ -255,6 +257,7 @@ export class UiController {
 
     // World Rules & Galaxy Generator
     getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = s.ignoreRacialTraits;
+    getEl<HTMLInputElement>('p_disableStargates').checked = s.disableStargates;
     getEl<HTMLSelectElement>('p_galaxySize').value = s.galaxySize;
     getEl<HTMLSelectElement>('p_galaxyShape').value = s.galaxyShape;
 
@@ -434,12 +437,29 @@ export class UiController {
       void this.callbacks
         .getReportsSnapshot()
         .then((rep) => {
+          const gateCount = rep.planets.reduce((acc, p) => acc + (p.hasGate ? 1 : 0), 0);
           getEl('repBtnPlanets').textContent = `Planets (${rep.planets.length})`;
-          getEl('repBtnFleets').textContent = `Fleets in Flight (${rep.fleets.length})`;
-          if (getEl('repPlanetsWrap').style.display !== 'none') {
-            this.renderPlanetTable(hud, rep);
-          } else {
-            this.renderFleetTable(hud, rep);
+          getEl('repBtnFleets').textContent = `Fleets (${rep.fleets.length})`;
+          getEl('repBtnStargates').textContent = `🌀 Gates (${gateCount})`;
+          getEl('repBtnWormholes').textContent = `🟣 Wormholes (${hud.wormholes.length})`;
+          getEl('repBtnDebris').textContent = `✦ Debris (${rep.debrisFields.length})`;
+
+          switch (this.activeReportTab) {
+            case 'planets':
+              this.renderPlanetTable(hud, rep);
+              break;
+            case 'fleets':
+              this.renderFleetTable(hud, rep);
+              break;
+            case 'stargates':
+              this.renderStargateTable(hud, rep);
+              break;
+            case 'wormholes':
+              this.renderWormholeTable(hud);
+              break;
+            case 'debris':
+              this.renderDebrisTable(rep);
+              break;
           }
         })
         .finally(() => {
@@ -825,11 +845,23 @@ export class UiController {
     // Report tabs & sorting
     document.querySelectorAll<HTMLButtonElement>('[data-report]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const which = btn.dataset.report === 'fleets' ? 'fleets' : 'planets';
+        const which = (btn.dataset.report ?? 'planets') as
+          | 'planets'
+          | 'fleets'
+          | 'stargates'
+          | 'wormholes'
+          | 'debris';
+        this.activeReportTab = which;
         getEl('repPlanetsWrap').style.display = which === 'planets' ? 'block' : 'none';
         getEl('repFleetsWrap').style.display = which === 'fleets' ? 'block' : 'none';
+        getEl('repStargatesWrap').style.display = which === 'stargates' ? 'block' : 'none';
+        getEl('repWormholesWrap').style.display = which === 'wormholes' ? 'block' : 'none';
+        getEl('repDebrisWrap').style.display = which === 'debris' ? 'block' : 'none';
         getEl('repBtnPlanets').classList.toggle('active', which === 'planets');
         getEl('repBtnFleets').classList.toggle('active', which === 'fleets');
+        getEl('repBtnStargates').classList.toggle('active', which === 'stargates');
+        getEl('repBtnWormholes').classList.toggle('active', which === 'wormholes');
+        getEl('repBtnDebris').classList.toggle('active', which === 'debris');
         if (this.lastHud) this.renderOpenDrawers(this.lastHud);
       });
     });
@@ -882,6 +914,56 @@ export class UiController {
       void this.openFleetView(id);
     });
 
+    getEl('stargateTableBody').addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest('tr');
+      if (!row || !row.dataset.planetIdx) return;
+      const idx = Number(row.dataset.planetIdx);
+      const x = Number(row.dataset.x);
+      const y = Number(row.dataset.y);
+      if (Number.isNaN(idx)) return;
+      this.callbacks.onSelectObject({ kind: 'planet', index: idx });
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        this.focusWorldPointOnMap(x, y, 55);
+      }
+    });
+
+    getEl('wormholeTableBody').addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const row = target.closest('tr');
+      if (!row || !row.dataset.whIdx) return;
+      const idx = Number(row.dataset.whIdx);
+      if (Number.isNaN(idx) || !this.lastHud) return;
+      const wh = this.lastHud.wormholes[idx];
+      if (!wh) return;
+      this.callbacks.onSelectObject({ kind: 'wormhole', index: idx });
+      const ep = target.closest<HTMLElement>('[data-wh-end]')?.dataset.whEnd;
+      if (ep === 'a') {
+        this.focusWorldPointOnMap(wh.x1, wh.y1, 55);
+      } else if (ep === 'b') {
+        this.focusWorldPointOnMap(wh.x2, wh.y2, 55);
+      } else {
+        this.focusWorldBoxOnMap(
+          Math.min(wh.x1, wh.x2),
+          Math.min(wh.y1, wh.y2),
+          Math.max(wh.x1, wh.x2),
+          Math.max(wh.y1, wh.y2),
+        );
+      }
+    });
+
+    getEl('debrisTableBody').addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest('tr');
+      if (!row || !row.dataset.debrisIdx) return;
+      const idx = Number(row.dataset.debrisIdx);
+      const x = Number(row.dataset.x);
+      const y = Number(row.dataset.y);
+      if (Number.isNaN(idx)) return;
+      this.callbacks.onSelectObject({ kind: 'debris', index: idx });
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        this.focusWorldPointOnMap(x, y, 45);
+      }
+    });
+
     // Lab actions
     document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -901,6 +983,21 @@ export class UiController {
     getEl<HTMLInputElement>('p_ignoreRacialTraits').addEventListener('change', (e) => {
       const checked = (e.target as HTMLInputElement).checked;
       this.callbacks.onParamChange('ignoreRacialTraits', checked ? 1 : 0);
+    });
+
+    getEl<HTMLInputElement>('p_disableStargates').addEventListener('change', (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      this.callbacks.onParamChange('disableStargates', checked ? 1 : 0);
+    });
+
+    document.querySelectorAll<HTMLButtonElement>('[data-wh-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const val = Number(btn.dataset.whPreset ?? 2);
+        if (Number.isNaN(val)) return;
+        getEl<HTMLInputElement>('p_wormholePairs').value = String(val);
+        getEl('v_wormholePairs').textContent = String(val);
+        this.callbacks.onParamChange('wormholePairs', val);
+      });
     });
 
     document.querySelectorAll<HTMLInputElement>('input[data-param]').forEach((input) => {
@@ -1345,6 +1442,21 @@ export class UiController {
     this.modalShipRenderer.setMode(mode);
     getEl('fleetModeSolid').classList.toggle('active', mode === 'solid');
     getEl('fleetModeBlueprint').classList.toggle('active', mode === 'blueprint');
+  }
+
+  private getReportsRightInset(): number {
+    const drawer = getEl('drawerReports');
+    return drawer.classList.contains('open') && window.innerWidth > 768
+      ? drawer.getBoundingClientRect().width
+      : 0;
+  }
+
+  private focusWorldPointOnMap(x: number, y: number, pad = 55): void {
+    this.callbacks.onFocusWorldRegion(x - pad, y - pad, x + pad, y + pad, this.getReportsRightInset());
+  }
+
+  private focusWorldBoxOnMap(minX: number, minY: number, maxX: number, maxY: number): void {
+    this.callbacks.onFocusWorldRegion(minX, minY, maxX, maxY, this.getReportsRightInset());
   }
 
   private async focusFleetRouteOnMap(
@@ -1954,6 +2066,67 @@ export class UiController {
           <td>${Math.round(fl.power)} (${hpPct}%)</td>
           <td>${Math.round(dist)}ly</td>
           <td>${eta.toFixed(1)}yr</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  private renderStargateTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
+    const gates: { idx: number; pl: PlanetView }[] = [];
+    for (let i = 0; i < rep.planets.length; i++) {
+      if (rep.planets[i].hasGate) {
+        gates.push({ idx: i, pl: rep.planets[i] });
+      }
+    }
+    gates.sort((a, b) => b.pl.res - a.pl.res);
+    const slice = gates.slice(0, 200);
+    getEl('stargateTableBody').innerHTML = slice
+      .map(({ idx, pl }) => {
+        const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
+        const col = emp?.color ?? '#94a3b8';
+        const gateTech = emp?.loadout.stargate ?? 'Stargate';
+        return `<tr data-planet-idx="${idx}" data-x="${pl.x}" data-y="${pl.y}">
+          <td class="fleet-route-cell" title="Focus Stargate on map">🌀 #${pl.id}</td>
+          <td><span class="dot" style="background:${col}"></span></td>
+          <td style="color:#22d3ee;">${gateTech}</td>
+          <td>${Math.round(pl.defense)}</td>
+          <td style="color:#38bdf8;font-weight:bold;">${Math.round(pl.res)}</td>
+          <td style="color:var(--muted);">(${Math.round(pl.x)}, ${Math.round(pl.y)})</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  private renderWormholeTable(hud: HudSnapshot): void {
+    const slice = hud.wormholes.slice(0, 250);
+    getEl('wormholeTableBody').innerHTML = slice
+      .map((wh, idx) => {
+        const span = Math.round(Math.hypot(wh.x2 - wh.x1, wh.y2 - wh.y1));
+        return `<tr data-wh-idx="${idx}">
+          <td style="color:#e879f9;font-weight:bold;">WH#${idx + 1}</td>
+          <td class="fleet-route-cell" data-wh-end="a" title="Focus Endpoint A">(${Math.round(wh.x1)}, ${Math.round(wh.y1)})</td>
+          <td class="fleet-route-cell" data-wh-end="b" title="Focus Endpoint B">(${Math.round(wh.x2)}, ${Math.round(wh.y2)})</td>
+          <td style="color:var(--accent);">${span} ly</td>
+          <td class="fleet-route-cell" title="Frame both endpoints">Frame Pair</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  private renderDebrisTable(rep: ReportsSnapshot): void {
+    const rows = rep.debrisFields
+      .map((deb, idx) => ({ idx, deb, total: deb.iron + deb.bora + deb.germ }))
+      .sort((a, b) => b.total - a.total);
+    getEl('debrisTableBody').innerHTML = rows
+      .map(({ idx, deb, total }) => {
+        return `<tr data-debris-idx="${idx}" data-x="${deb.x}" data-y="${deb.y}">
+          <td class="fleet-route-cell" title="Focus Debris field on map">✦ D#${idx + 1}</td>
+          <td style="color:#c084fc;font-weight:bold;">${Math.round(total)} kT</td>
+          <td class="c-iron">${Math.round(deb.iron)}</td>
+          <td class="c-bora">${Math.round(deb.bora)}</td>
+          <td class="c-germ">${Math.round(deb.germ)}</td>
+          <td>${deb.ttl.toFixed(1)} yr</td>
+          <td style="color:var(--muted);">(${Math.round(deb.x)}, ${Math.round(deb.y)})</td>
         </tr>`;
       })
       .join('');
