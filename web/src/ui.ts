@@ -176,6 +176,15 @@ export class UiController {
     wormholes: { key: 'id', asc: true },
     debris: { key: 'total', asc: false },
   };
+  private reportPage: Record<ReportTab, number> = {
+    planets: 0,
+    fleets: 0,
+    stargates: 0,
+    wormholes: 0,
+    debris: 0,
+  };
+  private reportPageSize = 100;
+  private reportTotalRows = 0;
   private selection: MapSelection = null;
   private debrisWrecksExpanded = false;
   private lastHud: HudSnapshot | null = null;
@@ -1006,22 +1015,35 @@ export class UiController {
           state.key = key;
           state.asc = ASC_DEFAULT_SORT_KEYS.has(key);
         }
+        this.reportPage[tab] = 0;
         this.updateReportSortIndicators(tab);
-
-        if (this.lastHud) {
-          const hud = this.lastHud;
-          if (tab === 'wormholes') {
-            this.renderWormholeTable(hud);
-          } else if (this.lastReports) {
-            this.renderActiveReportTab(hud, this.lastReports);
-          } else {
-            void this.callbacks.getReportsSnapshot().then((rep) => {
-              this.lastReports = rep;
-              this.renderActiveReportTab(hud, rep);
-            });
-          }
-        }
+        this.rerenderCurrentReportTab(true);
       });
+    });
+
+    const goReportPage = (nextPage: number): void => {
+      const tab = this.activeReportTab;
+      const maxPage = Math.max(0, Math.ceil(this.reportTotalRows / this.reportPageSize) - 1);
+      const clamped = Math.max(0, Math.min(maxPage, nextPage));
+      if (clamped === this.reportPage[tab]) return;
+      this.reportPage[tab] = clamped;
+      this.rerenderCurrentReportTab(true);
+    };
+
+    getEl('repPageFirst').addEventListener('click', () => goReportPage(0));
+    getEl('repPagePrev').addEventListener('click', () => goReportPage(this.reportPage[this.activeReportTab] - 1));
+    getEl('repPageNext').addEventListener('click', () => goReportPage(this.reportPage[this.activeReportTab] + 1));
+    getEl('repPageLast').addEventListener('click', () => {
+      const maxPage = Math.max(0, Math.ceil(this.reportTotalRows / this.reportPageSize) - 1);
+      goReportPage(maxPage);
+    });
+    getEl<HTMLSelectElement>('repPageSize').addEventListener('change', (e) => {
+      const val = Number((e.target as HTMLSelectElement).value);
+      if (val > 0) {
+        this.reportPageSize = val;
+        this.reportPage[this.activeReportTab] = 0;
+        this.rerenderCurrentReportTab(true);
+      }
     });
 
     getEl('planetTableBody').addEventListener('click', (e) => {
@@ -2254,6 +2276,58 @@ export class UiController {
     }
   }
 
+  private rerenderCurrentReportTab(scrollToTop: boolean): void {
+    if (!this.lastHud) return;
+    const hud = this.lastHud;
+    const tab = this.activeReportTab;
+    const scrollTopIfNeeded = () => {
+      if (!scrollToTop) return;
+      const wrapIds: Record<ReportTab, string> = {
+        planets: 'repPlanetsWrap',
+        fleets: 'repFleetsWrap',
+        stargates: 'repStargatesWrap',
+        wormholes: 'repWormholesWrap',
+        debris: 'repDebrisWrap',
+      };
+      getEl(wrapIds[tab]).scrollTop = 0;
+    };
+
+    if (tab === 'wormholes') {
+      this.renderWormholeTable(hud);
+      scrollTopIfNeeded();
+    } else if (this.lastReports) {
+      this.renderActiveReportTab(hud, this.lastReports);
+      scrollTopIfNeeded();
+    } else {
+      void this.callbacks.getReportsSnapshot().then((rep) => {
+        this.lastReports = rep;
+        this.renderActiveReportTab(hud, rep);
+        scrollTopIfNeeded();
+      });
+    }
+  }
+
+  private paginateReportRows<T>(tab: ReportTab, rows: T[]): T[] {
+    const total = rows.length;
+    this.reportTotalRows = total;
+    const pageSize = this.reportPageSize;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.max(0, Math.min(totalPages - 1, this.reportPage[tab]));
+    this.reportPage[tab] = page;
+
+    const start = page * pageSize;
+    const end = Math.min(total, start + pageSize);
+    getEl('repPagerInfo').textContent =
+      total === 0 ? 'Showing 0 of 0' : `Showing ${start + 1}–${end} of ${total}`;
+    getEl('repPagerPage').textContent = `${page + 1} / ${totalPages}`;
+    getEl<HTMLButtonElement>('repPageFirst').disabled = page <= 0;
+    getEl<HTMLButtonElement>('repPagePrev').disabled = page <= 0;
+    getEl<HTMLButtonElement>('repPageNext').disabled = page >= totalPages - 1;
+    getEl<HTMLButtonElement>('repPageLast').disabled = page >= totalPages - 1;
+
+    return rows.slice(start, end);
+  }
+
   private renderActiveReportTab(hud: HudSnapshot, rep: ReportsSnapshot): void {
     switch (this.activeReportTab) {
       case 'planets':
@@ -2314,7 +2388,7 @@ export class UiController {
 
     const { key, asc } = this.reportSort.planets;
     rows.sort((a, b) => (asc ? a[key] - b[key] : b[key] - a[key]));
-    const visibleRows = rows.slice(0, 200);
+    const visibleRows = this.paginateReportRows('planets', rows);
     getEl('planetTableBody').innerHTML = visibleRows
       .map((r) => {
         const col = r.owner > 0 ? (hud.empires[r.owner - 1]?.color ?? '#94a3b8') : '#475569';
@@ -2400,7 +2474,7 @@ export class UiController {
       return (cmp || a.fl.id - b.fl.id) * dir;
     });
 
-    const slice = rows.slice(0, 200);
+    const slice = this.paginateReportRows('fleets', rows);
     getEl('fleetTableBody').innerHTML = slice
       .map(({ fl, dist, eta, label, cargoVal }) => {
         const empCol = hud.empires[fl.emp - 1]?.color ?? '#94a3b8';
@@ -2474,7 +2548,7 @@ export class UiController {
       return (cmp || a.pl.id - b.pl.id) * dir;
     });
 
-    const slice = gates.slice(0, 200);
+    const slice = this.paginateReportRows('stargates', gates);
     getEl('stargateTableBody').innerHTML = slice
       .map(({ idx, pl, gateTech }) => {
         const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
@@ -2504,7 +2578,7 @@ export class UiController {
       return (cmp || a.idx - b.idx) * dir;
     });
 
-    const slice = rows.slice(0, 250);
+    const slice = this.paginateReportRows('wormholes', rows);
     getEl('wormholeTableBody').innerHTML = slice
       .map(({ wh, idx, span }) => {
         return `<tr data-wh-idx="${idx}">
@@ -2553,7 +2627,7 @@ export class UiController {
       return (cmp || a.idx - b.idx) * dir;
     });
 
-    const slice = rows.slice(0, 200);
+    const slice = this.paginateReportRows('debris', rows);
     getEl('debrisTableBody').innerHTML = slice
       .map(({ idx, deb, iron, bora, germ, total }) => {
         return `<tr data-debris-idx="${idx}" data-x="${deb.x}" data-y="${deb.y}">

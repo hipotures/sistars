@@ -1073,6 +1073,50 @@ input[type='range'] {
   background: #070b12;
 }
 
+.rep-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  font-size: 0.68rem;
+  font-family: monospace;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.rep-pager-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rep-pager-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+
+.rep-pager-size select {
+  padding: 2px 4px;
+  font-size: 0.66rem;
+  width: auto;
+}
+
+.rep-pager-page {
+  min-width: 54px;
+  text-align: center;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rep-pager .hud-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
