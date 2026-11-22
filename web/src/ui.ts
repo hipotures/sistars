@@ -3278,25 +3278,22 @@ export class UiController {
   private openArenaCreateDrawer(): void {
     const drawer = document.getElementById('drawerArenaNew');
     if (!drawer) return;
-    const isOpen = drawer.classList.contains('open');
     this.closeAllDrawers();
-    if (!isOpen) {
-      // Pre-fill size/shape from current config
-      const sizeSel = document.getElementById('arenaNewSize') as HTMLSelectElement | null;
-      const shapeSel = document.getElementById('arenaNewShape') as HTMLSelectElement | null;
-      if (sizeSel) {
-        sizeSel.value = this.lastConfig.galaxySize;
-      }
-      if (shapeSel) {
-        shapeSel.value = this.lastConfig.galaxyShape;
-      }
-      // Hide stale match tokens from previous match creations so the user never copies an old match ID
-      const createdBox = document.getElementById('arenaCreatedBox');
-      if (createdBox) createdBox.style.display = 'none';
-      const statusEl = document.getElementById('arenaNewStatus');
-      if (statusEl) statusEl.textContent = '';
-      drawer.classList.add('open');
+    // Pre-fill size/shape from current config
+    const sizeSel = document.getElementById('arenaNewSize') as HTMLSelectElement | null;
+    const shapeSel = document.getElementById('arenaNewShape') as HTMLSelectElement | null;
+    if (sizeSel) {
+      sizeSel.value = this.lastConfig.galaxySize;
     }
+    if (shapeSel) {
+      shapeSel.value = this.lastConfig.galaxyShape;
+    }
+    // Hide stale match tokens from previous match creations so the user never copies an old match ID
+    const createdBox = document.getElementById('arenaCreatedBox');
+    if (createdBox) createdBox.style.display = 'none';
+    const statusEl = document.getElementById('arenaNewStatus');
+    if (statusEl) statusEl.textContent = '';
+    drawer.classList.add('open');
   }
 
   private showArenaCreatedMatch(serverUrl: string, res: CreateArenaMatchResponse): void {
