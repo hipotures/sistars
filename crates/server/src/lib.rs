@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod match_runner;
+pub mod mcp;
 pub mod models;
 pub mod openapi;
 pub mod routes;

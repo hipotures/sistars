@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,6 +15,7 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::match_runner::{speed_to_frame_stride, speed_to_tick_delay_ms, MatchHandle, QueuedDecision};
+use crate::mcp;
 use crate::models::{
     ApiErrorBody, CreateMatchRequest, CreateMatchResponse, ExecutionMode, MatchControlRequest,
     MatchPublicSummary, MatchStatus, ObservationEnvelope, SpectatorWsMessage,
@@ -26,15 +27,50 @@ pub struct AppState {
     pub matches: RwLock<HashMap<String, Arc<MatchHandle>>>,
     /// Hard server-side mapping: `bearer_token -> (match_id, empire_idx)`.
     pub token_index: RwLock<HashMap<String, (String, usize)>>,
+    /// Persistent MCP seats configured via `SISTARS_MCP_SEATS`: `secret_token -> seat_name`.
+    pub persistent_seat_tokens: RwLock<HashMap<String, String>>,
+    /// Active bindings for persistent MCP seats: `seat_name -> (match_id, empire_idx)`.
+    pub persistent_seat_bindings: RwLock<HashMap<String, (String, usize)>>,
+    pub public_url: Option<String>,
     pub admin_token: Option<String>,
     pub logs_dir: PathBuf,
 }
 
 impl AppState {
     pub fn new(admin_token: Option<String>, logs_dir: PathBuf) -> Arc<Self> {
+        let public_url = std::env::var("SISTARS_PUBLIC_URL").ok();
+        let mcp_seats_raw = std::env::var("SISTARS_MCP_SEATS").ok();
+        Self::new_with_mcp(admin_token, logs_dir, public_url, mcp_seats_raw.as_deref())
+    }
+
+    pub fn new_with_mcp(
+        admin_token: Option<String>,
+        logs_dir: PathBuf,
+        public_url: Option<String>,
+        mcp_seats_raw: Option<&str>,
+    ) -> Arc<Self> {
+        let mut seat_tokens = HashMap::new();
+        if let Some(raw) = mcp_seats_raw {
+            for entry in raw.split(',') {
+                let trimmed = entry.trim();
+                if let Some((seat, tok)) = trimmed.split_once(':') {
+                    let s = seat.trim();
+                    let t = tok.trim();
+                    if !s.is_empty() && !t.is_empty() {
+                        seat_tokens.insert(t.to_string(), s.to_string());
+                    }
+                }
+            }
+        }
+        let cleaned_public = public_url
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
         Arc::new(Self {
             matches: RwLock::new(HashMap::new()),
             token_index: RwLock::new(HashMap::new()),
+            persistent_seat_tokens: RwLock::new(seat_tokens),
+            persistent_seat_bindings: RwLock::new(HashMap::new()),
+            public_url: cleaned_public,
             admin_token: admin_token.filter(|s| !s.trim().is_empty()),
             logs_dir,
         })
@@ -48,15 +84,56 @@ impl AppState {
     }
 }
 
+fn resolve_public_url(state: &AppState, headers: &HeaderMap) -> String {
+    if let Some(ref u) = state.public_url {
+        return u.clone();
+    }
+    if let Some(host) = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        let proto = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("http");
+        return format!("{proto}://{host}");
+    }
+    "http://127.0.0.1:8080".to_string()
+}
+
 pub fn build_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        .expose_headers([HeaderName::from_static("mcp-session-id")]);
 
     Router::new()
         .route("/openapi.json", get(get_openapi))
         .route("/health", get(health_check))
+        .route(
+            "/mcp/{token}",
+            post(mcp::handle_mcp_post)
+                .get(mcp::handle_mcp_get)
+                .delete(mcp::handle_mcp_delete)
+                .options(mcp::handle_mcp_options),
+        )
+        .route(
+            "/mcp/{token}/",
+            post(mcp::handle_mcp_post)
+                .get(mcp::handle_mcp_get)
+                .delete(mcp::handle_mcp_delete)
+                .options(mcp::handle_mcp_options),
+        )
+        .route(
+            "/api/v1/mcp/seats/{seat_name}/bind",
+            post(mcp::bind_persistent_seat),
+        )
         .route("/api/v1/matches", get(list_matches).post(create_match))
         .route("/api/v1/matches/{id}", get(get_match).delete(delete_match))
         .route("/api/v1/matches/{id}/control", post(control_match))
@@ -194,6 +271,12 @@ async fn create_match(
         matches.insert(match_id.clone(), handle);
     }
 
+    let base_url = resolve_public_url(&state, &headers);
+    let mcp_urls: HashMap<usize, String> = empire_tokens
+        .iter()
+        .map(|(&seat, tok)| (seat, format!("{base_url}/mcp/{tok}")))
+        .collect();
+
     let spectator_ws_url = format!("/ws/matches/{match_id}/spectate");
     Ok((
         StatusCode::CREATED,
@@ -201,6 +284,7 @@ async fn create_match(
             match_id,
             spectator_ws_url,
             empire_tokens,
+            mcp_urls,
             status,
             execution_mode,
             paused,

@@ -505,6 +505,33 @@ pub fn build_openapi_spec() -> Value {
                     "responses": { "200": { "description": "OpenAPI JSON document" } }
                 }
             },
+            "/mcp/{token}": {
+                "post": {
+                    "summary": "Model Context Protocol (MCP — Streamable HTTP) JSON-RPC 2.0 endpoint for Claude Custom Connectors",
+                    "description": "Accepts per-match empire tokens or persistent seat tokens (SISTARS_MCP_SEATS). Exposes tools: get_briefing, get_observation, submit_orders. Returns 403 Forbidden (never 401) for invalid tokens and 202 Accepted for JSON-RPC notifications.",
+                    "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "200": { "description": "JSON-RPC 2.0 response" },
+                        "202": { "description": "Accepted JSON-RPC notification (empty body)" },
+                        "403": { "description": "Invalid or unknown MCP token (no WWW-Authenticate header)" }
+                    }
+                },
+                "delete": {
+                    "summary": "Stateless MCP session termination",
+                    "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "204": { "description": "Session terminated" } }
+                }
+            },
+            "/api/v1/mcp/seats/{seat_name}/bind": {
+                "post": {
+                    "summary": "Rebind a persistent MCP seat (configured via SISTARS_MCP_SEATS) to a live match and empire index",
+                    "parameters": [{ "name": "seat_name", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "200": { "description": "Seat bound to matchId and empireIdx" },
+                        "404": { "description": "Seat or match not found" }
+                    }
+                }
+            },
             "/api/v1/matches": {
                 "get": {
                     "summary": "List active and finished matches (public metadata only)",

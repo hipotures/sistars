@@ -932,3 +932,438 @@ async fn e2e_observation_hub_metrics_and_build_hub_alias() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["commandsQueued"].as_u64(), Some(2));
 }
+
+#[tokio::test]
+async fn e2e_mcp_full_handshake_and_gameplay() {
+    let srv = spawn_test_server().await;
+
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 777010,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "speedMult": 2.0,
+            "startPaused": true,
+            "agentSeats": [0, 1]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    assert!(
+        created["mcpUrls"]["0"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/mcp/{tok0}")),
+        "mcpUrls must contain ready-to-use /mcp/<token> URL"
+    );
+
+    let mcp_url = format!("{}/mcp/{tok0}", srv.base_url);
+
+    // Connect Spectator WebSocket so we can verify StrategyUpdate arrives from MCP submit_orders
+    let ws_url = format!("{}/ws/matches/{match_id}/spectate", srv.ws_base_url);
+    let (mut ws_stream, _) = connect_async(&ws_url).await.unwrap();
+    let _init = tokio::time::timeout(Duration::from_secs(2), ws_stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    // 1. initialize
+    let init_resp = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "claude-test", "version": "1.0" }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(init_resp.status(), StatusCode::OK);
+    assert!(init_resp.headers().get("mcp-session-id").is_some());
+    let init_body: Value = init_resp.json().await.unwrap();
+    assert_eq!(init_body["result"]["protocolVersion"].as_str(), Some("2025-06-18"));
+    assert!(init_body["result"]["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("get_briefing"));
+
+    // 2. notifications/initialized -> MUST return 202 Accepted with EMPTY body
+    let notif_resp = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(notif_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(notif_resp.text().await.unwrap(), "");
+
+    // 3. ping -> {}
+    let ping_body: Value = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ping_body["result"], json!({}));
+
+    // 4. tools/list -> exactly 3 tools
+    let list_body: Value = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tools = list_body["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 3);
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["get_briefing", "get_observation", "submit_orders"]);
+
+    // 5. tools/call get_briefing
+    let brief_body: Value = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": { "name": "get_briefing", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(brief_body["result"]["isError"].as_bool(), Some(false));
+    let brief_txt = brief_body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(brief_txt.contains("SI-STARS GRAND STRATEGIST BRIEFING"));
+    assert!(!brief_txt.contains("year 0.0"), "Briefing must not mention year 0.0 when maxYear is None");
+
+    // 6. tools/call get_observation
+    let obs_body: Value = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(obs_body["result"]["isError"].as_bool(), Some(false));
+    let obs_json: Value =
+        serde_json::from_str(obs_body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(obs_json["state"]["empire"]["empireId"].as_u64(), Some(1));
+    assert!(obs_json["previousStrategy"].is_null());
+
+    // 7. tools/call submit_orders (strategyMemory + setPolicy)
+    let sub_body: Value = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "submit_orders",
+                "arguments": {
+                    "strategyMemory": {
+                        "phase": "MCP Expansion",
+                        "priorities": ["Colonize core"],
+                        "rationale": "MCP Claude opening strategy",
+                        "diplomacyNotes": "Peaceful start",
+                        "pivotTriggers": ["Enemy contact"]
+                    },
+                    "commands": [
+                        { "setPolicy": { "colonizeVsAttackBias": 0.88 } }
+                    ]
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sub_body["result"]["isError"].as_bool(), Some(false));
+    let sub_ack: Value =
+        serde_json::from_str(sub_body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(sub_ack["accepted"].as_bool(), Some(true));
+    assert_eq!(sub_ack["appliedCommands"].as_u64(), Some(1));
+
+    // 8. Second get_observation confirms persisted previousStrategy & patched policy
+    let obs2_body: Value = srv
+        .client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let obs2_json: Value =
+        serde_json::from_str(obs2_body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        obs2_json["previousStrategy"]["phase"].as_str(),
+        Some("MCP Expansion")
+    );
+    let bias = obs2_json["state"]["empire"]["policy"]["colonizeVsAttackBias"]
+        .as_f64()
+        .unwrap();
+    assert!((bias - 0.88).abs() < 0.02);
+
+    // 9. Spectator WebSocket received StrategyUpdate from MCP submit_orders
+    let mut saw_strategy = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline && !saw_strategy {
+        if let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_millis(200), ws_stream.next()).await {
+            if msg.is_text() {
+                let v: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+                if v["type"].as_str() == Some("feed")
+                    && v["event"]["kind"].as_str() == Some("StrategyUpdate")
+                    && v["event"]["strategy"]["phase"].as_str() == Some("MCP Expansion")
+                {
+                    saw_strategy = true;
+                }
+            }
+        }
+    }
+    assert!(saw_strategy, "Spectator WS must receive StrategyUpdate emitted via MCP submit_orders");
+}
+
+#[tokio::test]
+async fn e2e_mcp_auth_isolation_and_http_methods() {
+    let srv = spawn_test_server().await;
+
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 777011,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "startPaused": true,
+            "agentSeats": [0, 1]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    let tok1 = created["empireTokens"]["1"].as_str().unwrap().to_string();
+
+    // 1. Unknown token MUST return 403 Forbidden with NO WWW-Authenticate header (never 401!)
+    let bad_resp = srv
+        .client
+        .post(format!("{}/mcp/unknown_bogus_token_xyz", srv.base_url))
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        bad_resp.headers().get("www-authenticate").is_none(),
+        "MCP 403 must NEVER include WWW-Authenticate header (breaks Claude capability URL)"
+    );
+
+    // 2. GET /mcp/{token} -> 405 Method Not Allowed with Allow header
+    let get_resp = srv
+        .client
+        .get(format!("{}/mcp/{tok0}", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(get_resp.headers().get("allow").is_some());
+
+    // 3. DELETE /mcp/{token} -> 204 No Content
+    let del_resp = srv
+        .client
+        .delete(format!("{}/mcp/{tok0}", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+    // 4. Isolation: Empire 0 submits secret strategyMemory -> Empire 1 MUST NEVER see it
+    let secret = "MCP_TOP_SECRET_AMBUSH_999";
+    let _ = srv
+        .client
+        .post(format!("{}/mcp/{tok0}", srv.base_url))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "submit_orders",
+                "arguments": {
+                    "strategyMemory": {
+                        "phase": "Secret Plan",
+                        "priorities": [secret],
+                        "rationale": secret,
+                        "diplomacyNotes": secret,
+                        "pivotTriggers": []
+                    },
+                    "commands": []
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let obs1_text = srv
+        .client
+        .post(format!("{}/mcp/{tok1}", srv.base_url))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !obs1_text.contains(secret),
+        "Empire 0's MCP strategyMemory leaked into Empire 1's observation!"
+    );
+}
+
+#[tokio::test]
+async fn e2e_mcp_persistent_seat_rebinding() {
+    let logs_dir = std::env::temp_dir().join(format!(
+        "sistars_mcp_seat_test_{}",
+        std::process::id()
+    ));
+    let seat_token = "persistent_claude_seat_secret_token_01";
+    let state = AppState::new_with_mcp(
+        None,
+        logs_dir,
+        Some("https://sistars.example.test".to_string()),
+        Some(&format!("claude_alpha:{seat_token}")),
+    );
+    let app = build_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let client = reqwest::Client::new();
+    let mcp_url = format!("{base_url}/mcp/{seat_token}");
+
+    // 1. Before binding: get_observation returns clean idle JSON
+    let idle_resp: Value = client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(idle_resp["result"]["isError"].as_bool(), Some(false));
+    let idle_inner: Value =
+        serde_json::from_str(idle_resp["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(idle_inner["status"].as_str(), Some("idle"));
+
+    // 2. Create a match and bind `claude_alpha` to empireIdx 2
+    let created: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 777012,
+            "galaxySize": "small",
+            "startPaused": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    assert!(created["mcpUrls"]["0"]
+        .as_str()
+        .unwrap()
+        .starts_with("https://sistars.example.test/mcp/"));
+
+    let bind_resp = client
+        .post(format!("{base_url}/api/v1/mcp/seats/claude_alpha/bind"))
+        .json(&json!({ "matchId": match_id, "empireIdx": 2 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bind_resp.status(), StatusCode::OK);
+
+    // 3. Now get_observation returns live observation for Empire 3 (empireIdx 2)
+    let bound_resp: Value = client
+        .post(&mcp_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bound_inner: Value =
+        serde_json::from_str(bound_resp["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(bound_inner["matchId"].as_str(), Some(match_id.as_str()));
+    assert_eq!(bound_inner["state"]["empire"]["empireId"].as_u64(), Some(3));
+
+    state.shutdown_all().await;
+}

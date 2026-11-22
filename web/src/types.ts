@@ -522,6 +522,7 @@ export interface CreateArenaMatchResponse {
   matchId: string;
   spectatorWsUrl: string;
   empireTokens: Record<string, string>;
+  mcpUrls?: Record<string, string>;
   status: ArenaMatchStatus;
   executionMode?: ExecutionMode;
   paused?: boolean;

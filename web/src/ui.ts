@@ -3306,26 +3306,63 @@ export class UiController {
     box.style.display = 'flex';
     title.textContent = `✓ Match ${res.matchId} (${res.status})`;
 
-    const seatsToShow = res.agentSeats;
+    const raceNames = ['Humanoids', 'Rabbitoids', 'Insectoids', 'Nucleids', 'Silicanoids', 'Antethereals'];
+    const seatsToShow =
+      res.agentSeats.length > 0
+        ? res.agentSeats
+        : Object.keys(res.empireTokens)
+            .map(Number)
+            .sort((a, b) => a - b);
     list.innerHTML = '';
 
-    if (seatsToShow.length === 0) {
+    if (res.agentSeats.length === 0) {
       const note = document.createElement('div');
-      note.style.fontSize = '0.68rem';
+      note.style.fontSize = '0.65rem';
       note.style.color = 'var(--muted)';
+      note.style.marginBottom = '4px';
       note.textContent =
-        'All 6 empires run on the built-in Governor AI (no external managers selected). Check seats above if you want external AI managers to control specific empires.';
+        'Realtime drop-in mode: all empires run on Governor AI, or connect Claude via Copy MCP URL below at any time.';
       list.appendChild(note);
-      return;
     }
 
     const cliServer = serverUrl.startsWith('https://')
       ? `http://127.0.0.1:8080`
       : serverUrl;
 
+    const copyText = (value: string, btn: HTMLButtonElement, origLabel: string) => {
+      const markCopied = () => {
+        btn.textContent = '✓ Copied';
+        setTimeout(() => {
+          btn.textContent = origLabel;
+        }, 1400);
+      };
+      const fallbackCopy = () => {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+        } catch {
+          // ignore
+        }
+        document.body.removeChild(ta);
+        markCopied();
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(value).then(markCopied).catch(fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    };
+
     for (const seat of seatsToShow) {
       const token = res.empireTokens[String(seat)];
       if (!token) continue;
+      const mcpUrl = res.mcpUrls?.[String(seat)] ?? `${serverUrl.replace(/\/+$/, '')}/mcp/${token}`;
       const cmd = `python3 tools/llm_agent.py --server ${cliServer} --match ${res.matchId} --token ${token} --mock`;
 
       const row = document.createElement('div');
@@ -3334,52 +3371,40 @@ export class UiController {
       const top = document.createElement('div');
       top.className = 'arena-token-top';
       const label = document.createElement('span');
-      label.textContent = `Seat #${seat} Token`;
+      const rName = raceNames[seat] ?? `Empire #${seat + 1}`;
+      label.textContent = `Seat #${seat} • ${rName}`;
 
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'hud-btn';
-      copyBtn.style.padding = '2px 6px';
-      copyBtn.style.fontSize = '0.6rem';
-      copyBtn.textContent = '📋 Copy CLI';
-      copyBtn.addEventListener('click', () => {
-        const markCopied = () => {
-          copyBtn.textContent = '✓ Copied';
-          setTimeout(() => {
-            copyBtn.textContent = '📋 Copy CLI';
-          }, 1400);
-        };
-        const fallbackCopy = () => {
-          const ta = document.createElement('textarea');
-          ta.value = cmd;
-          ta.setAttribute('readonly', '');
-          ta.style.position = 'fixed';
-          ta.style.left = '-9999px';
-          document.body.appendChild(ta);
-          ta.select();
-          try {
-            document.execCommand('copy');
-          } catch {
-            // ignore
-          }
-          document.body.removeChild(ta);
-          markCopied();
-        };
-        if (navigator.clipboard && window.isSecureContext) {
-          navigator.clipboard.writeText(cmd).then(markCopied).catch(fallbackCopy);
-        } else {
-          fallbackCopy();
-        }
-      });
+      const btnGroup = document.createElement('div');
+      btnGroup.style.display = 'flex';
+      btnGroup.style.gap = '4px';
+
+      const copyMcpBtn = document.createElement('button');
+      copyMcpBtn.className = 'hud-btn active';
+      copyMcpBtn.style.padding = '2px 6px';
+      copyMcpBtn.style.fontSize = '0.6rem';
+      copyMcpBtn.textContent = '🔌 Copy MCP URL';
+      copyMcpBtn.title = mcpUrl;
+      copyMcpBtn.addEventListener('click', () => copyText(mcpUrl, copyMcpBtn, '🔌 Copy MCP URL'));
+
+      const copyCliBtn = document.createElement('button');
+      copyCliBtn.className = 'hud-btn';
+      copyCliBtn.style.padding = '2px 6px';
+      copyCliBtn.style.fontSize = '0.6rem';
+      copyCliBtn.textContent = '📋 Copy CLI';
+      copyCliBtn.addEventListener('click', () => copyText(cmd, copyCliBtn, '📋 Copy CLI'));
+
+      btnGroup.appendChild(copyMcpBtn);
+      btnGroup.appendChild(copyCliBtn);
 
       top.appendChild(label);
-      top.appendChild(copyBtn);
+      top.appendChild(btnGroup);
 
-      const cmdDiv = document.createElement('div');
-      cmdDiv.className = 'arena-token-cmd';
-      cmdDiv.textContent = cmd;
+      const mcpDiv = document.createElement('div');
+      mcpDiv.className = 'arena-token-cmd';
+      mcpDiv.textContent = mcpUrl;
 
       row.appendChild(top);
-      row.appendChild(cmdDiv);
+      row.appendChild(mcpDiv);
       list.appendChild(row);
     }
   }

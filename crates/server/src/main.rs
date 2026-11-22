@@ -7,11 +7,13 @@ use sistars_server::{build_router, AppState};
 async fn main() {
     let bind_addr = std::env::var("SISTARS_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let admin_token = std::env::var("SISTARS_ADMIN_TOKEN").ok();
+    let public_url = std::env::var("SISTARS_PUBLIC_URL").ok();
+    let mcp_seats_raw = std::env::var("SISTARS_MCP_SEATS").ok();
     let logs_dir = std::env::var("SISTARS_LOGS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("logs"));
 
-    let state = AppState::new(admin_token.clone(), logs_dir);
+    let state = AppState::new_with_mcp(admin_token.clone(), logs_dir, public_url.clone(), mcp_seats_raw.as_deref());
     let app = build_router(state);
 
     let addr: SocketAddr = bind_addr
@@ -23,6 +25,14 @@ async fn main() {
 
     println!("SI-Stars Arena Server listening on http://{addr}");
     println!("OpenAPI 3.0 spec: http://{addr}/openapi.json");
+    println!(
+        "MCP Streamable HTTP: {}/mcp/<token>",
+        public_url
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&format!("http://{addr}"))
+            .trim_end_matches('/')
+    );
     if admin_token.as_deref().is_some_and(|s| !s.trim().is_empty()) {
         println!("Admin auth: ENABLED (SISTARS_ADMIN_TOKEN)");
     } else {

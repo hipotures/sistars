@@ -84,6 +84,7 @@ pub struct CreateMatchResponse {
     pub match_id: String,
     pub spectator_ws_url: String,
     pub empire_tokens: HashMap<usize, String>,
+    pub mcp_urls: HashMap<usize, String>,
     pub status: MatchStatus,
     pub execution_mode: ExecutionMode,
     pub paused: bool,

@@ -531,7 +531,7 @@ impl MatchHandle {
     }
 }
 
-fn apply_submissions_locked(
+pub(crate) fn apply_submissions_locked(
     guard: &mut MatchInner,
     capture_per_empire_delta: bool,
 ) -> Vec<ArenaFeedEvent> {
