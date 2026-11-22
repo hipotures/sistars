@@ -689,6 +689,28 @@ impl Simulation {
         self.min_crust = generated.min_crust;
         self.wormholes = generated.wormholes;
 
+        // Scenario modifier: Core Richness Bias (rich galactic core, sparse outer rim)
+        let core_bias = self.cfg.scenario_modifiers.core_richness_bias.clamp(0.0, 1.5);
+        if core_bias > 0.001 {
+            let cx = self.world_w * 0.5;
+            let cy = self.world_h * 0.5;
+            let inv_rx = 1.0 / (cx.max(1.0));
+            let inv_ry = 1.0 / (cy.max(1.0));
+            for i in 0..n {
+                let nx = (self.pos_x[i] - cx) * inv_rx;
+                let ny = (self.pos_y[i] - cy) * inv_ry;
+                let r_norm = (nx * nx + ny * ny).sqrt().clamp(0.0, 1.2);
+                let center_factor = (1.0 - r_norm).clamp(0.0, 1.0);
+                let crust_mult = (1.0 + core_bias * (center_factor * 1.45 - 0.65)).clamp(0.22, 2.5);
+                let base = i * 3;
+                self.min_crust[base] *= crust_mult;
+                self.min_crust[base + 1] *= crust_mult;
+                self.min_crust[base + 2] *= crust_mult;
+                let hab_shift = core_bias * (center_factor * 0.35 - 0.18);
+                self.hab[i] = (self.hab[i] + hab_shift).clamp(0.18, 1.0);
+            }
+        }
+
         self.pop.clear();
         self.pop.resize(n, 0.0);
         self.mines.clear();
@@ -752,6 +774,65 @@ impl Simulation {
                 res: 25.0,
                 gates: 0,
             };
+        }
+
+        // Scenario modifier: Fallen Empire (1 deterministic empire starts with 11-12 planets, Starbases, +4 tech)
+        if self.cfg.scenario_modifiers.fallen_empire && num_emp > 0 {
+            let fe = (seed as usize) % num_emp;
+            let prt = self.empires[fe].race.prt.clone();
+            let lrt_mask = self.empires[fe].race.lrt_mask;
+            let mut boosted_lv = self.empires[fe].tech_int_lv;
+            for f in 0..NUM_TECH_FIELDS {
+                boosted_lv[f] = (boosted_lv[f] + 4).min(crate::config::MAX_TECH_LEVEL as i32);
+                self.empires[fe].tech_int_lv[f] = boosted_lv[f];
+                self.empires[fe].tech_lv[f] = boosted_lv[f] as f32;
+                self.empires[fe].tech_pts[f] = points_for_tech_level(boosted_lv[f]);
+            }
+            self.empires[fe].tech_cache =
+                EmpireTechCache::resolve(&boosted_lv, &prt, lrt_mask, ignore);
+            self.empires[fe].unlocked_bp = self.empires[fe].tech_cache.perk_mask;
+            self.defense[fe] = self.defense[fe].max(72.0);
+            self.pop[fe] = 95.0;
+            self.factories[fe] = 52.0;
+            self.mines[fe] = 44.0;
+
+            let fe_owner = (fe + 1) as u8;
+            let extra_target = 10usize + ((seed as usize) % 2); // 10 or 11 extras -> 11 or 12 total
+            let nb_start = self.neighbor_offsets[fe] as usize;
+            let nb_end = self.neighbor_offsets[fe + 1] as usize;
+            let mut claimed = Vec::with_capacity(extra_target);
+            for &(j_u32, _) in &self.neighbor_data[nb_start..nb_end] {
+                if claimed.len() >= extra_target {
+                    break;
+                }
+                let j = j_u32 as usize;
+                if self.owner[j] == 0 {
+                    claimed.push(j);
+                }
+            }
+            for &j in &claimed {
+                self.owner[j] = fe_owner;
+                self.hab[j] = self.hab[j].max(0.65);
+                self.pop[j] = 68.0;
+                self.mines[j] = 32.0;
+                self.factories[j] = 36.0;
+                self.defense[j] = 65.0; // Starbase-class planetary defense
+                let b = j * 3;
+                self.min_surf[b] = 140.0;
+                self.min_surf[b + 1] = 140.0;
+                self.min_surf[b + 2] = 140.0;
+            }
+            let fe_planets = (1 + claimed.len()) as u32;
+            let fe_fac = self.factories[fe] + claimed.iter().map(|&j| self.factories[j]).sum::<f32>();
+            self.empires[fe].last_stats.planets = fe_planets;
+            self.empires[fe].last_stats.factories = fe_fac;
+            self.empires[fe].last_stats.res = fe_fac * 1.15;
+            self.empires[fe].res_total = fe_fac * 1.15;
+
+            let scan_r = self.effective_scanner_range(fe);
+            for &j in &claimed {
+                self.reveal_around_planet(j, fe, scan_r);
+            }
         }
 
         // Initial planetary scanner reveal around each empire's homeworld
@@ -826,6 +907,12 @@ impl Simulation {
             }
         }
 
+        let mods = self.cfg.scenario_modifiers;
+        let scan_mult = mods.scanner_range_mult.clamp(0.2, 3.0);
+        let ew_mult = mods.ew_strength_mult.clamp(0.2, 3.0);
+        let tech_mult = mods.tech_speed_mult.clamp(0.2, 5.0);
+        let growth_mult = mods.growth_rate_mult.clamp(0.2, 5.0);
+
         let mut total_galactic_res = 1.0f32;
         let mut leader_e = 0usize;
         let mut emp_cache = [EmpireTickCache::default(); MAX_EMPIRES];
@@ -881,9 +968,10 @@ impl Simulation {
             } else {
                 1.0
             };
-            let research_mult = 1.0
+            let research_mult = (1.0
                 + if lrt & LRT_BET != 0 { 0.15 } else { 0.0 }
-                + if lrt & LRT_GR != 0 { 0.12 } else { 0.0 };
+                + if lrt & LRT_GR != 0 { 0.12 } else { 0.0 })
+                * tech_mult;
             let prt_alch = if prt_pp { 1.35 } else { 1.0 };
             let lrt_alch = if lrt & LRT_MA != 0 { 1.8 } else { 1.0 };
             let perk_alch = if tc.perk_mask & BP_ALCHEMY2 != 0 {
@@ -918,7 +1006,7 @@ impl Simulation {
                 alch_mult: (0.45 * prt_alch * lrt_alch * perk_alch) / alch_base,
                 def_cap: 65.0 * (0.7 + tc.defense_coverage * 0.45) * prt_def_mult,
                 def_surplus_rate: if prt_is { 0.22 } else { 0.12 },
-                has_stargate_tech: !self.cfg.disable_stargates && tc.stargate_name.is_some(),
+                has_stargate_tech: mods.allow_stargates && tc.stargate_name.is_some(),
                 max_gates: if prt_it {
                     (self.p_counts[e] as usize / 4).max(2)
                 } else {
@@ -930,6 +1018,7 @@ impl Simulation {
                 min_hub_sq: min_hub_dist * min_hub_dist,
                 effective_ship_cost: self.cfg.col_ship_cost * con_discount * trait_ship_discount,
                 bio_growth_mult: self.cfg.growth
+                    * growth_mult
                     * (1.0 + lv[5] * 0.025)
                     * if prt_he { 1.80 } else { 1.0 }
                     * DT,
@@ -943,11 +1032,11 @@ impl Simulation {
                 cruiser_share: doc.cruiser_share,
                 bship_share: doc.bship_share,
                 tech_alloc: doc.tech_alloc,
-                scan_r: if prt_ss {
+                scan_r: (if prt_ss {
                     tc.scanner_range * 1.25
                 } else {
                     tc.scanner_range
-                },
+                }) * scan_mult,
                 gate_range_sq: gate_range * gate_range,
                 cargo_cap: (tc.hull_freight.cargo * 0.75).clamp(45.0, 220.0),
                 freight_range: emp.ship_range(FleetClass::Freight),
@@ -957,8 +1046,9 @@ impl Simulation {
                 base_step_dist: self.cfg.fleet_speed * warp_mult * ife_mult * DT,
                 salvage_mult: if lrt & LRT_UR != 0 { 1.30 } else { 1.0 },
                 cruiser_scan_max: ((self.cfg.scanner_range * 0.65 + tc.scanner_range * 0.45)
-                    * if prt_ss { 1.25 } else { 1.0 })
-                .min(180.0),
+                    * if prt_ss { 1.25 } else { 1.0 }
+                    * scan_mult)
+                .min(240.0),
                 tachyon_red: tc.tachyon_cloak_reduction,
                 intercept_bias: doc.intercept_bias,
                 prt_ss,
@@ -1873,11 +1963,12 @@ impl Simulation {
                         // Electronic Warfare: target Cloak vs observer Tachyon Detector + local enemy ECM
                         let other_e = (entry.tag - 1) as usize;
                         let other_tc = &empires_ref[other_e].tech_cache;
-                        let target_cloak = if (entry.flags & 1) != 0 {
+                        let target_cloak = (if (entry.flags & 1) != 0 {
                             other_tc.cloak_armed_pct
                         } else {
                             other_tc.cloak_unarmed_pct
-                        };
+                        } * ew_mult)
+                            .clamp(0.0, 0.96);
                         let mut ecm_pen = 0.0f32;
                         for &p_idx in &[other.from, other.target] {
                             let p_owner = owner_ref[p_idx];
@@ -1894,7 +1985,8 @@ impl Simulation {
                                     let jdist_sq = jdx * jdx + jdy * jdy;
                                     if jdist_sq < jam_r * jam_r {
                                         let falloff = 1.0 - jdist_sq.sqrt() / jam_r;
-                                        ecm_pen = ecm_pen.max(ptc.ecm_jammer_strength * falloff);
+                                        ecm_pen = ecm_pen
+                                            .max((ptc.ecm_jammer_strength * falloff * ew_mult).min(0.85));
                                     }
                                 }
                             }
@@ -2152,12 +2244,12 @@ impl Simulation {
                     mod_a = apply_torpedo_jamming(
                         mod_a,
                         self.empires[ea].tech_cache.weapon_is_torpedo,
-                        self.empires[eb].tech_cache.torpedo_jamming,
+                        self.empires[eb].tech_cache.torpedo_jamming * ew_mult,
                     );
                     mod_b = apply_torpedo_jamming(
                         mod_b,
                         self.empires[eb].tech_cache.weapon_is_torpedo,
-                        self.empires[ea].tech_cache.torpedo_jamming,
+                        self.empires[ea].tech_cache.torpedo_jamming * ew_mult,
                     );
 
                     let eff_a = (if a_c { self.fleets[i].power } else { 8.0 }) * mod_a;
@@ -2266,7 +2358,8 @@ impl Simulation {
 
     #[inline]
     fn effective_scanner_range(&self, e: usize) -> f32 {
-        let base = self.empires[e].tech_cache.scanner_range;
+        let base = self.empires[e].tech_cache.scanner_range
+            * self.cfg.scenario_modifiers.scanner_range_mult.clamp(0.2, 3.0);
         if self.empires[e].race.prt == "PRT_SS" {
             base * 1.25
         } else {
@@ -2448,9 +2541,6 @@ impl Simulation {
             "wormholePairs" => {
                 self.cfg.wormhole_pairs = (value.round() as usize).clamp(0, 500);
                 needs_reset = true;
-            }
-            "disableStargates" => {
-                self.cfg.disable_stargates = value >= 0.5;
             }
             "crustRichness" => {
                 self.cfg.crust_richness = value.clamp(300.0, 2500.0);
@@ -2830,7 +2920,7 @@ mod tests {
         let mut cfg = SimConfig::default();
         cfg.galaxy_size = GalaxySize::Large;
         cfg.wormhole_pairs = 300;
-        cfg.disable_stargates = true;
+        cfg.scenario_modifiers.allow_stargates = false;
         let mut sim = Simulation::new(cfg, classic_races());
         sim.init(77777, true);
         assert_eq!(sim.wormholes.len(), 300);
@@ -2840,7 +2930,82 @@ mod tests {
         }
 
         let total_gates: u32 = sim.empires.iter().map(|e| e.last_stats.gates).sum();
-        assert_eq!(total_gates, 0, "expected 0 stargates when disable_stargates=true");
+        assert_eq!(total_gates, 0, "expected 0 stargates when allow_stargates=false");
         assert!(sim.gate_jumps_count > 0, "expected fleets to use wormholes");
+    }
+
+    #[test]
+    fn scenario_core_richness_bias_is_deterministic_and_enriches_core() {
+        let mut cfg_std = SimConfig::default();
+        cfg_std.galaxy_size = GalaxySize::Large;
+        let mut sim_std = Simulation::new(cfg_std, classic_races());
+        sim_std.init(42424, true);
+
+        let mut cfg_core = SimConfig::default();
+        cfg_core.galaxy_size = GalaxySize::Large;
+        cfg_core.scenario_modifiers.core_richness_bias = 0.85;
+        let mut sim_a = Simulation::new(cfg_core.clone(), classic_races());
+        let mut sim_b = Simulation::new(cfg_core, classic_races());
+        sim_a.init(42424, true);
+        sim_b.init(42424, true);
+
+        // Determinism check
+        assert_eq!(sim_a.hab, sim_b.hab);
+        assert_eq!(sim_a.min_crust, sim_b.min_crust);
+
+        // Compare average core crust vs rim crust
+        let cx = sim_a.world_w * 0.5;
+        let cy = sim_a.world_h * 0.5;
+        let mut core_sum = 0.0f32;
+        let mut core_cnt = 0u32;
+        let mut rim_sum = 0.0f32;
+        let mut rim_cnt = 0u32;
+        for i in 6..sim_a.pos_x.len() {
+            let r = ((sim_a.pos_x[i] - cx) / cx).hypot((sim_a.pos_y[i] - cy) / cy);
+            let crust = sim_a.min_crust[i * 3] + sim_a.min_crust[i * 3 + 1] + sim_a.min_crust[i * 3 + 2];
+            if r < 0.35 {
+                core_sum += crust;
+                core_cnt += 1;
+            } else if r > 0.72 {
+                rim_sum += crust;
+                rim_cnt += 1;
+            }
+        }
+        assert!(core_cnt > 0 && rim_cnt > 0);
+        let core_avg = core_sum / core_cnt as f32;
+        let rim_avg = rim_sum / rim_cnt as f32;
+        assert!(
+            core_avg > rim_avg * 1.75,
+            "expected core ({core_avg}) to be much richer than rim ({rim_avg})"
+        );
+    }
+
+    #[test]
+    fn scenario_fallen_empire_starts_with_advantage_and_is_deterministic() {
+        let mut cfg = SimConfig::default();
+        cfg.galaxy_size = GalaxySize::Large;
+        cfg.scenario_modifiers.fallen_empire = true;
+        let mut a = Simulation::new(cfg.clone(), classic_races());
+        let mut b = Simulation::new(cfg, classic_races());
+        a.init(55123, true);
+        b.init(55123, true);
+
+        let fe = 55123usize % a.empires.len();
+        assert!(
+            a.empires[fe].last_stats.planets >= 11 && a.empires[fe].last_stats.planets <= 12,
+            "expected 11-12 starting planets for Fallen Empire, got {}",
+            a.empires[fe].last_stats.planets
+        );
+        // Other empires start with 1 planet
+        for (idx, emp) in a.empires.iter().enumerate() {
+            if idx != fe {
+                assert_eq!(emp.last_stats.planets, 1);
+            }
+        }
+        // Fallen Empire starts with +4 tech bonus over baseline
+        assert!(a.empires[fe].tech_int_lv[0] >= 4);
+        // Determinism
+        assert_eq!(a.owner, b.owner);
+        assert_eq!(a.empires[fe].tech_int_lv, b.empires[fe].tech_int_lv);
     }
 }

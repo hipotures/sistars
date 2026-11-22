@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::galaxy::{GalaxyShape, GalaxySize};
+use crate::types::ScenarioModifiers;
 
 pub const WORLD_W: f32 = 1000.0;
 pub const WORLD_H: f32 = 560.0;
@@ -217,7 +218,7 @@ pub struct SimConfig {
     pub op_limit: f32,
     pub ignore_racial_traits: bool,
     #[serde(default)]
-    pub disable_stargates: bool,
+    pub scenario_modifiers: ScenarioModifiers,
 }
 
 impl Default for SimConfig {
@@ -244,7 +245,7 @@ impl Default for SimConfig {
             growth: 0.12,
             op_limit: 10.0,
             ignore_racial_traits: false,
-            disable_stargates: false,
+            scenario_modifiers: ScenarioModifiers::default(),
         }
     }
 }

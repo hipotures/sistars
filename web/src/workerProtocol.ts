@@ -7,6 +7,7 @@ import type {
   PlanetView,
   RaceDef,
   ReportsSnapshot,
+  ScenarioModifiers,
   SimConfig,
   StarSystemView,
   TechCatalogView,
@@ -15,7 +16,7 @@ import type {
 
 export interface InitialSimSettings {
   ignoreRacialTraits: boolean;
-  disableStargates: boolean;
+  scenarioModifiers: ScenarioModifiers;
   galaxySize: string;
   galaxyShape: string;
   wormholePairs: number;
@@ -34,6 +35,20 @@ export type MainToWorkerMsg =
   | { type: 'setPaused'; paused: boolean }
   | { type: 'step'; ticks: number }
   | { type: 'newGalaxy'; seed: number; size?: string; shape?: string }
+  | {
+      type: 'applyScenario';
+      seed: number;
+      modifiers: ScenarioModifiers;
+      galaxySize: string;
+      galaxyShape: string;
+      wormholePairs: number;
+      crustRichness: number;
+      gateCost: number;
+      interceptRad: number;
+      salvageRate: number;
+      aggroBias: number;
+      sprawlPenalty: number;
+    }
   | { type: 'updateConfig'; key: string; value: number; seed: number }
   | { type: 'setRaces'; races: RaceDef[]; seed: number }
   | { type: 'setSelectedFleet'; fleetId: number | null }

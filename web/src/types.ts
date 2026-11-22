@@ -100,6 +100,16 @@ export interface TechCatalogView {
 export type GalaxySize = 'small' | 'medium' | 'large' | 'huge' | 'colossal' | 'galactic';
 export type GalaxyShape = 'spiral' | 'random' | 'ring' | 'clusters' | 'elliptical';
 
+export interface ScenarioModifiers {
+  scannerRangeMult: number;
+  ewStrengthMult: number;
+  techSpeedMult: number;
+  growthRateMult: number;
+  coreRichnessBias: number;
+  fallenEmpire: boolean;
+  allowStargates: boolean;
+}
+
 export interface SimConfig {
   galaxySize: GalaxySize;
   galaxyShape: GalaxyShape;
@@ -120,7 +130,7 @@ export interface SimConfig {
   growth: number;
   opLimit: number;
   ignoreRacialTraits: boolean;
-  disableStargates: boolean;
+  scenarioModifiers: ScenarioModifiers;
 }
 
 export interface EmpireStats {

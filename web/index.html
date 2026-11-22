@@ -15,6 +15,7 @@
   <div class="brand">
     <div class="brand-title">SI-STARS</div>
     <div class="year-box" id="hudYear">2400.0</div>
+    <span class="hud-scenario-tag" id="hudScenarioTag" style="display:none;"></span>
     <div class="speed-controls">
       <button class="hud-btn" id="btnPause" data-speed="0" title="Pause">⏸</button>
       <button class="hud-btn" id="btnStep" title="Step 1 tick">⏭</button>
@@ -339,6 +340,13 @@
   </div>
   <div id="statusMsg" style="font-size:0.7rem; color:var(--purple); min-height:16px;"></div>
 
+  <h3>0. Scenario</h3>
+  <div class="scenario-box">
+    <select id="p_scenario" class="select-input"></select>
+    <div id="scenarioDesc" class="scenario-desc"></div>
+    <div id="scenarioBadges" class="scenario-badges"></div>
+  </div>
+
   <h3>1. Tech Rules</h3>
   <label class="checkbox-row">
     <input type="checkbox" id="p_ignoreRacialTraits" />
@@ -369,7 +377,7 @@
 
   <h3>3. Galaxy Generator &amp; Wormholes</h3>
   <div class="field">
-    <div class="field-header"><span>Galaxy size</span></div>
+    <div class="field-header"><span>Galaxy size <span class="lock-badge" id="lock_galaxySize"></span></span></div>
     <select id="p_galaxySize" class="select-input">
       <option value="small" selected>Small (120 systems • 1000×650 ly)</option>
       <option value="medium">Medium (250 systems • 1450×950 ly)</option>
@@ -380,7 +388,7 @@
     </select>
   </div>
   <div class="field">
-    <div class="field-header"><span>Galaxy shape</span></div>
+    <div class="field-header"><span>Galaxy shape <span class="lock-badge" id="lock_galaxyShape"></span></span></div>
     <select id="p_galaxyShape" class="select-input">
       <option value="spiral" selected>Spiral (Arms &amp; Core)</option>
       <option value="random">Random (Uniform)</option>
@@ -390,7 +398,7 @@
     </select>
   </div>
   <div class="field">
-    <div class="field-header"><span>Wormhole pairs</span><span class="val" id="v_wormholePairs">2</span></div>
+    <div class="field-header"><span>Wormhole pairs <span class="lock-badge" id="lock_wormholePairs"></span></span><span class="val" id="v_wormholePairs">2</span></div>
     <input type="range" id="p_wormholePairs" data-param="wormholePairs" min="0" max="500" step="1" value="2">
     <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">
       <button class="hud-btn" data-wh-preset="0" style="padding:2px 6px;font-size:0.62rem;">0</button>
@@ -401,20 +409,16 @@
       <button class="hud-btn" data-wh-preset="500" style="padding:2px 6px;font-size:0.62rem;">500</button>
     </div>
   </div>
-  <label class="checkbox-row">
-    <input type="checkbox" id="p_disableStargates" />
-    <span>Disable Stargates (Wormhole-only mode)</span>
-  </label>
-  <div class="field"><div class="field-header"><span>Crust richness I/B/G (kT)</span><span class="val" id="v_crustRichness">800</span></div><input type="range" id="p_crustRichness" data-param="crustRichness" min="300" max="2500" step="100" value="800"></div>
+  <div class="field"><div class="field-header"><span>Crust richness I/B/G (kT) <span class="lock-badge" id="lock_crustRichness"></span></span><span class="val" id="v_crustRichness">800</span></div><input type="range" id="p_crustRichness" data-param="crustRichness" min="300" max="2500" step="100" value="800"></div>
 
   <h3>4. Stargate &amp; Space Combat</h3>
-  <div class="field"><div class="field-header"><span>Stargate cost cap (I+G kT)</span><span class="val" id="v_gateCost">45</span></div><input type="range" id="p_gateCost" data-param="gateCost" min="15" max="120" step="5" value="45"></div>
-  <div class="field"><div class="field-header"><span>Intercept radius</span><span class="val" id="v_interceptRad">22</span></div><input type="range" id="p_interceptRad" data-param="interceptRad" min="8" max="50" step="2" value="22"></div>
-  <div class="field"><div class="field-header"><span>Debris salvage rate</span><span class="val" id="v_salvageRate">65%</span></div><input type="range" id="p_salvageRate" data-param="salvageRate" min="0" max="100" step="5" value="65"></div>
+  <div class="field"><div class="field-header"><span>Stargate cost cap (I+G kT) <span class="lock-badge" id="lock_gateCost"></span></span><span class="val" id="v_gateCost">45</span></div><input type="range" id="p_gateCost" data-param="gateCost" min="15" max="120" step="5" value="45"></div>
+  <div class="field"><div class="field-header"><span>Intercept radius <span class="lock-badge" id="lock_interceptRad"></span></span><span class="val" id="v_interceptRad">22</span></div><input type="range" id="p_interceptRad" data-param="interceptRad" min="8" max="50" step="2" value="22"></div>
+  <div class="field"><div class="field-header"><span>Debris salvage rate <span class="lock-badge" id="lock_salvageRate"></span></span><span class="val" id="v_salvageRate">65%</span></div><input type="range" id="p_salvageRate" data-param="salvageRate" min="0" max="100" step="5" value="65"></div>
 
   <h3>5. Diplomacy &amp; Administration</h3>
-  <div class="field"><div class="field-header"><span>Anti-leader coalition (Aggro)</span><span class="val" id="v_aggroBias">65%</span></div><input type="range" id="p_aggroBias" data-param="aggroBias" min="0" max="100" step="5" value="65"></div>
-  <div class="field"><div class="field-header"><span>Empire sprawl penalty</span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
+  <div class="field"><div class="field-header"><span>Anti-leader coalition (Aggro) <span class="lock-badge" id="lock_aggroBias"></span></span><span class="val" id="v_aggroBias">65%</span></div><input type="range" id="p_aggroBias" data-param="aggroBias" min="0" max="100" step="5" value="65"></div>
+  <div class="field"><div class="field-header"><span>Empire sprawl penalty <span class="lock-badge" id="lock_sprawlPenalty"></span></span><span class="val" id="v_sprawlPenalty">22%</span></div><input type="range" id="p_sprawlPenalty" data-param="sprawlPenalty" min="0" max="50" step="2" value="22"></div>
 
   <h3>6. Debug &amp; UI</h3>
   <label class="checkbox-row">

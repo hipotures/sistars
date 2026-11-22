@@ -217,7 +217,7 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
     if (msg.initialSettings) {
       const s = msg.initialSettings;
       if (s.ignoreRacialTraits) engine.update_param('ignoreRacialTraits', 1, msg.seed);
-      if (s.disableStargates) engine.update_param('disableStargates', 1, msg.seed);
+      engine.set_scenario_modifiers(s.scenarioModifiers, msg.seed, false);
       if (s.wormholePairs !== 2) engine.update_param('wormholePairs', s.wormholePairs, msg.seed);
       if (s.crustRichness !== 800) engine.update_param('crustRichness', s.crustRichness, msg.seed);
       if (s.gateCost !== 45) engine.update_param('gateCost', s.gateCost, msg.seed);
@@ -227,6 +227,9 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
       if (s.sprawlPenalty !== 22) engine.update_param('sprawlPenalty', s.sprawlPenalty, msg.seed);
       if (s.galaxySize !== 'small' || s.galaxyShape !== 'spiral') {
         engine.set_galaxy_options(s.galaxySize, s.galaxyShape, msg.seed);
+      } else {
+        // Re-init once so coreRichnessBias / fallenEmpire take effect on initial Small Spiral too
+        engine.init(msg.seed);
       }
       speed = s.speed;
       paused = speed <= 0;
@@ -333,6 +336,25 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
       } else {
         engine.init(msg.seed);
       }
+      sendFrame(0, 0, true, true, true);
+      if (speed > 0 && !paused && !scrubActive) {
+        scheduleLoop(TARGET_FRAME_MS);
+      }
+      break;
+    }
+
+    case 'applyScenario': {
+      stopLoop();
+      tickAccum = 0;
+      engine.set_scenario_modifiers(msg.modifiers, msg.seed, false);
+      engine.update_param('gateCost', msg.gateCost, msg.seed);
+      engine.update_param('interceptRad', msg.interceptRad, msg.seed);
+      engine.update_param('salvageRate', msg.salvageRate, msg.seed);
+      engine.update_param('aggroBias', msg.aggroBias, msg.seed);
+      engine.update_param('sprawlPenalty', msg.sprawlPenalty, msg.seed);
+      engine.update_param('wormholePairs', msg.wormholePairs, msg.seed);
+      engine.update_param('crustRichness', msg.crustRichness, msg.seed);
+      engine.set_galaxy_options(msg.galaxySize, msg.galaxyShape, msg.seed);
       sendFrame(0, 0, true, true, true);
       if (speed > 0 && !paused && !scrubActive) {
         scheduleLoop(TARGET_FRAME_MS);

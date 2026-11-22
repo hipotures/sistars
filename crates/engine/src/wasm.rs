@@ -8,7 +8,7 @@ use crate::config::{
 };
 use crate::sim::Simulation;
 use crate::tech::{classic_races, tech_store, LRT_LIST, PRT_LIST};
-use crate::types::{RaceDef, TechCatalogView};
+use crate::types::{RaceDef, ScenarioModifiers, TechCatalogView};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +96,20 @@ impl WasmEngine {
             true
         } else {
             false
+        }
+    }
+
+    pub fn set_scenario_modifiers(&mut self, mods_js: JsValue, new_seed: u32, reset_map: bool) -> bool {
+        let parsed: Result<ScenarioModifiers, _> = serde_wasm_bindgen::from_value(mods_js);
+        match parsed {
+            Ok(mods) => {
+                self.sim.cfg.scenario_modifiers = mods;
+                if reset_map {
+                    self.sim.init(new_seed, false);
+                }
+                true
+            }
+            Err(_) => false,
         }
     }
 

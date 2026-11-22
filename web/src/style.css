@@ -647,6 +647,73 @@ header.hud-top {
   text-decoration-color: var(--accent);
 }
 
+.hud-scenario-tag {
+  font-size: 0.63rem;
+  font-family: monospace;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.scenario-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(8, 14, 24, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-left: 2px solid var(--accent);
+  padding: 8px;
+}
+
+.scenario-desc {
+  font-size: 0.69rem;
+  color: #cbd5e1;
+  line-height: 1.35;
+}
+
+.scenario-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.scenario-chip {
+  font-size: 0.6rem;
+  font-family: monospace;
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.10);
+  border: 1px solid rgba(56, 189, 248, 0.30);
+  padding: 1px 5px;
+}
+
+.lock-badge {
+  display: none;
+  margin-left: 5px;
+  font-size: 0.58rem;
+  font-family: monospace;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.36);
+  padding: 0 4px;
+  letter-spacing: 0.02em;
+}
+
+.lock-badge.visible {
+  display: inline-block;
+}
+
+input:disabled,
+select:disabled,
+button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
 .sys-orrery-canvas {
   width: 100%;
   height: 410px;

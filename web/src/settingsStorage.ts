@@ -1,3 +1,4 @@
+import { VALID_SCENARIO_IDS, type ScenarioId } from './scenarios';
 import type { EquilibriumMode, GalaxyShape, GalaxySize, RangeContourMode } from './types';
 
 const SETTINGS_STORAGE_KEY = 'sistars.settings.v1';
@@ -28,8 +29,8 @@ export interface PersistedSettings {
   contourOpacity: number; // 0..80 (percentage)
 
   // World Rules & Galaxy Generator
+  scenarioId: ScenarioId;
   ignoreRacialTraits: boolean;
-  disableStargates: boolean;
   galaxySize: GalaxySize;
   galaxyShape: GalaxyShape;
   wormholePairs: number;
@@ -53,8 +54,8 @@ export const DEFAULT_SETTINGS: PersistedSettings = {
   contourMode: 'subtle',
   contourOpacity: 22,
 
+  scenarioId: 'standard',
   ignoreRacialTraits: false,
-  disableStargates: false,
   galaxySize: 'small',
   galaxyShape: 'spiral',
   wormholePairs: 2,
@@ -101,19 +102,20 @@ export function loadPersistedSettings(): PersistedSettings {
         ? parsed.speed
         : DEFAULT_SETTINGS.speed;
 
+    const scen = VALID_SCENARIO_IDS.has(parsed.scenarioId as ScenarioId)
+      ? (parsed.scenarioId as ScenarioId)
+      : DEFAULT_SETTINGS.scenarioId;
+
     return {
       equilibriumMode: eq,
       contourMode: cm,
       contourOpacity: Math.round(clampNum(parsed.contourOpacity, DEFAULT_SETTINGS.contourOpacity, 0, 80)),
 
+      scenarioId: scen,
       ignoreRacialTraits:
         typeof parsed.ignoreRacialTraits === 'boolean'
           ? parsed.ignoreRacialTraits
           : DEFAULT_SETTINGS.ignoreRacialTraits,
-      disableStargates:
-        typeof parsed.disableStargates === 'boolean'
-          ? parsed.disableStargates
-          : DEFAULT_SETTINGS.disableStargates,
       galaxySize: gs,
       galaxyShape: gsh,
       wormholePairs: Math.round(clampNum(parsed.wormholePairs, DEFAULT_SETTINGS.wormholePairs, 0, 500)),

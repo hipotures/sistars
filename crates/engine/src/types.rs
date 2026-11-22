@@ -3,6 +3,47 @@ use serde::{Deserialize, Serialize};
 use crate::config::{FleetClass, NUM_TECH_FIELDS};
 use crate::tech::{CatalogEntry, LrtMeta, PrtMeta};
 
+fn default_one() -> f32 {
+    1.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioModifiers {
+    #[serde(default = "default_one")]
+    pub scanner_range_mult: f32,
+    #[serde(default = "default_one")]
+    pub ew_strength_mult: f32,
+    #[serde(default = "default_one")]
+    pub tech_speed_mult: f32,
+    #[serde(default = "default_one")]
+    pub growth_rate_mult: f32,
+    #[serde(default)]
+    pub core_richness_bias: f32,
+    #[serde(default)]
+    pub fallen_empire: bool,
+    #[serde(default = "default_true")]
+    pub allow_stargates: bool,
+}
+
+impl Default for ScenarioModifiers {
+    fn default() -> Self {
+        Self {
+            scanner_range_mult: 1.0,
+            ew_strength_mult: 1.0,
+            tech_speed_mult: 1.0,
+            growth_rate_mult: 1.0,
+            core_richness_bias: 0.0,
+            fallen_empire: false,
+            allow_stargates: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Doctrine {

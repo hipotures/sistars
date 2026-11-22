@@ -1,5 +1,12 @@
 import { drawPowerChart } from './renderer';
 import { SystemOrreryRenderer } from './orreryRenderer';
+import {
+  galaxySizeRank,
+  getScenarioById,
+  SCENARIOS,
+  type ScenarioDef,
+  type ScenarioId,
+} from './scenarios';
 import { ShipPreviewRenderer, type ShipViewMode } from './shipRenderer';
 import type { PersistedSettings } from './settingsStorage';
 import {
@@ -34,6 +41,7 @@ export interface UiCallbacks {
   onStepTick: () => void;
   onReset: () => void;
   onParamChange: (key: string, value: number) => void;
+  onScenarioChange: (scenarioId: ScenarioId) => void;
   onGalaxyChange: (size: string, shape: string) => void;
   onLabAction: (action: LabAction) => void;
   onSelectObject: (sel: MapSelection) => void;
@@ -236,9 +244,100 @@ export class UiController {
   public setConfig(cfg: SimConfig): void {
     this.lastConfig = cfg;
     getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = cfg.ignoreRacialTraits;
-    getEl<HTMLInputElement>('p_disableStargates').checked = cfg.disableStargates;
     getEl<HTMLSelectElement>('p_galaxySize').value = cfg.galaxySize;
     getEl<HTMLSelectElement>('p_galaxyShape').value = cfg.galaxyShape;
+  }
+
+  public applyScenarioLocks(scenario: ScenarioDef): void {
+    getEl<HTMLSelectElement>('p_scenario').value = scenario.id;
+    getEl('scenarioDesc').textContent = scenario.description;
+    getEl('scenarioBadges').innerHTML = scenario.highlights
+      .map((h) => `<span class="scenario-chip">${h}</span>`)
+      .join('');
+
+    const hudTag = getEl('hudScenarioTag');
+    if (scenario.id === 'standard') {
+      hudTag.style.display = 'none';
+      hudTag.textContent = '';
+    } else {
+      hudTag.style.display = 'inline-block';
+      hudTag.textContent = `⚑ ${scenario.shortTag}`;
+      hudTag.title = scenario.description;
+    }
+
+    const setBadge = (id: string, text: string | null) => {
+      const el = document.getElementById(`lock_${id}`);
+      if (!el) return;
+      if (text) {
+        el.textContent = text;
+        el.classList.add('visible');
+      } else {
+        el.textContent = '';
+        el.classList.remove('visible');
+      }
+    };
+
+    const locks = scenario.locks;
+
+    // Galaxy size lock (exact or min)
+    const sizeSelect = getEl<HTMLSelectElement>('p_galaxySize');
+    sizeSelect.disabled = locks.galaxySize !== undefined;
+    const minRank = locks.minGalaxySize ? galaxySizeRank(locks.minGalaxySize) : -1;
+    Array.from(sizeSelect.options).forEach((opt) => {
+      const r = galaxySizeRank(opt.value as typeof scenario.locks.galaxySize & string);
+      opt.disabled = minRank >= 0 && r < minRank;
+    });
+    setBadge(
+      'galaxySize',
+      locks.galaxySize
+        ? '🔒 Locked'
+        : locks.minGalaxySize
+          ? `🔒 ≥ ${locks.minGalaxySize[0].toUpperCase()}${locks.minGalaxySize.slice(1)}`
+          : null,
+    );
+
+    // Galaxy shape lock
+    const shapeSelect = getEl<HTMLSelectElement>('p_galaxyShape');
+    shapeSelect.disabled = locks.galaxyShape !== undefined;
+    setBadge('galaxyShape', locks.galaxyShape ? '🔒 Locked' : null);
+
+    // Wormhole pairs lock (exact or min)
+    const whSlider = getEl<HTMLInputElement>('p_wormholePairs');
+    const minWh = locks.minWormholePairs ?? 0;
+    whSlider.min = String(minWh);
+    whSlider.disabled = locks.wormholePairs !== undefined;
+    document.querySelectorAll<HTMLButtonElement>('[data-wh-preset]').forEach((btn) => {
+      const val = Number(btn.dataset.whPreset ?? 0);
+      btn.disabled = locks.wormholePairs !== undefined || val < minWh;
+    });
+    setBadge(
+      'wormholePairs',
+      locks.wormholePairs !== undefined
+        ? '🔒 Locked'
+        : locks.minWormholePairs !== undefined
+          ? `🔒 ≥ ${locks.minWormholePairs}`
+          : null,
+    );
+
+    // Simple numeric slider locks
+    const sliderLocks: [string, number | undefined, string | null][] = [
+      ['crustRichness', locks.crustRichness, null],
+      [
+        'gateCost',
+        locks.gateCost,
+        !scenario.modifiers.allowStargates ? '🔒 Stargates off' : null,
+      ],
+      ['interceptRad', locks.interceptRad, null],
+      ['salvageRate', locks.salvageRate, null],
+      ['aggroBias', locks.aggroBias, null],
+      ['sprawlPenalty', locks.sprawlPenalty, null],
+    ];
+    for (const [key, exactVal, extraBadge] of sliderLocks) {
+      const inp = document.getElementById(`p_${key}`) as HTMLInputElement | null;
+      const locked = exactVal !== undefined || extraBadge !== null;
+      if (inp) inp.disabled = locked;
+      setBadge(key, extraBadge ?? (exactVal !== undefined ? '🔒 Locked' : null));
+    }
   }
 
   public applyPersistedSettings(s: PersistedSettings): void {
@@ -256,8 +355,9 @@ export class UiController {
     getEl('v_contourOpacity').textContent = `${pct}%`;
 
     // World Rules & Galaxy Generator
+    const scen = getScenarioById(s.scenarioId);
+    this.applyScenarioLocks(scen);
     getEl<HTMLInputElement>('p_ignoreRacialTraits').checked = s.ignoreRacialTraits;
-    getEl<HTMLInputElement>('p_disableStargates').checked = s.disableStargates;
     getEl<HTMLSelectElement>('p_galaxySize').value = s.galaxySize;
     getEl<HTMLSelectElement>('p_galaxyShape').value = s.galaxyShape;
 
@@ -500,6 +600,12 @@ export class UiController {
   }
 
   private initStaticControls(): void {
+    // Populate Scenario select
+    const scenSelect = getEl<HTMLSelectElement>('p_scenario');
+    scenSelect.innerHTML = SCENARIOS.map(
+      (s) => `<option value="${s.id}">${s.name}</option>`,
+    ).join('');
+
     // Populate PRT select
     const prtSelect = getEl<HTMLSelectElement>('crPrt');
     prtSelect.innerHTML = this.catalog.prts
@@ -980,18 +1086,19 @@ export class UiController {
     getEl('p_galaxySize').addEventListener('change', onGalaxySelect);
     getEl('p_galaxyShape').addEventListener('change', onGalaxySelect);
 
+    getEl<HTMLSelectElement>('p_scenario').addEventListener('change', (e) => {
+      const id = (e.target as HTMLSelectElement).value as ScenarioId;
+      this.callbacks.onScenarioChange(id);
+    });
+
     getEl<HTMLInputElement>('p_ignoreRacialTraits').addEventListener('change', (e) => {
       const checked = (e.target as HTMLInputElement).checked;
       this.callbacks.onParamChange('ignoreRacialTraits', checked ? 1 : 0);
     });
 
-    getEl<HTMLInputElement>('p_disableStargates').addEventListener('change', (e) => {
-      const checked = (e.target as HTMLInputElement).checked;
-      this.callbacks.onParamChange('disableStargates', checked ? 1 : 0);
-    });
-
     document.querySelectorAll<HTMLButtonElement>('[data-wh-preset]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        if (btn.disabled) return;
         const val = Number(btn.dataset.whPreset ?? 2);
         if (Number.isNaN(val)) return;
         getEl<HTMLInputElement>('p_wormholePairs').value = String(val);

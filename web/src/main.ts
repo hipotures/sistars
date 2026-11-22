@@ -1,6 +1,11 @@
 import './style.css';
 import { GalaxyRenderer, PLANET_STRIDE, type HitTarget } from './renderer';
 import {
+  clampGalaxySizeForScenario,
+  getScenarioById,
+  type ScenarioId,
+} from './scenarios';
+import {
   loadPersistedSettings,
   savePersistedSettings,
   type PersistedSettings,
@@ -177,12 +182,43 @@ async function bootstrap(): Promise<void> {
     savePersistedSettings(persisted);
   };
 
+  // Enforce active scenario locks on initial persisted settings
+  const initialScenario = getScenarioById(persisted.scenarioId);
+  persisted.galaxySize = clampGalaxySizeForScenario(persisted.galaxySize, initialScenario);
+  if (initialScenario.locks.galaxyShape) persisted.galaxyShape = initialScenario.locks.galaxyShape;
+  if (initialScenario.locks.wormholePairs !== undefined) {
+    persisted.wormholePairs = initialScenario.locks.wormholePairs;
+  } else if (
+    initialScenario.locks.minWormholePairs !== undefined &&
+    persisted.wormholePairs < initialScenario.locks.minWormholePairs
+  ) {
+    persisted.wormholePairs = initialScenario.locks.minWormholePairs;
+  }
+  if (initialScenario.locks.interceptRad !== undefined) {
+    persisted.interceptRad = initialScenario.locks.interceptRad;
+  }
+  if (initialScenario.locks.crustRichness !== undefined) {
+    persisted.crustRichness = initialScenario.locks.crustRichness;
+  }
+  if (initialScenario.locks.gateCost !== undefined) {
+    persisted.gateCost = initialScenario.locks.gateCost;
+  }
+  if (initialScenario.locks.salvageRate !== undefined) {
+    persisted.salvageRate = initialScenario.locks.salvageRate;
+  }
+  if (initialScenario.locks.aggroBias !== undefined) {
+    persisted.aggroBias = initialScenario.locks.aggroBias;
+  }
+  if (initialScenario.locks.sprawlPenalty !== undefined) {
+    persisted.sprawlPenalty = initialScenario.locks.sprawlPenalty;
+  }
+
   postToWorker({
     type: 'init',
     seed: randomSeed(),
     initialSettings: {
       ignoreRacialTraits: persisted.ignoreRacialTraits,
-      disableStargates: persisted.disableStargates,
+      scenarioModifiers: initialScenario.modifiers,
       galaxySize: persisted.galaxySize,
       galaxyShape: persisted.galaxyShape,
       wormholePairs: persisted.wormholePairs,
@@ -475,7 +511,6 @@ async function bootstrap(): Promise<void> {
     },
     onParamChange: (key, value) => {
       if (key === 'ignoreRacialTraits') persisted.ignoreRacialTraits = value !== 0;
-      else if (key === 'disableStargates') persisted.disableStargates = value !== 0;
       else if (key === 'wormholePairs') persisted.wormholePairs = value;
       else if (key === 'crustRichness') persisted.crustRichness = value;
       else if (key === 'gateCost') persisted.gateCost = value;
@@ -485,6 +520,58 @@ async function bootstrap(): Promise<void> {
       else if (key === 'sprawlPenalty') persisted.sprawlPenalty = value;
       persistSettings();
       postToWorker({ type: 'updateConfig', key, value, seed: randomSeed() });
+    },
+    onScenarioChange: (scenarioId: ScenarioId) => {
+      const scen = getScenarioById(scenarioId);
+      persisted.scenarioId = scen.id;
+
+      // Apply scenario defaults first (editable suggestions)
+      if (scen.defaults.galaxySize) persisted.galaxySize = scen.defaults.galaxySize;
+      if (scen.defaults.galaxyShape) persisted.galaxyShape = scen.defaults.galaxyShape;
+      if (scen.defaults.wormholePairs !== undefined) persisted.wormholePairs = scen.defaults.wormholePairs;
+      if (scen.defaults.crustRichness !== undefined) persisted.crustRichness = scen.defaults.crustRichness;
+      if (scen.defaults.gateCost !== undefined) persisted.gateCost = scen.defaults.gateCost;
+      if (scen.defaults.interceptRad !== undefined) persisted.interceptRad = scen.defaults.interceptRad;
+      if (scen.defaults.salvageRate !== undefined) persisted.salvageRate = scen.defaults.salvageRate;
+      if (scen.defaults.aggroBias !== undefined) persisted.aggroBias = scen.defaults.aggroBias;
+      if (scen.defaults.sprawlPenalty !== undefined) persisted.sprawlPenalty = scen.defaults.sprawlPenalty;
+
+      // Enforce scenario locks (exact or minimum bounds)
+      persisted.galaxySize = clampGalaxySizeForScenario(persisted.galaxySize, scen);
+      if (scen.locks.galaxyShape) persisted.galaxyShape = scen.locks.galaxyShape;
+      if (scen.locks.wormholePairs !== undefined) {
+        persisted.wormholePairs = scen.locks.wormholePairs;
+      } else if (
+        scen.locks.minWormholePairs !== undefined &&
+        persisted.wormholePairs < scen.locks.minWormholePairs
+      ) {
+        persisted.wormholePairs = scen.locks.minWormholePairs;
+      }
+      if (scen.locks.crustRichness !== undefined) persisted.crustRichness = scen.locks.crustRichness;
+      if (scen.locks.gateCost !== undefined) persisted.gateCost = scen.locks.gateCost;
+      if (scen.locks.interceptRad !== undefined) persisted.interceptRad = scen.locks.interceptRad;
+      if (scen.locks.salvageRate !== undefined) persisted.salvageRate = scen.locks.salvageRate;
+      if (scen.locks.aggroBias !== undefined) persisted.aggroBias = scen.locks.aggroBias;
+      if (scen.locks.sprawlPenalty !== undefined) persisted.sprawlPenalty = scen.locks.sprawlPenalty;
+
+      persistSettings();
+      ui.applyPersistedSettings(persisted);
+      hudLensEmpires.clear();
+      applySelection(null);
+      postToWorker({
+        type: 'applyScenario',
+        seed: randomSeed(),
+        modifiers: scen.modifiers,
+        galaxySize: persisted.galaxySize,
+        galaxyShape: persisted.galaxyShape,
+        wormholePairs: persisted.wormholePairs,
+        crustRichness: persisted.crustRichness,
+        gateCost: persisted.gateCost,
+        interceptRad: persisted.interceptRad,
+        salvageRate: persisted.salvageRate,
+        aggroBias: persisted.aggroBias,
+        sprawlPenalty: persisted.sprawlPenalty,
+      });
     },
     onGalaxyChange: (size, shape) => {
       persisted.galaxySize = size as GalaxySize;
