@@ -1202,6 +1202,15 @@ tr:hover {
   cursor: pointer;
 }
 
+tr.rep-row-selected {
+  background: rgba(56, 189, 248, 0.22);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+tr.rep-row-selected:hover {
+  background: rgba(56, 189, 248, 0.28);
+}
+
 .dot {
   width: 7px;
   height: 7px;

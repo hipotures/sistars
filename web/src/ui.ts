@@ -33,9 +33,10 @@ import type {
   TournamentResult,
 } from './types';
 
-type ReportTab = 'planets' | 'fleets' | 'stargates' | 'wormholes' | 'debris';
+type ReportTab = 'planets' | 'fleets' | 'starbases' | 'stargates' | 'wormholes' | 'debris';
 type PlanetSortKey = 'id' | 'owner' | 'gate' | 'hab' | 'pop' | 'fac' | 'iron' | 'bora' | 'germ' | 'res' | 'def';
 type FleetSortKey = 'id' | 'emp' | 'label' | 'route' | 'power' | 'dist' | 'eta';
+type StarbaseSortKey = 'id' | 'owner' | 'tier' | 'hp' | 'dock' | 'orbiting';
 type StargateSortKey = 'id' | 'owner' | 'tech' | 'def' | 'res';
 type WormholeSortKey = 'id' | 'span';
 type DebrisSortKey = 'id' | 'total' | 'iron' | 'bora' | 'germ' | 'ttl';
@@ -167,12 +168,14 @@ export class UiController {
   private reportSort: {
     planets: { key: PlanetSortKey; asc: boolean };
     fleets: { key: FleetSortKey; asc: boolean };
+    starbases: { key: StarbaseSortKey; asc: boolean };
     stargates: { key: StargateSortKey; asc: boolean };
     wormholes: { key: WormholeSortKey; asc: boolean };
     debris: { key: DebrisSortKey; asc: boolean };
   } = {
     planets: { key: 'res', asc: false },
     fleets: { key: 'id', asc: false },
+    starbases: { key: 'tier', asc: false },
     stargates: { key: 'res', asc: false },
     wormholes: { key: 'id', asc: true },
     debris: { key: 'total', asc: false },
@@ -180,6 +183,7 @@ export class UiController {
   private reportPage: Record<ReportTab, number> = {
     planets: 0,
     fleets: 0,
+    starbases: 0,
     stargates: 0,
     wormholes: 0,
     debris: 0,
@@ -433,6 +437,7 @@ export class UiController {
       this.planetFleetsExpanded = false;
     }
     this.selection = sel;
+    this.syncReportRowHighlight();
     if (!sel) {
       getEl('planetInspector').style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
@@ -598,8 +603,10 @@ export class UiController {
         .then((rep) => {
           this.lastReports = rep;
           const gateCount = rep.planets.reduce((acc, p) => acc + (p.hasGate ? 1 : 0), 0);
+          const baseCount = rep.planets.reduce((acc, p) => acc + ((p.starbaseTier ?? 0) > 0 ? 1 : 0), 0);
           getEl('repBtnPlanets').textContent = `Planets (${rep.planets.length})`;
           getEl('repBtnFleets').textContent = `Fleets (${rep.fleets.length})`;
+          getEl('repBtnStarbases').textContent = `🛡 Bases (${baseCount})`;
           getEl('repBtnStargates').textContent = `🌀 Gates (${gateCount})`;
           getEl('repBtnWormholes').textContent = `🟣 Wormholes (${hud.wormholes.length})`;
           getEl('repBtnDebris').textContent = `✦ Debris (${rep.debrisFields.length})`;
@@ -1041,11 +1048,13 @@ export class UiController {
         this.activeReportTab = which;
         getEl('repPlanetsWrap').style.display = which === 'planets' ? 'block' : 'none';
         getEl('repFleetsWrap').style.display = which === 'fleets' ? 'block' : 'none';
+        getEl('repStarbasesWrap').style.display = which === 'starbases' ? 'block' : 'none';
         getEl('repStargatesWrap').style.display = which === 'stargates' ? 'block' : 'none';
         getEl('repWormholesWrap').style.display = which === 'wormholes' ? 'block' : 'none';
         getEl('repDebrisWrap').style.display = which === 'debris' ? 'block' : 'none';
         getEl('repBtnPlanets').classList.toggle('active', which === 'planets');
         getEl('repBtnFleets').classList.toggle('active', which === 'fleets');
+        getEl('repBtnStarbases').classList.toggle('active', which === 'starbases');
         getEl('repBtnStargates').classList.toggle('active', which === 'stargates');
         getEl('repBtnWormholes').classList.toggle('active', which === 'wormholes');
         getEl('repBtnDebris').classList.toggle('active', which === 'debris');
@@ -1115,7 +1124,28 @@ export class UiController {
       const row = (e.target as HTMLElement).closest('tr');
       if (!row || !row.dataset.planetIdx) return;
       const idx = Number(row.dataset.planetIdx);
-      if (!Number.isNaN(idx)) this.callbacks.onSelectObject({ kind: 'planet', index: idx });
+      const x = Number(row.dataset.x);
+      const y = Number(row.dataset.y);
+      if (Number.isNaN(idx)) return;
+      this.callbacks.onSelectObject({ kind: 'planet', index: idx });
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        this.focusWorldPointOnMap(x, y, 55);
+      }
+      this.syncReportRowHighlight();
+    });
+
+    getEl('starbaseTableBody').addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest('tr');
+      if (!row || !row.dataset.planetIdx) return;
+      const idx = Number(row.dataset.planetIdx);
+      const x = Number(row.dataset.x);
+      const y = Number(row.dataset.y);
+      if (Number.isNaN(idx)) return;
+      this.callbacks.onSelectObject({ kind: 'planet', index: idx });
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        this.focusWorldPointOnMap(x, y, 55);
+      }
+      this.syncReportRowHighlight();
     });
 
     getEl('fleetTableBody').addEventListener('click', (e) => {
@@ -2487,6 +2517,7 @@ export class UiController {
       const wrapIds: Record<ReportTab, string> = {
         planets: 'repPlanetsWrap',
         fleets: 'repFleetsWrap',
+        starbases: 'repStarbasesWrap',
         stargates: 'repStargatesWrap',
         wormholes: 'repWormholesWrap',
         debris: 'repDebrisWrap',
@@ -2530,6 +2561,35 @@ export class UiController {
     return rows.slice(start, end);
   }
 
+  private syncReportRowHighlight(): void {
+    const sel = this.selection;
+    const bodies = [
+      'planetTableBody',
+      'fleetTableBody',
+      'starbaseTableBody',
+      'stargateTableBody',
+      'wormholeTableBody',
+      'debrisTableBody',
+    ];
+    for (const id of bodies) {
+      const tbody = document.getElementById(id);
+      if (!tbody) continue;
+      tbody.querySelectorAll<HTMLTableRowElement>('tr').forEach((tr) => {
+        let match = false;
+        if (sel?.kind === 'planet' && tr.dataset.planetIdx !== undefined) {
+          match = Number(tr.dataset.planetIdx) === sel.index;
+        } else if (sel?.kind === 'fleet' && tr.dataset.fleetId !== undefined) {
+          match = Number(tr.dataset.fleetId) === sel.id;
+        } else if (sel?.kind === 'wormhole' && tr.dataset.whIdx !== undefined) {
+          match = Number(tr.dataset.whIdx) === sel.index;
+        } else if (sel?.kind === 'debris' && tr.dataset.debrisIdx !== undefined) {
+          match = Number(tr.dataset.debrisIdx) === sel.index;
+        }
+        tr.classList.toggle('rep-row-selected', match);
+      });
+    }
+  }
+
   private renderActiveReportTab(hud: HudSnapshot, rep: ReportsSnapshot): void {
     switch (this.activeReportTab) {
       case 'planets':
@@ -2537,6 +2597,9 @@ export class UiController {
         break;
       case 'fleets':
         this.renderFleetTable(hud, rep);
+        break;
+      case 'starbases':
+        this.renderStarbaseTable(hud, rep);
         break;
       case 'stargates':
         this.renderStargateTable(hud, rep);
@@ -2548,6 +2611,7 @@ export class UiController {
         this.renderDebrisTable(rep);
         break;
     }
+    this.syncReportRowHighlight();
   }
 
   private updateReportSortIndicators(onlyTab?: ReportTab): void {
@@ -2571,6 +2635,8 @@ export class UiController {
     const rows = rep.planets.map((pl, idx) => ({
       idx,
       id: pl.id,
+      x: pl.x,
+      y: pl.y,
       owner: pl.owner,
       gate: pl.hasGate ? 1 : 0,
       hab: Math.round(pl.hab * 100),
@@ -2594,7 +2660,7 @@ export class UiController {
     getEl('planetTableBody').innerHTML = visibleRows
       .map((r) => {
         const col = r.owner > 0 ? (hud.empires[r.owner - 1]?.color ?? '#94a3b8') : '#475569';
-        return `<tr data-planet-idx="${r.idx}">
+        return `<tr data-planet-idx="${r.idx}" data-x="${r.x}" data-y="${r.y}">
           <td>#${r.id}</td>
           <td><span class="dot" style="background:${col}"></span></td>
           <td style="color:#22d3ee;text-align:center;">${r.gate ? '🌀' : ''}</td>
@@ -2722,6 +2788,89 @@ export class UiController {
           <td>${powerTxt}</td>
           <td>${fl.orbiting ? '—' : `${Math.round(dist)}ly`}</td>
           <td>${fl.orbiting ? 'Docked' : `${eta.toFixed(1)}yr`}</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  private renderStarbaseTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
+    const dockMults = [0.75, 1.0, 1.25, 1.45, 1.65, 1.9];
+    const bases: {
+      idx: number;
+      pl: PlanetView;
+      tier: number;
+      hp: number;
+      maxHp: number;
+      dock: number;
+      orbiting: number;
+    }[] = [];
+    for (let i = 0; i < rep.planets.length; i++) {
+      const pl = rep.planets[i];
+      const tier = pl.starbaseTier ?? 0;
+      if (tier > 0) {
+        bases.push({
+          idx: i,
+          pl,
+          tier,
+          hp: Math.round(pl.starbaseHp ?? 0),
+          maxHp: Math.max(1, Math.round(pl.starbaseMaxHp ?? 1)),
+          dock: dockMults[tier] ?? 1.0,
+          orbiting: pl.orbitingFleets ?? 0,
+        });
+      }
+    }
+
+    const { key, asc } = this.reportSort.starbases;
+    const dir = asc ? 1 : -1;
+    bases.sort((a, b) => {
+      let cmp = 0;
+      switch (key) {
+        case 'id':
+          cmp = a.pl.id - b.pl.id;
+          break;
+        case 'owner':
+          cmp = a.pl.owner - b.pl.owner;
+          break;
+        case 'tier':
+          cmp = a.tier - b.tier || a.hp - b.hp;
+          break;
+        case 'hp':
+          cmp = a.hp - b.hp;
+          break;
+        case 'dock':
+          cmp = a.dock - b.dock;
+          break;
+        case 'orbiting':
+          cmp = a.orbiting - b.orbiting;
+          break;
+      }
+      return (cmp || a.pl.id - b.pl.id) * dir;
+    });
+
+    const slice = this.paginateReportRows('starbases', bases);
+    getEl('starbaseTableBody').innerHTML = slice
+      .map(({ idx, pl, tier, hp, maxHp, dock, orbiting }) => {
+        const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
+        const col = emp?.color ?? '#94a3b8';
+        const pct = Math.round((hp / maxHp) * 100);
+        const tierCol =
+          tier >= 5
+            ? '#f87171'
+            : tier >= 4
+              ? '#c084fc'
+              : tier >= 3
+                ? '#38bdf8'
+                : tier >= 2
+                  ? '#34d399'
+                  : '#cbd5e1';
+        return `<tr data-planet-idx="${idx}" data-x="${pl.x}" data-y="${pl.y}">
+          <td class="fleet-route-cell" title="Focus Starbase on map">🛡 #${pl.id}</td>
+          <td><span class="dot" style="background:${col}"></span></td>
+          <td style="color:${tierCol};font-weight:bold;">${pl.starbaseName ?? 'Starbase'}</td>
+          <td>${hp}/${maxHp} (${pct}%)</td>
+          <td style="color:var(--accent);">×${dock.toFixed(2)}</td>
+          <td>${orbiting > 0 ? `🛰 ${orbiting}` : '—'}</td>
+          <td style="color:var(--muted);">(${Math.round(pl.x)}, ${Math.round(pl.y)})</td>
         </tr>`;
       })
       .join('');

@@ -296,6 +296,7 @@
     <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center;">
       <button class="hud-btn active" id="repBtnPlanets" data-report="planets">Planets (90)</button>
       <button class="hud-btn" id="repBtnFleets" data-report="fleets">Fleets (0)</button>
+      <button class="hud-btn" id="repBtnStarbases" data-report="starbases">🛡 Bases (0)</button>
       <button class="hud-btn" id="repBtnStargates" data-report="stargates">🌀 Gates (0)</button>
       <button class="hud-btn" id="repBtnWormholes" data-report="wormholes">🟣 Wormholes (2)</button>
       <button class="hud-btn" id="repBtnDebris" data-report="debris">✦ Debris (0)</button>
@@ -332,6 +333,18 @@
         </tr>
       </thead>
       <tbody id="fleetTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap" id="repStarbasesWrap" style="display:none;">
+    <table data-sort-table="starbases">
+      <thead>
+        <tr>
+          <th data-sort="id">Planet</th><th data-sort="owner">AI</th><th data-sort="tier">Starbase</th>
+          <th data-sort="hp">HP</th><th data-sort="dock">Dock</th><th data-sort="orbiting">Orbit</th><th>Coords</th>
+        </tr>
+      </thead>
+      <tbody id="starbaseTableBody"></tbody>
     </table>
   </div>
 
