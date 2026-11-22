@@ -63,6 +63,7 @@ export class GalaxyRenderer {
   private readonly glowSpriteCache = new Map<string, HTMLCanvasElement>();
   private combatFx: CombatFxView[] = [];
   private jumpFx: JumpFxView[] = [];
+  private hasSelectionPulse = false;
   private zoom = 1.0;
   private panX = 0;
   private panY = 0;
@@ -135,7 +136,7 @@ export class GalaxyRenderer {
   }
 
   public get hasActiveFx(): boolean {
-    return this.jumpFx.length > 0 || this.combatFx.length > 0;
+    return this.jumpFx.length > 0 || this.combatFx.length > 0 || this.hasSelectionPulse;
   }
 
   public resize(): void {
@@ -705,6 +706,46 @@ export class GalaxyRenderer {
     const hoveredWormhole = hovered?.kind === 'wormhole' ? hovered.index : -1;
     const selectedDebris = selection?.kind === 'debris' ? selection.index : -1;
     const hoveredDebris = hovered?.kind === 'debris' ? hovered.index : -1;
+    this.hasSelectionPulse = selection !== null;
+
+    // Slow, calm ~1.6s radar pulse for the currently selected object so it's effortless to spot
+    const nowSec = performance.now() * 0.001;
+    const pulseWave = (nowSec * 0.62) % 1.0; // 0..1 expanding ping
+    const blinkAlpha = 0.42 + 0.58 * (0.5 + 0.5 * Math.sin(nowSec * 3.8));
+    const drawSelectionBeacon = (cx: number, cy: number, baseR: number, rgb = '255,255,255'): void => {
+      // 1. Gently blinking primary ring
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseR, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${rgb}, ${blinkAlpha.toFixed(3)})`;
+      ctx.lineWidth = 2.0;
+      ctx.stroke();
+
+      // 2. Slow expanding outer radar ping
+      const pingR = baseR + 2 + pulseWave * 16;
+      const pingA = (1.0 - pulseWave) * 0.72;
+      ctx.beginPath();
+      ctx.arc(cx, cy, pingR, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${rgb}, ${pingA.toFixed(3)})`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      // 3. Subtle 4-way tactical crosshair ticks
+      const t0 = baseR + 4;
+      const t1 = baseR + 9;
+      ctx.beginPath();
+      ctx.moveTo(cx - t1, cy);
+      ctx.lineTo(cx - t0, cy);
+      ctx.moveTo(cx + t0, cy);
+      ctx.lineTo(cx + t1, cy);
+      ctx.moveTo(cx, cy - t1);
+      ctx.lineTo(cx, cy - t0);
+      ctx.moveTo(cx, cy + t0);
+      ctx.lineTo(cx, cy + t1);
+      ctx.strokeStyle = `rgba(${rgb}, ${(blinkAlpha * 0.85).toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.lineWidth = 1.0;
+    };
 
     // 1. Wormhole portal rings & selection/hover highlight (<= 5 pairs, negligible cost)
     for (let i = 0; i < hud.wormholes.length; i++) {
@@ -731,11 +772,15 @@ export class GalaxyRenderer {
         [x1, y1],
         [x2, y2],
       ]) {
-        ctx.beginPath();
-        ctx.arc(wx, wy, isSel ? 12 : 9, 0, Math.PI * 2);
-        ctx.strokeStyle = isSel ? '#ffffff' : '#d946ef';
-        ctx.lineWidth = isSel ? 2.0 : 1.6;
-        ctx.stroke();
+        if (isSel) {
+          drawSelectionBeacon(wx, wy, 12, '240,171,252');
+        } else {
+          ctx.beginPath();
+          ctx.arc(wx, wy, 9, 0, Math.PI * 2);
+          ctx.strokeStyle = '#d946ef';
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+        }
         ctx.beginPath();
         ctx.arc(wx, wy, 4, 0, Math.PI * 2);
         ctx.fillStyle = '#f0abfc';
@@ -799,12 +844,16 @@ export class GalaxyRenderer {
       const owner = planetsBuf[off + 2];
       const r = this.planetRadius(owner, planetsBuf[off + 3], planetsBuf[off + 4], denseFactor);
 
-      ctx.beginPath();
-      ctx.arc(px, py, r + 7, 0, Math.PI * 2);
-      ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(255,255,255,0.45)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.lineWidth = 1.0;
+      if (isSelected) {
+        drawSelectionBeacon(px, py, r + 7, '255,255,255');
+      } else {
+        ctx.beginPath();
+        ctx.arc(px, py, r + 7, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.lineWidth = 1.0;
+      }
 
       if (owner > 0) {
         const emp = hud.empires[owner - 1];
@@ -844,12 +893,18 @@ export class GalaxyRenderer {
     const drawDebrisHighlight = (idx: number, isSelected: boolean): void => {
       if (idx < 0 || idx >= debrisCount) return;
       const off = idx * DEBRIS_STRIDE;
-      ctx.beginPath();
-      ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), isSelected ? 8 : 6, 0, Math.PI * 2);
-      ctx.strokeStyle = isSelected ? '#ffffff' : '#e9d5ff';
-      ctx.lineWidth = isSelected ? 2.0 : 1.2;
-      ctx.stroke();
-      ctx.lineWidth = 1.0;
+      const dx = sx(debrisBuf[off]);
+      const dy = sy(debrisBuf[off + 1]);
+      if (isSelected) {
+        drawSelectionBeacon(dx, dy, 10, '233,213,255');
+      } else {
+        ctx.beginPath();
+        ctx.arc(dx, dy, 7, 0, Math.PI * 2);
+        ctx.strokeStyle = '#e9d5ff';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.lineWidth = 1.0;
+      }
     };
     if (hoveredDebris >= 0 && hoveredDebris !== selectedDebris) {
       drawDebrisHighlight(hoveredDebris, false);
@@ -882,12 +937,7 @@ export class GalaxyRenderer {
         ctx.stroke();
         ctx.setLineDash([]);
       }
-      ctx.beginPath();
-      ctx.arc(fx, fy, 10, 0, Math.PI * 2);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.8;
-      ctx.stroke();
-      ctx.lineWidth = 1.0;
+      drawSelectionBeacon(fx, fy, 10, '255,255,255');
     }
 
     // 7. Cartographic scale bar
