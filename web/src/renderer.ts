@@ -633,16 +633,19 @@ export class GalaxyRenderer {
       const emp = fleetsBuf[off + 4];
       const fType = fleetsBuf[off + 5];
       const hunting = (fleetsBuf[off + 6] & 1) !== 0;
+      const orbiting = (fleetsBuf[off + 6] & 4) !== 0;
 
-      ctx.beginPath();
-      ctx.moveTo(fx, fy);
-      ctx.lineTo(tx, ty);
-      ctx.strokeStyle = hunting
-        ? 'rgba(248, 113, 113, 0.45)'
-        : fType === 4
-          ? 'rgba(192,132,252,0.16)'
-          : 'rgba(255,255,255,0.09)';
-      ctx.stroke();
+      if (!orbiting) {
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.lineTo(tx, ty);
+        ctx.strokeStyle = hunting
+          ? 'rgba(248, 113, 113, 0.45)'
+          : fType === 4
+            ? 'rgba(192,132,252,0.16)'
+            : 'rgba(255,255,255,0.09)';
+        ctx.stroke();
+      }
 
       ctx.fillStyle = empColors[emp - 1] ?? '#e2e8f0';
       if (fType === 2) {
@@ -929,7 +932,7 @@ export class GalaxyRenderer {
       const hasSteer =
         (isSalvageOut || selectedFleet.hunting || selectedFleet.whRoute >= 0) &&
         Number.isFinite(selectedFleet.steerX);
-      if (hasSteer || tOff + 1 < planetsBuf.length) {
+      if (!selectedFleet.orbiting && (hasSteer || tOff + 1 < planetsBuf.length)) {
         const tx = sx(hasSteer ? selectedFleet.steerX : planetsBuf[tOff]);
         const ty = sy(hasSteer ? selectedFleet.steerY : planetsBuf[tOff + 1]);
         ctx.beginPath();

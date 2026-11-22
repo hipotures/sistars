@@ -185,6 +185,7 @@ export class UiController {
   };
   private reportPageSize = 100;
   private reportTotalRows = 0;
+  private fleetReportFilter: 'all' | 'flight' | 'orbiting' = 'all';
   private selection: MapSelection = null;
   private debrisWrecksExpanded = false;
   private lastHud: HudSnapshot | null = null;
@@ -1065,6 +1066,18 @@ export class UiController {
       }
     });
 
+    document.querySelectorAll<HTMLButtonElement>('[data-fleet-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = (btn.dataset.fleetFilter ?? 'all') as 'all' | 'flight' | 'orbiting';
+        this.fleetReportFilter = next;
+        this.reportPage.fleets = 0;
+        document.querySelectorAll<HTMLButtonElement>('[data-fleet-filter]').forEach((b) => {
+          b.classList.toggle('active', b.dataset.fleetFilter === next);
+        });
+        this.rerenderCurrentReportTab(true);
+      });
+    });
+
     getEl('planetTableBody').addEventListener('click', (e) => {
       const row = (e.target as HTMLElement).closest('tr');
       if (!row || !row.dataset.planetIdx) return;
@@ -1299,9 +1312,13 @@ export class UiController {
       if (pillEl) {
         const isExtinct = emp.stats.planets === 0;
         pillEl.classList.toggle('extinct', isExtinct);
+        const upkeep = emp.stats.fleetUpkeep ?? 0;
+        const upkeepPct = emp.stats.res > 0 ? Math.round((upkeep / emp.stats.res) * 100) : 0;
+        const fCount = emp.stats.fleetCount ?? 0;
+        const orbCount = emp.stats.orbitingCount ?? 0;
         const ewTxt = `Cloak ${Math.round(emp.loadout.cloakArmedPct * 100)}% · Tachyon ${Math.round(emp.loadout.tachyonReductionPct * 100)}% · Jammer ${Math.round(emp.loadout.torpedoJammingPct * 100)}%`;
         const prefix = isExtinct ? '[EXTINCT] ' : '';
-        pillEl.title = `${prefix}${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates | EW: ${ewTxt}`;
+        pillEl.title = `${prefix}${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · Upkeep ${upkeep.toFixed(1)} Res/yr (${upkeepPct}%) · Fleets ${fCount} (${orbCount} orbiting) · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates | EW: ${ewTxt}`;
       }
     }
   }
@@ -1778,15 +1795,17 @@ export class UiController {
 
     const targetPl = await this.callbacks.getPlanetDetail(fl.target);
     if (seq !== this.fleetModalReqSeq || this.activeModalFleetId !== fleetId) return;
-    const dist =
-      fl.salvageMode === 1
+    const dist = fl.orbiting
+      ? 0
+      : fl.salvageMode === 1
         ? Math.hypot(fl.steerX - fl.x, fl.steerY - fl.y)
         : targetPl
           ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y)
           : 0;
     const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
-    const missionTxt =
-      fl.salvageMode === 1
+    const missionTxt = fl.orbiting
+      ? `🛰 Stationed in Orbit (#${fl.target + 1})`
+      : fl.salvageMode === 1
         ? '✦ Salvage Outbound'
         : fl.salvageMode === 2
           ? '✦ Salvage Return'
@@ -1801,9 +1820,10 @@ export class UiController {
                 : fl.type === 'bomber'
                   ? '★ Orbital Bombardment'
                   : '⚔ Planetary Assault';
-    const routeTag = fl.whRoute >= 0 ? ' (🌀 WH)' : fl.usedWh ? ' (⚡ Jump)' : '';
-    const routeTxt =
-      fl.salvageMode === 1
+    const routeTag = !fl.orbiting && fl.whRoute >= 0 ? ' (🌀 WH)' : !fl.orbiting && fl.usedWh ? ' (⚡ Jump)' : '';
+    const routeTxt = fl.orbiting
+      ? `Orbit #${fl.target + 1} (Docked)`
+      : fl.salvageMode === 1
         ? `#${fl.from + 1} → (${Math.round(fl.steerX)}, ${Math.round(fl.steerY)}) (${eta.toFixed(1)} yr)`
         : fl.salvageMode === 2
           ? `Wreck → #${fl.target + 1} (${eta.toFixed(1)} yr)`
@@ -1811,17 +1831,20 @@ export class UiController {
     const cargoTxt = isSalvage
       ? `${salvageCargo} / ${Math.round(fl.maxPower)} kT (I:${Math.round(fl.cargoIron ?? 0)} B:${Math.round(fl.cargoBora ?? 0)} G:${Math.round(fl.cargoGerm ?? 0)})`
       : fl.type === 'freight'
-        ? `${Math.round(fl.power)} kT ${minNames[fl.minType] ?? ''}`
+        ? fl.orbiting
+          ? `0 / ${Math.round(fl.maxPower)} kT (Idle)`
+          : `${Math.round(fl.power)} kT ${minNames[fl.minType] ?? ''}`
         : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`;
+    const upkeepTxt = fl.upkeep !== undefined ? ` · Upkeep ${fl.upkeep.toFixed(1)} Res/yr` : '';
 
     getEl('fleetModalTitle').textContent = `🚀 Fleet F#${fl.id} • ${isSalvage ? '✦ Salvage Freighter' : FLEET_LABELS[fl.type]}`;
-    getEl('fleetModalSub').textContent = `${hullName} • ${emp ? emp.name : `Empire #${fl.emp}`} • ${missionTxt}${routeTag}`;
+    getEl('fleetModalSub').textContent = `${hullName} • ${emp ? emp.name : `Empire #${fl.emp}`} • ${missionTxt}${routeTag}${upkeepTxt}`;
 
     getEl('fleetModalStats').innerHTML = `
       <div class="insp-stat"><span>Owner</span><b style="color:${emp?.color ?? '#e2e8f0'}">${emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`}</b></div>
-      <div class="insp-stat"><span>Hull / Class</span><b>${hullName}</b></div>
+      <div class="insp-stat"><span>Hull / Upkeep</span><b>${hullName}${fl.upkeep !== undefined ? ` (${fl.upkeep.toFixed(1)} R/yr)` : ''}</b></div>
       <div class="insp-stat"><span>Route &amp; ETA</span><b>${routeTxt}</b></div>
-      <div class="insp-stat"><span>Mission / Dist</span><b>${missionTxt}${routeTag} · ${Math.round(dist)} ly</b></div>
+      <div class="insp-stat"><span>Mission / Dist</span><b>${missionTxt}${routeTag}${fl.orbiting ? '' : ` · ${Math.round(dist)} ly`}</b></div>
       <div class="insp-stat"><span>${fl.type === 'freight' ? 'Cargo Hold' : 'Power / HP'}</span><b style="color:${isSalvage ? '#c084fc' : 'var(--accent)'}">${cargoTxt}</b></div>
       <div class="insp-stat"><span>EW (Cloak / Tach / Jam)</span><b>${Math.round(cloakFrac * 100)}% / ${Math.round(tachFrac * 100)}% / ${Math.round(jamFrac * 100)}%</b></div>
     `;
@@ -1925,10 +1948,11 @@ export class UiController {
       this.setInspCell(3, 'Production', `${Math.round(pl.res)} Res/yr`, 'var(--accent)');
       this.setInspCell(4, 'Factories / Mines', `${Math.round(pl.factories)} fac / ${Math.round(pl.mines)} mine`);
       const gateTxt = pl.hasGate ? '🌀 Gate' : 'No Gate';
+      const orbTxt = (pl.orbitingFleets ?? 0) > 0 ? ` · 🛰 ${pl.orbitingFleets}` : '';
       const ecmTxt = pl.hasEcmJammer && emp
         ? ` · 📡 ECM ${Math.round(emp.loadout.ecmJammerStrength * 100)}% (${Math.round(emp.loadout.ecmJammerRange)}ly)`
         : '';
-      this.setInspCell(5, 'Defense / EW', `${Math.round(pl.defense)} | ${gateTxt}${ecmTxt}`);
+      this.setInspCell(5, 'Defense / Garrison', `${Math.round(pl.defense)}${orbTxt} | ${gateTxt}${ecmTxt}`);
 
       const maxC = this.lastConfig.crustRichness * 1.6;
       getEl('barIron').style.width = `${Math.min(100, (pl.ironCrust / maxC) * 100)}%`;
@@ -2002,35 +2026,40 @@ export class UiController {
       const salvageCargo = Math.round((fl.cargoIron ?? 0) + (fl.cargoBora ?? 0) + (fl.cargoGerm ?? 0));
       getEl('inspTitle').textContent = `Fleet F#${fl.id} • ${isSalvage ? '✦ Salvage Freighter' : FLEET_LABELS[fl.type]}`;
       this.setInspCell(0, 'Owner', emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`, emp ? emp.color : '#e2e8f0');
-      this.setInspCell(1, 'Hull / Class', hullName);
+      this.setInspCell(1, 'Hull / Upkeep', `${hullName}${fl.upkeep !== undefined ? ` (${fl.upkeep.toFixed(1)}R/yr)` : ''}`);
       this.setInspCell(
         2,
         fl.type === 'freight' ? 'Cargo' : 'Power / HP',
         isSalvage
           ? `${salvageCargo} / ${Math.round(fl.maxPower)} kT`
           : fl.type === 'freight'
-            ? `${Math.round(fl.power)} kT (${minNames[fl.minType] ?? 'Mineral'})`
+            ? fl.orbiting
+              ? `0 / ${Math.round(fl.maxPower)} kT (Docked)`
+              : `${Math.round(fl.power)} kT (${minNames[fl.minType] ?? 'Mineral'})`
             : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`,
         isSalvage ? '#c084fc' : 'var(--accent)',
       );
       const targetPl = await this.callbacks.getPlanetDetail(fl.target);
       if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
-      const dist =
-        fl.salvageMode === 1
+      const dist = fl.orbiting
+        ? 0
+        : fl.salvageMode === 1
           ? Math.hypot(fl.steerX - fl.x, fl.steerY - fl.y)
           : targetPl
             ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y)
             : 0;
       const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
-      const routeTxt =
-        fl.salvageMode === 1
+      const routeTxt = fl.orbiting
+        ? `Orbit #${fl.target + 1} (Docked)`
+        : fl.salvageMode === 1
           ? `#${fl.from + 1}→(${Math.round(fl.steerX)},${Math.round(fl.steerY)}) (${eta.toFixed(1)}yr)`
           : fl.salvageMode === 2
             ? `Wreck→#${fl.target + 1} (${eta.toFixed(1)}yr)`
             : `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`;
       this.setInspCell(3, 'Route / ETA', routeTxt);
-      const missionTxt =
-        fl.salvageMode === 1
+      const missionTxt = fl.orbiting
+        ? '🛰 Orbiting / Garrison'
+        : fl.salvageMode === 1
           ? '✦ Salvage Outbound'
           : fl.salvageMode === 2
             ? '✦ Salvage Return'
@@ -2045,8 +2074,8 @@ export class UiController {
                   : fl.type === 'bomber'
                     ? '★ Orbital Bombardment'
                     : '⚔ Planetary Assault';
-      const routeTag = fl.whRoute >= 0 ? ' (🌀 WH)' : fl.usedWh ? ' (⚡ Jump)' : '';
-      this.setInspCell(4, 'Mission / Dist', `${missionTxt}${routeTag} • ${Math.round(dist)}ly`);
+      const routeTag = !fl.orbiting && fl.whRoute >= 0 ? ' (🌀 WH)' : !fl.orbiting && fl.usedWh ? ' (⚡ Jump)' : '';
+      this.setInspCell(4, 'Mission / Dist', fl.orbiting ? missionTxt : `${missionTxt}${routeTag} • ${Math.round(dist)}ly`);
       this.setInspCell(5, 'EW (Cloak/Tach/Jam)', `${cloakPct}% / ${tachPct}% / ${jamPct}%`);
       return;
     }
@@ -2436,17 +2465,25 @@ export class UiController {
     const minLetters = ['I', 'B', 'G'];
     const minCols = ['#60a5fa', '#34d399', '#fbbf24'];
 
-    const rows = rep.fleets.map((fl) => {
+    const filteredFleets = rep.fleets.filter((fl) => {
+      if (this.fleetReportFilter === 'flight') return !fl.orbiting;
+      if (this.fleetReportFilter === 'orbiting') return Boolean(fl.orbiting);
+      return true;
+    });
+
+    const rows = filteredFleets.map((fl) => {
       const target = rep.planets[fl.target];
-      const dist =
-        fl.salvageMode === 1
+      const dist = fl.orbiting
+        ? 0
+        : fl.salvageMode === 1
           ? Math.hypot(fl.steerX - fl.x, fl.steerY - fl.y)
           : target
             ? Math.hypot(target.x - fl.x, target.y - fl.y)
             : 0;
       const eta = dist / this.lastConfig.fleetSpeed;
-      const label =
-        fl.type === 'freight'
+      const label = fl.orbiting
+        ? `🛰 ${FLEET_LABELS[fl.type]} (Orbit)`
+        : fl.type === 'freight'
           ? fl.salvageMode === 1
             ? '✦ Salvage → Wreck'
             : fl.salvageMode === 2
@@ -2462,7 +2499,9 @@ export class UiController {
       const cargoVal =
         fl.type === 'freight' && fl.salvageMode
           ? (fl.cargoIron ?? 0) + (fl.cargoBora ?? 0) + (fl.cargoGerm ?? 0)
-          : fl.power;
+          : fl.type === 'freight' && fl.orbiting
+            ? 0
+            : fl.power;
       return { fl, dist, eta, label, cargoVal };
     });
 
@@ -2511,14 +2550,15 @@ export class UiController {
                 ? '#f87171'
                 : '#93c5fd';
         const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
-        const routeTxt =
-          fl.salvageMode === 1
+        const routeTxt = fl.orbiting
+          ? `Orbit #${fl.target + 1}`
+          : fl.salvageMode === 1
             ? `#${fl.from + 1}→(${Math.round(fl.steerX)},${Math.round(fl.steerY)})`
             : fl.salvageMode === 2
               ? `Wreck→#${fl.target + 1}`
               : `#${fl.from + 1}→#${fl.target + 1}`;
         const powerTxt =
-          fl.type === 'freight' && fl.salvageMode
+          fl.type === 'freight' && (fl.salvageMode || fl.orbiting)
             ? `${Math.round(cargoVal)}/${Math.round(fl.maxPower)} kT`
             : fl.type === 'freight'
               ? `${Math.round(fl.power)} kT`
@@ -2529,8 +2569,8 @@ export class UiController {
           <td style="color:${col};font-weight:bold;">${label}</td>
           <td class="fleet-route-cell" data-route-focus="1" title="Focus route on galaxy map">${routeTxt}</td>
           <td>${powerTxt}</td>
-          <td>${Math.round(dist)}ly</td>
-          <td>${eta.toFixed(1)}yr</td>
+          <td>${fl.orbiting ? '—' : `${Math.round(dist)}ly`}</td>
+          <td>${fl.orbiting ? 'Docked' : `${eta.toFixed(1)}yr`}</td>
         </tr>`;
       })
       .join('');

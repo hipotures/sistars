@@ -1133,6 +1133,21 @@ input[type='range'] {
   pointer-events: none;
 }
 
+.rep-filter-bar {
+  display: flex;
+  gap: 5px;
+  padding: 5px 6px;
+  background: #0a101d;
+  border-bottom: 1px solid #141d2e;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+#repFleetsWrap th {
+  top: 31px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

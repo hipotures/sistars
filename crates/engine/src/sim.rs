@@ -249,6 +249,7 @@ impl EmpireState {
                 factories: 16.0,
                 res: 25.0,
                 gates: 0,
+                ..EmpireStats::default()
             },
             tech_cache,
         }
@@ -357,6 +358,11 @@ pub struct Simulation {
     pub gate_jumps_count: u32,
     next_fleet_id: u32,
 
+    // Reusable zero-alloc orbital garrison lookup buffers (rebuilt once per tick)
+    orbit_warship: Vec<i32>,
+    orbit_freight: Vec<i32>,
+    orbit_count: Vec<u16>,
+
     // Optional per-phase micro-profiler
     pub profile_enabled: bool,
     pub last_profile: StepProfile,
@@ -436,6 +442,9 @@ impl Simulation {
             total_salvaged: 0,
             gate_jumps_count: 0,
             next_fleet_id: 1,
+            orbit_warship: Vec::new(),
+            orbit_freight: Vec::new(),
+            orbit_count: Vec::new(),
             profile_enabled: false,
             last_profile: StepProfile::default(),
         }
@@ -774,6 +783,7 @@ impl Simulation {
                 factories: 16.0,
                 res: 25.0,
                 gates: 0,
+                ..EmpireStats::default()
             };
         }
 
@@ -843,6 +853,12 @@ impl Simulation {
         }
 
         self.fleets.clear();
+        self.orbit_warship.clear();
+        self.orbit_warship.resize(n, -1);
+        self.orbit_freight.clear();
+        self.orbit_freight.resize(n, -1);
+        self.orbit_count.clear();
+        self.orbit_count.resize(n, 0);
         self.debris_fields.clear();
         self.pending_combat_fx.clear();
         self.pending_jump_fx.clear();
@@ -1084,6 +1100,106 @@ impl Simulation {
                 });
         }
 
+        // Compute per-empire fleet upkeep, scrap surplus orbiting ships on severe deficit, and build O(1) orbital lookup
+        let mut emp_upkeep = [0.0f32; MAX_EMPIRES];
+        let mut emp_fleet_count = [0u32; MAX_EMPIRES];
+        let mut emp_orbiting_count = [0u32; MAX_EMPIRES];
+        for fl in &self.fleets {
+            let e = (fl.emp - 1) as usize;
+            if e < num_emp {
+                emp_upkeep[e] += fl.upkeep;
+                emp_fleet_count[e] += 1;
+                if fl.orbiting {
+                    emp_orbiting_count[e] += 1;
+                }
+            }
+        }
+        let mut emp_upkeep_ratio = [0.0f32; MAX_EMPIRES];
+        for e in 0..num_emp {
+            emp_upkeep_ratio[e] = emp_upkeep[e] / self.empires[e].res_total.max(1.0);
+        }
+
+        // Over-budget automatic decommissioning: every 5 ticks, empires spending >55% of GDP on upkeep
+        // scrap their most damaged or surplus orbiting ship at a friendly planet, recovering 50% of hull minerals.
+        if self.ticks % 5 == 0 {
+            for e in 0..num_emp {
+                if emp_upkeep_ratio[e] <= 0.55 || emp_orbiting_count[e] == 0 {
+                    continue;
+                }
+                let emp_u8 = (e + 1) as u8;
+                let mut scrap_idx: Option<usize> = None;
+                let mut worst_score = f32::MAX;
+                for (f_idx, fl) in self.fleets.iter().enumerate() {
+                    if !fl.orbiting || fl.emp != emp_u8 {
+                        continue;
+                    }
+                    let p = fl.target;
+                    if p >= n || self.owner[p] != emp_u8 {
+                        continue;
+                    }
+                    let hp_frac = if fl.max_power > 0.0 {
+                        (fl.power / fl.max_power).clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    };
+                    // Prefer scrapping damaged warships or excess freighters first
+                    let score = hp_frac + if fl.fleet_type == FleetClass::Freight { -0.15 } else { 0.0 };
+                    if score < worst_score {
+                        worst_score = score;
+                        scrap_idx = Some(f_idx);
+                    }
+                }
+                if let Some(s_idx) = scrap_idx {
+                    let scrapped = self.fleets.swap_remove(s_idx);
+                    let p = scrapped.target;
+                    let (ci, cb, cg) = self.empires[e].ship_mineral_cost(scrapped.fleet_type);
+                    let b = p * 3;
+                    self.min_surf[b] += ci * 0.5;
+                    self.min_surf[b + 1] += cb * 0.5;
+                    self.min_surf[b + 2] += cg * 0.5;
+                    emp_upkeep[e] = (emp_upkeep[e] - scrapped.upkeep).max(0.0);
+                    emp_fleet_count[e] = emp_fleet_count[e].saturating_sub(1);
+                    emp_orbiting_count[e] = emp_orbiting_count[e].saturating_sub(1);
+                    emp_upkeep_ratio[e] = emp_upkeep[e] / self.empires[e].res_total.max(1.0);
+                }
+            }
+        }
+
+        for e in 0..num_emp {
+            self.tick_stats[e].fleet_upkeep = emp_upkeep[e];
+            self.tick_stats[e].fleet_count = emp_fleet_count[e];
+            self.tick_stats[e].orbiting_count = emp_orbiting_count[e];
+        }
+
+        if self.orbit_warship.len() != n {
+            self.orbit_warship.resize(n, -1);
+            self.orbit_freight.resize(n, -1);
+            self.orbit_count.resize(n, 0);
+        }
+        self.orbit_warship.fill(-1);
+        self.orbit_freight.fill(-1);
+        self.orbit_count.fill(0);
+        for (f_idx, fl) in self.fleets.iter().enumerate() {
+            if !fl.orbiting {
+                continue;
+            }
+            let p = fl.target;
+            if p >= n {
+                continue;
+            }
+            self.orbit_count[p] = self.orbit_count[p].saturating_add(1);
+            if fl.emp == self.owner[p] {
+                if fl.fleet_type == FleetClass::Freight && self.orbit_freight[p] < 0 {
+                    self.orbit_freight[p] = f_idx as i32;
+                } else if fl.fleet_type.is_combat()
+                    && fl.power >= fl.max_power * 0.70
+                    && self.orbit_warship[p] < 0
+                {
+                    self.orbit_warship[p] = f_idx as i32;
+                }
+            }
+        }
+
         // 1. Planetary economy, production, and time-sliced neighbor-list AI decisions
         for i in 0..n {
             let emp_u8 = self.owner[i];
@@ -1124,7 +1240,8 @@ impl Simulation {
             }
 
             let res_rate = (self.pop[i] * 0.32 + act_fac * ec.fac_efficiency) * ec.sprawl;
-            let res_gen = res_rate * DT;
+            let net_res_mult = (1.0 - emp_upkeep_ratio[e]).clamp(0.15, 1.0);
+            let res_gen = res_rate * net_res_mult * DT;
             self.last_res[i] = res_rate;
 
             self.tick_stats[e].planets += 1;
@@ -1252,18 +1369,59 @@ impl Simulation {
                             }
                             if let Some(target_idx) = needy {
                                 let cargo = cargo_cap.min(self.min_surf[base_idx + m] * 0.45);
-                                self.min_surf[base_idx + m] -= cargo;
-                                self.spawn_fleet(
-                                    i,
-                                    target_idx,
-                                    emp_u8,
-                                    FleetClass::Freight,
-                                    cargo,
-                                    m as u8,
-                                    -1,
-                                    silent,
-                                );
-                                break;
+                                let docked_idx = self.orbit_freight[i];
+                                if docked_idx >= 0 {
+                                    let fi = docked_idx as usize;
+                                    self.orbit_freight[i] = -1;
+                                    self.min_surf[base_idx + m] -= cargo;
+                                    let fl = &mut self.fleets[fi];
+                                    fl.orbiting = false;
+                                    fl.from = i;
+                                    fl.target = target_idx;
+                                    fl.min_type = m as u8;
+                                    fl.power = cargo;
+                                    fl.max_power = cargo_cap;
+                                    fl.salvage_mode = 0;
+                                    fl.cargo_iron = 0.0;
+                                    fl.cargo_bora = 0.0;
+                                    fl.cargo_germ = 0.0;
+                                    fl.steer_x = self.pos_x[target_idx];
+                                    fl.steer_y = self.pos_y[target_idx];
+                                    fl.wh_route = -1;
+                                    fl.used_wh = false;
+                                    break;
+                                } else if emp_upkeep_ratio[e] < 0.45
+                                    && self.ship_prod_buf[i] >= ec.effective_ship_cost * 0.35
+                                    && self.fleets.len() < 4000
+                                {
+                                    let (hi, hb, hg) =
+                                        self.empires[e].ship_mineral_cost(FleetClass::Freight);
+                                    let (ci, cb, cg) = (hi * 0.5, hb * 0.5, hg * 0.5);
+                                    if self.min_surf[base_idx] >= ci
+                                        && self.min_surf[base_idx + 1] >= cb
+                                        && self.min_surf[base_idx + 2] >= cg
+                                    {
+                                        self.ship_prod_buf[i] -= ec.effective_ship_cost * 0.35;
+                                        self.min_surf[base_idx] -= ci;
+                                        self.min_surf[base_idx + 1] -= cb;
+                                        self.min_surf[base_idx + 2] -= cg;
+                                        let actual_cargo =
+                                            cargo.min(self.min_surf[base_idx + m]).max(1.0);
+                                        self.min_surf[base_idx + m] =
+                                            (self.min_surf[base_idx + m] - actual_cargo).max(0.0);
+                                        self.spawn_fleet(
+                                            i,
+                                            target_idx,
+                                            emp_u8,
+                                            FleetClass::Freight,
+                                            actual_cargo,
+                                            m as u8,
+                                            -1,
+                                            silent,
+                                        );
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1310,30 +1468,68 @@ impl Simulation {
                             }
                         });
                     if let Some((dx, dy)) = best_deb {
-                        let id = self.next_fleet_id;
-                        self.next_fleet_id += 1;
-                        self.fleets.push(Fleet {
-                            id,
-                            x: xi,
-                            y: yi,
-                            from: i,
-                            target: i,
-                            emp: emp_u8,
-                            fleet_type: FleetClass::Freight,
-                            min_type: 0,
-                            // Non-zero hull HP so outbound empty salvage freighters survive the end-of-tick death sweep
-                            power: 12.0,
-                            max_power: ec.cargo_cap,
-                            hunting: false,
-                            used_wh: false,
-                            steer_x: dx,
-                            steer_y: dy,
-                            wh_route: -1,
-                            salvage_mode: 1,
-                            cargo_iron: 0.0,
-                            cargo_bora: 0.0,
-                            cargo_germ: 0.0,
-                        });
+                        let docked_idx = self.orbit_freight[i];
+                        if docked_idx >= 0 {
+                            let fi = docked_idx as usize;
+                            self.orbit_freight[i] = -1;
+                            let fl = &mut self.fleets[fi];
+                            fl.orbiting = false;
+                            fl.from = i;
+                            fl.target = i;
+                            fl.min_type = 0;
+                            fl.power = 12.0;
+                            fl.max_power = ec.cargo_cap;
+                            fl.hunting = false;
+                            fl.used_wh = false;
+                            fl.steer_x = dx;
+                            fl.steer_y = dy;
+                            fl.wh_route = -1;
+                            fl.salvage_mode = 1;
+                            fl.cargo_iron = 0.0;
+                            fl.cargo_bora = 0.0;
+                            fl.cargo_germ = 0.0;
+                        } else if emp_upkeep_ratio[e] < 0.45
+                            && self.ship_prod_buf[i] >= ec.effective_ship_cost * 0.35
+                        {
+                            let (hi, hb, hg) =
+                                self.empires[e].ship_mineral_cost(FleetClass::Freight);
+                            let (ci, cb, cg) = (hi * 0.5, hb * 0.5, hg * 0.5);
+                            if self.min_surf[base_idx] >= ci
+                                && self.min_surf[base_idx + 1] >= cb
+                                && self.min_surf[base_idx + 2] >= cg
+                            {
+                                self.ship_prod_buf[i] -= ec.effective_ship_cost * 0.35;
+                                self.min_surf[base_idx] -= ci;
+                                self.min_surf[base_idx + 1] -= cb;
+                                self.min_surf[base_idx + 2] -= cg;
+                                let id = self.next_fleet_id;
+                                self.next_fleet_id += 1;
+                                self.fleets.push(Fleet {
+                                    id,
+                                    x: xi,
+                                    y: yi,
+                                    from: i,
+                                    target: i,
+                                    emp: emp_u8,
+                                    fleet_type: FleetClass::Freight,
+                                    min_type: 0,
+                                    // Non-zero hull HP so outbound empty salvage freighters survive the end-of-tick death sweep
+                                    power: 12.0,
+                                    max_power: ec.cargo_cap,
+                                    hunting: false,
+                                    used_wh: false,
+                                    steer_x: dx,
+                                    steer_y: dy,
+                                    wh_route: -1,
+                                    salvage_mode: 1,
+                                    cargo_iron: 0.0,
+                                    cargo_bora: 0.0,
+                                    cargo_germ: 0.0,
+                                    orbiting: false,
+                                    upkeep: FleetClass::Freight.upkeep(),
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -1730,7 +1926,77 @@ impl Simulation {
                     }
 
                     if let Some(target_idx) = best_target {
-                        let (ci, cb, cg) = self.empires[e].ship_mineral_cost(mission);
+                        let docked_war = self.orbit_warship[i];
+                        if mission.is_combat() && docked_war >= 0 {
+                            // Dispatch stationed garrison warship from orbit at zero build cost
+                            let fi = docked_war as usize;
+                            self.orbit_warship[i] = -1;
+                            self.claim_mask[target_idx] |= my_bit;
+                            let (sx, sy) = if best_wh_route >= 0 {
+                                let w = (best_wh_route / 2) as usize;
+                                let dir = best_wh_route % 2;
+                                if let Some(&wh) = self.wormholes.get(w) {
+                                    if dir == 0 {
+                                        (wh.x1, wh.y1)
+                                    } else {
+                                        (wh.x2, wh.y2)
+                                    }
+                                } else {
+                                    (self.pos_x[target_idx], self.pos_y[target_idx])
+                                }
+                            } else {
+                                (self.pos_x[target_idx], self.pos_y[target_idx])
+                            };
+                            let fl = &mut self.fleets[fi];
+                            fl.orbiting = false;
+                            fl.from = i;
+                            fl.target = target_idx;
+                            fl.hunting = false;
+                            fl.used_wh = false;
+                            fl.wh_route = best_wh_route;
+                            fl.steer_x = sx;
+                            fl.steer_y = sy;
+                        } else if mission == FleetClass::Col || emp_upkeep_ratio[e] < 0.42 {
+                            let (ci, cb, cg) = self.empires[e].ship_mineral_cost(mission);
+                            if self.min_surf[base_idx] >= ci
+                                && self.min_surf[base_idx + 1] >= cb
+                                && self.min_surf[base_idx + 2] >= cg
+                            {
+                                self.ship_prod_buf[i] -= effective_ship_cost;
+                                self.min_surf[base_idx] -= ci;
+                                self.min_surf[base_idx + 1] -= cb;
+                                self.min_surf[base_idx + 2] -= cg;
+                                self.claim_mask[target_idx] |= my_bit;
+                                self.pop[i] = (self.pop[i] - 6.0).max(2.0);
+                                let power =
+                                    self.compute_fleet_power(e, mission, self.factories[i]);
+                                self.spawn_fleet(
+                                    i,
+                                    target_idx,
+                                    emp_u8,
+                                    mission,
+                                    power,
+                                    0,
+                                    best_wh_route,
+                                    silent,
+                                );
+                            }
+                        }
+                    } else if emp_upkeep_ratio[e] < 0.28
+                        && self.ship_prod_buf[i] >= effective_ship_cost * 1.4
+                        && self.orbit_count[i] < 2
+                        && self.fleets.len() < 4000
+                    {
+                        // Build a standing orbital garrison warship when budget & minerals allow
+                        let r = self.next_rand();
+                        let g_class = if r < ec.cruiser_share {
+                            FleetClass::Cruiser
+                        } else if r < ec.cruiser_share + ec.bship_share {
+                            FleetClass::Battleship
+                        } else {
+                            FleetClass::Bomber
+                        };
+                        let (ci, cb, cg) = self.empires[e].ship_mineral_cost(g_class);
                         if self.min_surf[base_idx] >= ci
                             && self.min_surf[base_idx + 1] >= cb
                             && self.min_surf[base_idx + 2] >= cg
@@ -1739,19 +2005,36 @@ impl Simulation {
                             self.min_surf[base_idx] -= ci;
                             self.min_surf[base_idx + 1] -= cb;
                             self.min_surf[base_idx + 2] -= cg;
-                            self.claim_mask[target_idx] |= my_bit;
-                            self.pop[i] = (self.pop[i] - 6.0).max(2.0);
-                            let power = self.compute_fleet_power(e, mission, self.factories[i]);
-                            self.spawn_fleet(
-                                i,
-                                target_idx,
-                                emp_u8,
-                                mission,
+                            let power = self.compute_fleet_power(e, g_class, self.factories[i]);
+                            let id = self.next_fleet_id;
+                            self.next_fleet_id += 1;
+                            let ang = (id as f32) * 2.39996 + self.year * 0.8;
+                            let ox = self.pos_x[i] + ang.cos() * 7.0;
+                            let oy = self.pos_y[i] + ang.sin() * 7.0;
+                            self.fleets.push(Fleet {
+                                id,
+                                x: ox,
+                                y: oy,
+                                from: i,
+                                target: i,
+                                emp: emp_u8,
+                                fleet_type: g_class,
+                                min_type: 0,
                                 power,
-                                0,
-                                best_wh_route,
-                                silent,
-                            );
+                                max_power: power,
+                                hunting: false,
+                                used_wh: false,
+                                steer_x: ox,
+                                steer_y: oy,
+                                wh_route: -1,
+                                salvage_mode: 0,
+                                cargo_iron: 0.0,
+                                cargo_bora: 0.0,
+                                cargo_germ: 0.0,
+                                orbiting: true,
+                                upkeep: g_class.upkeep(),
+                            });
+                            self.orbit_count[i] = self.orbit_count[i].saturating_add(1);
                         }
                     }
                 }
@@ -1876,6 +2159,34 @@ impl Simulation {
             let emp_u8 = self.fleets[f_idx].emp;
             let e = (emp_u8 - 1) as usize;
             let ec = &emp_cache[e];
+
+            // Orbiting garrison / docked fleet maintenance & slow orbital ring motion
+            if self.fleets[f_idx].orbiting {
+                let p = self.fleets[f_idx].target;
+                if p >= n || self.owner[p] != emp_u8 {
+                    self.fleets[f_idx].orbiting = false;
+                } else {
+                    let id = self.fleets[f_idx].id;
+                    let ang = (id as f32) * 2.39996 + self.year * 0.8;
+                    let ox = self.pos_x[p] + ang.cos() * 7.0;
+                    let oy = self.pos_y[p] + ang.sin() * 7.0;
+                    self.fleets[f_idx].x = ox;
+                    self.fleets[f_idx].y = oy;
+                    self.fleets[f_idx].steer_x = ox;
+                    self.fleets[f_idx].steer_y = oy;
+                    // Docked combat ships repair at 6% max_power/yr when empire upkeep is sustainable
+                    if self.fleets[f_idx].fleet_type.is_combat()
+                        && emp_upkeep_ratio[e] <= 0.55
+                        && self.fleets[f_idx].power < self.fleets[f_idx].max_power
+                    {
+                        let rep = self.fleets[f_idx].max_power * 0.06 * DT;
+                        self.fleets[f_idx].power =
+                            (self.fleets[f_idx].power + rep).min(self.fleets[f_idx].max_power);
+                    }
+                    continue;
+                }
+            }
+
             let salvage_mode = self.fleets[f_idx].salvage_mode;
 
             // Dedicated Salvage Freighter state machine (1 = outbound/multi-stop scoop, 2 = returning home)
@@ -2268,39 +2579,108 @@ impl Simulation {
             let tdx = self.pos_x[target_idx] - fx;
             let tdy = self.pos_y[target_idx] - fy;
             if !heading_to_wh && tdx * tdx + tdy * tdy <= step_dist * step_dist {
-                let fl = self.fleets.swap_remove(f_idx);
                 self.claim_mask[target_idx] &= !(1u16 << e);
                 // Arriving fleet's shipboard scanner reveals the target system & nearby space
                 let ship_scan = self.effective_scanner_range(e) * 0.65;
                 self.reveal_around_planet(target_idx, e, ship_scan);
 
-                if fl.fleet_type == FleetClass::Freight {
-                    if fl.salvage_mode == 2 {
-                        let b = target_idx * 3;
-                        let mult = ec.salvage_mult;
-                        let di = fl.cargo_iron * mult;
-                        let db = fl.cargo_bora * mult;
-                        let dg = fl.cargo_germ * mult;
-                        self.min_surf[b] += di;
-                        self.min_surf[b + 1] += db;
-                        self.min_surf[b + 2] += dg;
-                        self.total_salvaged += (di + db + dg).round() as u32;
+                let fl_type = self.fleets[f_idx].fleet_type;
+                let fl_emp = self.fleets[f_idx].emp;
+                if fl_type == FleetClass::Freight {
+                    if self.owner[target_idx] == fl_emp {
+                        if self.fleets[f_idx].salvage_mode == 2 {
+                            let b = target_idx * 3;
+                            let mult = ec.salvage_mult;
+                            let di = self.fleets[f_idx].cargo_iron * mult;
+                            let db = self.fleets[f_idx].cargo_bora * mult;
+                            let dg = self.fleets[f_idx].cargo_germ * mult;
+                            self.min_surf[b] += di;
+                            self.min_surf[b + 1] += db;
+                            self.min_surf[b + 2] += dg;
+                            self.total_salvaged += (di + db + dg).round() as u32;
+                        } else {
+                            let mt = self.fleets[f_idx].min_type as usize;
+                            self.min_surf[target_idx * 3 + mt] += self.fleets[f_idx].power;
+                        }
+                        // Dock freighter in orbit at friendly destination for reuse
+                        let id = self.fleets[f_idx].id;
+                        let ang = (id as f32) * 2.39996 + self.year * 0.8;
+                        let ox = self.pos_x[target_idx] + ang.cos() * 7.0;
+                        let oy = self.pos_y[target_idx] + ang.sin() * 7.0;
+                        let fl = &mut self.fleets[f_idx];
+                        fl.orbiting = true;
+                        fl.from = target_idx;
+                        fl.target = target_idx;
+                        fl.x = ox;
+                        fl.y = oy;
+                        fl.steer_x = ox;
+                        fl.steer_y = oy;
+                        fl.salvage_mode = 0;
+                        fl.cargo_iron = 0.0;
+                        fl.cargo_bora = 0.0;
+                        fl.cargo_germ = 0.0;
+                        fl.power = 12.0;
+                        fl.max_power = ec.cargo_cap;
+                        fl.wh_route = -1;
+                        fl.used_wh = false;
                     } else {
-                        self.min_surf[target_idx * 3 + fl.min_type as usize] += fl.power;
+                        // Destination lost before arrival: redirect home if still friendly, else remove
+                        let home = self.fleets[f_idx].from;
+                        if home != target_idx && home < n && self.owner[home] == fl_emp {
+                            self.fleets[f_idx].target = home;
+                            self.fleets[f_idx].steer_x = self.pos_x[home];
+                            self.fleets[f_idx].steer_y = self.pos_y[home];
+                            self.fleets[f_idx].wh_route = -1;
+                        } else {
+                            self.fleets.swap_remove(f_idx);
+                        }
                     }
-                } else if self.owner[target_idx] == 0 {
-                    self.owner[target_idx] = fl.emp;
-                    self.pop[target_idx] = 9.0;
-                    self.mines[target_idx] = 3.0;
-                    self.factories[target_idx] = 2.0;
-                    self.min_surf[target_idx * 3] = 15.0;
-                    self.min_surf[target_idx * 3 + 1] = 15.0;
-                    self.min_surf[target_idx * 3 + 2] = 15.0;
-                    self.defense[target_idx] = 8.0;
-                } else if self.owner[target_idx] == fl.emp {
-                    self.pop[target_idx] =
-                        (self.hab[target_idx] * 170.0).min(self.pop[target_idx] + 7.0);
+                } else if fl_type == FleetClass::Col {
+                    // Colonizer dismantles into starter colony infrastructure (as in Stars!)
+                    let fl = self.fleets.swap_remove(f_idx);
+                    if self.owner[target_idx] == 0 {
+                        self.owner[target_idx] = fl.emp;
+                        self.pop[target_idx] = 9.0;
+                        self.mines[target_idx] = 3.0;
+                        self.factories[target_idx] = 2.0;
+                        self.min_surf[target_idx * 3] = 15.0;
+                        self.min_surf[target_idx * 3 + 1] = 15.0;
+                        self.min_surf[target_idx * 3 + 2] = 15.0;
+                        self.defense[target_idx] = 8.0;
+                    } else if self.owner[target_idx] == fl.emp {
+                        self.pop[target_idx] =
+                            (self.hab[target_idx] * 170.0).min(self.pop[target_idx] + 7.0);
+                    }
+                } else if self.owner[target_idx] == fl_emp || self.owner[target_idx] == 0 {
+                    // Warship arrives at friendly (or now-empty) world: dock in orbit if friendly
+                    if self.owner[target_idx] == fl_emp {
+                        let id = self.fleets[f_idx].id;
+                        let ang = (id as f32) * 2.39996 + self.year * 0.8;
+                        let ox = self.pos_x[target_idx] + ang.cos() * 7.0;
+                        let oy = self.pos_y[target_idx] + ang.sin() * 7.0;
+                        let fl = &mut self.fleets[f_idx];
+                        fl.orbiting = true;
+                        fl.from = target_idx;
+                        fl.target = target_idx;
+                        fl.x = ox;
+                        fl.y = oy;
+                        fl.steer_x = ox;
+                        fl.steer_y = oy;
+                        fl.hunting = false;
+                        fl.wh_route = -1;
+                    } else {
+                        let home = self.fleets[f_idx].from;
+                        if home < n && self.owner[home] == fl_emp {
+                            self.fleets[f_idx].target = home;
+                            self.fleets[f_idx].steer_x = self.pos_x[home];
+                            self.fleets[f_idx].steer_y = self.pos_y[home];
+                            self.fleets[f_idx].wh_route = -1;
+                        } else {
+                            self.fleets.swap_remove(f_idx);
+                        }
+                    }
                 } else {
+                    // Warship planetary assault
                     let def_e = (self.owner[target_idx] - 1) as usize;
                     let mut bunker_bonus: f32 = if emp_cache[def_e].prt_is {
                         1.30
@@ -2308,19 +2688,20 @@ impl Simulation {
                         1.0
                     };
                     let mut effective_def = self.defense[target_idx];
-                    if fl.fleet_type == FleetClass::Bomber {
+                    if fl_type == FleetClass::Bomber {
                         let pen = (self.cfg.bomber_pen
                             + (self.empires[e].tech_cache.bomb_power * 0.02).min(0.22))
                         .min(0.88);
                         effective_def *= 1.0 - pen;
                         bunker_bonus = (bunker_bonus * 0.75).max(1.0);
                     }
-                    if fl.power
-                        > (20.0 + effective_def + self.pop[target_idx] * 0.35) * bunker_bonus
-                    {
-                        self.owner[target_idx] = fl.emp;
+                    let def_threshold =
+                        (20.0 + effective_def + self.pop[target_idx] * 0.35) * bunker_bonus;
+                    let fl_power = self.fleets[f_idx].power;
+                    if fl_power > def_threshold {
+                        self.owner[target_idx] = fl_emp;
                         self.pop[target_idx] = (self.pop[target_idx] * 0.65).max(10.0);
-                        let struct_surv = if fl.fleet_type == FleetClass::Bomber {
+                        let struct_surv = if fl_type == FleetClass::Bomber {
                             if self.empires[e].tech_cache.bomb_smart {
                                 0.85
                             } else {
@@ -2341,17 +2722,41 @@ impl Simulation {
                             let col = self.empires[e].race.color.clone();
                             self.push_event(msg, &col);
                         }
+                        // Victorious warship takes assault damage and stations in orbit around captured planet
+                        let assault_dmg = (def_threshold * 0.35).min(fl_power * 0.72);
+                        let id = self.fleets[f_idx].id;
+                        let ang = (id as f32) * 2.39996 + self.year * 0.8;
+                        let ox = self.pos_x[target_idx] + ang.cos() * 7.0;
+                        let oy = self.pos_y[target_idx] + ang.sin() * 7.0;
+                        let fl = &mut self.fleets[f_idx];
+                        fl.power = (fl.power - assault_dmg).max(fl.max_power * 0.15);
+                        fl.orbiting = true;
+                        fl.from = target_idx;
+                        fl.target = target_idx;
+                        fl.x = ox;
+                        fl.y = oy;
+                        fl.steer_x = ox;
+                        fl.steer_y = oy;
+                        fl.hunting = false;
+                        fl.wh_route = -1;
                     } else {
-                        let dmg = if fl.fleet_type == FleetClass::Bomber {
-                            fl.power * 0.85
+                        let dmg = if fl_type == FleetClass::Bomber {
+                            fl_power * 0.85
                         } else {
-                            (fl.power / bunker_bonus) * 0.45
+                            (fl_power / bunker_bonus) * 0.45
                         };
                         self.defense[target_idx] = (self.defense[target_idx] - dmg).max(4.0);
-                        if fl.fleet_type == FleetClass::Bomber {
+                        if fl_type == FleetClass::Bomber {
                             self.factories[target_idx] =
                                 (self.factories[target_idx] * 0.92).max(2.0);
                         }
+                        // Repelled attacker is destroyed in planetary fire and leaves battle wreckage
+                        let dead = self.fleets.swap_remove(f_idx);
+                        self.spawn_salvage_debris(
+                            self.pos_x[target_idx],
+                            self.pos_y[target_idx],
+                            &dead,
+                        );
                     }
                 }
             } else {
@@ -2722,6 +3127,8 @@ impl Simulation {
             cargo_iron: 0.0,
             cargo_bora: 0.0,
             cargo_germ: 0.0,
+            orbiting: false,
+            upkeep: fleet_type.upkeep(),
         });
     }
 
@@ -2865,7 +3272,9 @@ impl Simulation {
                 FleetClass::Bomber => 3.0,
                 FleetClass::Freight => 4.0,
             };
-            let flags = (if fl.hunting { 1 } else { 0 }) | (if fl.used_wh { 2 } else { 0 });
+            let flags = (if fl.hunting { 1 } else { 0 })
+                | (if fl.used_wh { 2 } else { 0 })
+                | (if fl.orbiting { 4 } else { 0 });
             self.fleet_render_buf.push(fl.x);
             self.fleet_render_buf.push(fl.y);
             self.fleet_render_buf.push(fl.steer_x);
@@ -2933,6 +3342,7 @@ impl Simulation {
             germ_crust: self.min_crust[b + 2],
             res: self.last_res[i],
             defense: self.defense[i],
+            orbiting_fleets: self.orbit_count.get(i).copied().unwrap_or(0),
         })
     }
 

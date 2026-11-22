@@ -191,6 +191,10 @@ pub struct Fleet {
     pub cargo_bora: f32,
     #[serde(default)]
     pub cargo_germ: f32,
+    #[serde(default)]
+    pub orbiting: bool,
+    #[serde(default)]
+    pub upkeep: f32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -252,11 +256,18 @@ pub struct SimEvent {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmpireStats {
     pub planets: u32,
     pub factories: f32,
     pub res: f32,
     pub gates: u32,
+    #[serde(default)]
+    pub fleet_upkeep: f32,
+    #[serde(default)]
+    pub fleet_count: u32,
+    #[serde(default)]
+    pub orbiting_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +294,8 @@ pub struct PlanetView {
     pub germ_crust: f32,
     pub res: f32,
     pub defense: f32,
+    #[serde(default)]
+    pub orbiting_fleets: u16,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

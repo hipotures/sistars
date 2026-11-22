@@ -193,6 +193,17 @@ impl FleetClass {
             FleetClass::Cruiser | FleetClass::Battleship | FleetClass::Bomber
         )
     }
+
+    /// Annual maintenance cost in Resources (Res/yr) for a persistent fleet of this class.
+    pub const fn upkeep(self) -> f32 {
+        match self {
+            FleetClass::Col => 0.8,
+            FleetClass::Freight => 1.2,
+            FleetClass::Cruiser => 2.5,
+            FleetClass::Bomber => 3.0,
+            FleetClass::Battleship => 5.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -141,6 +141,9 @@ export interface EmpireStats {
   factories: number;
   res: number;
   gates: number;
+  fleetUpkeep?: number;
+  fleetCount?: number;
+  orbitingCount?: number;
 }
 
 export interface EmpireLoadoutView {
@@ -207,6 +210,7 @@ export interface PlanetView {
   germCrust: number;
   res: number;
   defense: number;
+  orbitingFleets?: number;
 }
 
 export interface FleetView {
@@ -229,6 +233,8 @@ export interface FleetView {
   cargoIron?: number;
   cargoBora?: number;
   cargoGerm?: number;
+  orbiting?: boolean;
+  upkeep?: number;
 }
 
 export interface WormholeView {

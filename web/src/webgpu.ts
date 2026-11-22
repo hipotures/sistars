@@ -674,6 +674,14 @@ fn vs_main(
   let flags = u32(fleetInfo.z);
   let fType = u32(round(fleetInfo.y));
 
+  // Skip trajectory lines for orbiting/docked fleets
+  if ((flags & 4u) != 0u) {
+    var emptyOut: LineOut;
+    emptyOut.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    emptyOut.color = vec4<f32>(0.0);
+    return emptyOut;
+  }
+
   var col: vec4<f32>;
   if ((flags & 1u) != 0u) {
     col = vec4<f32>(0.973, 0.443, 0.443, 0.45);
