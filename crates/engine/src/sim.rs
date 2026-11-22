@@ -1892,7 +1892,6 @@ impl Simulation {
                     let mut carried = self.fleets[f_idx].cargo_iron
                         + self.fleets[f_idx].cargo_bora
                         + self.fleets[f_idx].cargo_germ;
-                    let salvage_mult = ec.salvage_mult;
                     let debris_slice = &mut self.debris_fields;
                     let mut add_i = 0.0f32;
                     let mut add_b = 0.0f32;
@@ -1933,9 +1932,9 @@ impl Simulation {
                             if deb.iron + deb.bora + deb.germ <= 0.5 {
                                 deb.ttl = 0.0;
                             }
-                            add_i += ti * salvage_mult;
-                            add_b += tb * salvage_mult;
-                            add_g += tg * salvage_mult;
+                            add_i += ti;
+                            add_b += tb;
+                            add_g += tg;
                             carried += take;
                         });
 
@@ -2274,11 +2273,14 @@ impl Simulation {
                 if fl.fleet_type == FleetClass::Freight {
                     if fl.salvage_mode == 2 {
                         let b = target_idx * 3;
-                        self.min_surf[b] += fl.cargo_iron;
-                        self.min_surf[b + 1] += fl.cargo_bora;
-                        self.min_surf[b + 2] += fl.cargo_germ;
-                        self.total_salvaged +=
-                            (fl.cargo_iron + fl.cargo_bora + fl.cargo_germ).round() as u32;
+                        let mult = ec.salvage_mult;
+                        let di = fl.cargo_iron * mult;
+                        let db = fl.cargo_bora * mult;
+                        let dg = fl.cargo_germ * mult;
+                        self.min_surf[b] += di;
+                        self.min_surf[b + 1] += db;
+                        self.min_surf[b + 2] += dg;
+                        self.total_salvaged += (di + db + dg).round() as u32;
                     } else {
                         self.min_surf[target_idx * 3 + fl.min_type as usize] += fl.power;
                     }
