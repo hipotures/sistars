@@ -200,6 +200,7 @@ export class UiController {
   private powerHistoryInFlight = false;
   private showEventLog = true;
   private currentSpeed = 1;
+  private lastNonZeroSpeed = 1;
 
   private customRaces: RaceDef[] = [];
   private selectedRaceIds: Set<string>;
@@ -445,8 +446,18 @@ export class UiController {
 
   public setActiveSpeedButton(speed: number): void {
     this.currentSpeed = speed;
+    if (speed > 0) {
+      this.lastNonZeroSpeed = speed;
+    }
+    const paused = speed === 0;
+    const pauseBtn = getEl<HTMLButtonElement>('btnPause');
+    pauseBtn.textContent = paused ? '▶' : '⏸';
+    pauseBtn.title = paused ? `Resume (${this.lastNonZeroSpeed}x)` : 'Pause';
+    pauseBtn.classList.toggle('active', paused);
+
     document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => {
-      b.classList.toggle('active', Number(b.dataset.speed) === speed);
+      if (b.id === 'btnPause') return;
+      b.classList.toggle('active', !paused && Number(b.dataset.speed) === speed);
     });
     this.syncEventLogVisibility();
   }
@@ -661,10 +672,18 @@ export class UiController {
   }
 
   private bindEvents(): void {
-    // Speed buttons & single-tick step
+    // Speed buttons & Play/Pause toggle + single-tick step
     document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const speed = Number(btn.dataset.speed ?? 1);
+        const rawSpeed = Number(btn.dataset.speed ?? 1);
+        const speed =
+          btn.id === 'btnPause'
+            ? this.currentSpeed > 0
+              ? 0
+              : this.lastNonZeroSpeed > 0
+                ? this.lastNonZeroSpeed
+                : 1
+            : rawSpeed;
         this.setActiveSpeedButton(speed);
         this.callbacks.onSpeedChange(speed);
       });
