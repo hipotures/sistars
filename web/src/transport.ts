@@ -364,6 +364,7 @@ export async function createArenaMatch(
     debugAudit?: boolean;
     frameStrideTicks?: number;
     tickDelayMs?: number;
+    startPaused?: boolean;
   },
 ): Promise<CreateArenaMatchResponse> {
   const base = normalizeServerUrl(serverUrl);
@@ -376,6 +377,7 @@ export async function createArenaMatch(
     debugAudit: options?.debugAudit ?? true,
     frameStrideTicks: options?.frameStrideTicks ?? 1,
     tickDelayMs: options?.tickDelayMs ?? 25,
+    startPaused: options?.startPaused ?? false,
   };
   if (options?.simConfig) {
     body.simConfig = options.simConfig;

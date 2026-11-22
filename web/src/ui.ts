@@ -3191,8 +3191,19 @@ export class UiController {
           if (Number.isInteger(seat)) agentSeats.push(seat);
         });
 
+      const startPaused = speedSel <= 0;
       const tickDelayMs =
-        speedSel <= 0.25 ? 120 : speedSel <= 0.5 ? 60 : speedSel <= 1 ? 25 : speedSel <= 5 ? 5 : 0;
+        speedSel <= 0
+          ? 25
+          : speedSel <= 0.25
+            ? 120
+            : speedSel <= 0.5
+              ? 60
+              : speedSel <= 1
+                ? 25
+                : speedSel <= 5
+                  ? 5
+                  : 0;
       const frameStrideTicks = speedSel <= 1 ? 1 : speedSel <= 5 ? 2 : 5;
 
       const statusEl = document.getElementById('arenaNewStatus');
@@ -3214,6 +3225,7 @@ export class UiController {
             debugAudit,
             frameStrideTicks,
             tickDelayMs,
+            startPaused,
           },
           speedSel,
         );

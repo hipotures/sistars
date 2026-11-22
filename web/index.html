@@ -17,12 +17,12 @@
     <div class="year-box" id="hudYear">2400.0</div>
     <span class="hud-scenario-tag" id="hudScenarioTag" style="display:none;"></span>
     <div class="speed-controls">
-      <button class="hud-btn" id="btnPause" data-speed="0" title="Pause">⏸</button>
+      <button class="hud-btn active" id="btnPause" data-speed="0" title="Pause">⏸</button>
       <button class="hud-btn" id="btnStep" title="Step 1 tick">⏭</button>
       <button class="hud-btn" id="btn01x" data-speed="0.1">0.1x</button>
       <button class="hud-btn" id="btn025x" data-speed="0.25">0.25x</button>
       <button class="hud-btn" id="btn05x" data-speed="0.5">0.5x</button>
-      <button class="hud-btn active" id="btn1x" data-speed="1">1x</button>
+      <button class="hud-btn" id="btn1x" data-speed="1">1x</button>
       <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
       <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
     </div>
@@ -116,9 +116,10 @@
   <div class="field">
     <div class="field-header"><span>Initial server speed</span></div>
     <select id="arenaNewSpeed" class="select-input">
+      <option value="0" selected>⏸ Paused (Start manually)</option>
       <option value="0.25">0.25x (Slow / Inspection)</option>
       <option value="0.5">0.5x</option>
-      <option value="1" selected>1x (Normal Spectator)</option>
+      <option value="1">1x (Normal Spectator)</option>
       <option value="5">5x (Fast)</option>
       <option value="20">20x (Max Speed)</option>
     </select>

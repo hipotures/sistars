@@ -62,6 +62,8 @@ pub struct CreateMatchRequest {
     pub frame_stride_ticks: Option<u32>,
     /// Optional per-tick delay in milliseconds for human spectator viewing (default: 0).
     pub tick_delay_ms: Option<u64>,
+    /// Start the match paused at tick 0 until unpaused via `/control` (default: false).
+    pub start_paused: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

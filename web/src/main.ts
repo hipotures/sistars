@@ -137,7 +137,7 @@ async function bootstrap(): Promise<void> {
     salvageRate: persisted.salvageRate,
     aggroBias: persisted.aggroBias,
     sprawlPenalty: persisted.sprawlPenalty,
-    speed: persisted.speed,
+    speed: 0,
   });
 
   // Check URL parameters (?server=http://host:8080&match=<id>) for direct Spectator Mode launch
@@ -182,7 +182,7 @@ async function bootstrap(): Promise<void> {
   const overlayCanvas = document.getElementById('overlayCanvas') as HTMLCanvasElement;
   const renderer = await GalaxyRenderer.create(canvas, overlayCanvas, meta.worldW, meta.worldH);
 
-  let speed = persisted.speed;
+  let speed = 0;
   let lastNonZeroSpeed = persisted.speed > 0 ? persisted.speed : 1;
   let hoveredTarget: HitTarget = null;
   let lastHud: HudSnapshot = firstFrame.hud;
@@ -578,7 +578,7 @@ async function bootstrap(): Promise<void> {
       if (scen.locks.sprawlPenalty !== undefined) persisted.sprawlPenalty = scen.locks.sprawlPenalty;
 
       persistSettings();
-      ui.applyPersistedSettings(persisted);
+      ui.applyPersistedSettings({ ...persisted, speed });
       hudLensEmpires.clear();
       applySelection(null);
       transport.applyScenario({
@@ -1093,7 +1093,8 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  ui.applyPersistedSettings(persisted);
+  ui.applyPersistedSettings({ ...persisted, speed: 0 });
+  ui.setActiveSpeedButton(0);
   ui.setArenaServerUrl(arenaServerUrl);
   ui.setTransportMode(initialMode);
   if (initialMode === 'remote') {

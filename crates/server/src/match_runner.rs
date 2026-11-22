@@ -268,6 +268,7 @@ impl MatchHandle {
         let epoch_timeout_ms = req.epoch_timeout_ms.unwrap_or(20_000).clamp(50, 600_000);
         let frame_stride_ticks = req.frame_stride_ticks.unwrap_or(2).max(1);
         let tick_delay_ms = req.tick_delay_ms.unwrap_or(0).min(1_000);
+        let start_paused = req.start_paused.unwrap_or(false);
 
         let initial_status = if agent_seats.is_empty() {
             MatchStatus::Running
@@ -284,7 +285,7 @@ impl MatchHandle {
             match_id,
             sim,
             status: initial_status,
-            paused: false,
+            paused: start_paused,
             pending_step_ticks: 0,
             epoch: 0,
             ticks_per_epoch,

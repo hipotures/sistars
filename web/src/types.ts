@@ -509,6 +509,7 @@ export interface CreateArenaMatchOptions {
   debugAudit: boolean;
   frameStrideTicks: number;
   tickDelayMs: number;
+  startPaused?: boolean;
 }
 
 export interface CreateArenaMatchResponse {

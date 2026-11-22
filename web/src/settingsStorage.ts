@@ -72,7 +72,7 @@ export const DEFAULT_SETTINGS: PersistedSettings = {
   debugPerf: false,
   debugHistory: false,
   debugTelemetry: false,
-  speed: 1,
+  speed: 0,
 };
 
 function clampNum(val: unknown, fallback: number, min: number, max: number): number {
