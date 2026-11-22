@@ -3232,12 +3232,19 @@ export class UiController {
         if (res) {
           this.showArenaCreatedMatch(srv, res);
           if (statusEl) {
-            statusEl.textContent =
-              res.agentSeats.length > 0
-                ? `✓ Match ${res.matchId} created & connected! Copy agent CLI commands below.`
-                : `✓ Autonomous match ${res.matchId} live!`;
+            if (startPaused) {
+              statusEl.textContent =
+                res.agentSeats.length > 0
+                  ? `✓ Match ${res.matchId} created (⏸ Paused at 2400.0). Connect agents below, then press 1x / Space.`
+                  : `✓ Match ${res.matchId} created (⏸ Paused at 2400.0). Press 1x / Space when ready.`;
+            } else {
+              statusEl.textContent =
+                res.agentSeats.length > 0
+                  ? `✓ Match ${res.matchId} created & connected! Copy agent CLI commands below.`
+                  : `✓ Autonomous match ${res.matchId} live!`;
+            }
           }
-          if (res.agentSeats.length === 0) {
+          if (res.agentSeats.length === 0 && !startPaused) {
             this.closeAllDrawers();
           }
         }
@@ -3266,6 +3273,11 @@ export class UiController {
       if (shapeSel) {
         shapeSel.value = this.lastConfig.galaxyShape;
       }
+      // Hide stale match tokens from previous match creations so the user never copies an old match ID
+      const createdBox = document.getElementById('arenaCreatedBox');
+      if (createdBox) createdBox.style.display = 'none';
+      const statusEl = document.getElementById('arenaNewStatus');
+      if (statusEl) statusEl.textContent = '';
       drawer.classList.add('open');
     }
   }

@@ -275,7 +275,7 @@ impl MatchHandle {
         } else {
             MatchStatus::WaitingForAgents
         };
-        let initial_deadline = if agent_seats.is_empty() {
+        let initial_deadline = if agent_seats.is_empty() || start_paused {
             None
         } else {
             Some(now_unix_ms() + epoch_timeout_ms)
@@ -337,6 +337,30 @@ async fn run_match_loop(
     loop {
         if *shutdown_rx.borrow() {
             break;
+        }
+
+        // If the match is paused (and no manual single-step is queued), stay completely frozen
+        // before starting any epoch or agent timeout countdown.
+        loop {
+            let (is_paused, has_step, is_done) = {
+                let guard = inner.read().await;
+                (
+                    guard.paused,
+                    guard.pending_step_ticks > 0,
+                    guard.sim.winner.is_some(),
+                )
+            };
+            if !is_paused || has_step || is_done {
+                break;
+            }
+            tokio::select! {
+                _ = control_notify.notified() => {}
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+            }
         }
 
         // Phase A: Macro-Epoch Decision Barrier for external agent seats
