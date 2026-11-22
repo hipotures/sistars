@@ -17,6 +17,13 @@
 * {
   box-sizing: border-box;
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+canvas,
+button,
+.hud-btn,
+.emp-pill,
+input[type='range'] {
   user-select: none;
 }
 

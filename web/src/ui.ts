@@ -3232,12 +3232,33 @@ export class UiController {
       copyBtn.style.fontSize = '0.6rem';
       copyBtn.textContent = '📋 Copy CLI';
       copyBtn.addEventListener('click', () => {
-        void navigator.clipboard?.writeText(cmd).then(() => {
+        const markCopied = () => {
           copyBtn.textContent = '✓ Copied';
           setTimeout(() => {
             copyBtn.textContent = '📋 Copy CLI';
           }, 1400);
-        });
+        };
+        const fallbackCopy = () => {
+          const ta = document.createElement('textarea');
+          ta.value = cmd;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand('copy');
+          } catch {
+            // ignore
+          }
+          document.body.removeChild(ta);
+          markCopied();
+        };
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(cmd).then(markCopied).catch(fallbackCopy);
+        } else {
+          fallbackCopy();
+        }
       });
 
       top.appendChild(label);
