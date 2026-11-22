@@ -353,6 +353,7 @@ export async function fetchArenaMatches(serverUrl: string): Promise<ArenaMatchSu
 export async function createArenaMatch(
   serverUrl: string,
   options?: {
+    seed?: number;
     galaxySize?: string;
     galaxyShape?: string;
     ticksPerEpoch?: number;
@@ -364,24 +365,42 @@ export async function createArenaMatch(
   },
 ): Promise<CreateArenaMatchResponse> {
   const base = normalizeServerUrl(serverUrl);
+  const body: Record<string, unknown> = {
+    galaxySize: options?.galaxySize ?? 'small',
+    galaxyShape: options?.galaxyShape ?? 'spiral',
+    ticksPerEpoch: options?.ticksPerEpoch ?? 20,
+    epochTimeoutMs: options?.epochTimeoutMs ?? 20000,
+    agentSeats: options?.agentSeats ?? [],
+    debugAudit: options?.debugAudit ?? true,
+    frameStrideTicks: options?.frameStrideTicks ?? 1,
+    tickDelayMs: options?.tickDelayMs ?? 25,
+  };
+  if (options?.seed !== undefined && Number.isFinite(options.seed)) {
+    body.seed = Math.floor(options.seed);
+  }
   const resp = await fetch(`${base}/api/v1/matches`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      galaxySize: options?.galaxySize ?? 'small',
-      galaxyShape: options?.galaxyShape ?? 'spiral',
-      ticksPerEpoch: options?.ticksPerEpoch ?? 20,
-      epochTimeoutMs: options?.epochTimeoutMs ?? 20000,
-      agentSeats: options?.agentSeats ?? [],
-      debugAudit: options?.debugAudit ?? true,
-      frameStrideTicks: options?.frameStrideTicks ?? 1,
-      tickDelayMs: options?.tickDelayMs ?? 25,
-    }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status} creating match`);
   }
   return (await resp.json()) as CreateArenaMatchResponse;
+}
+
+export function speedToArenaControl(speed: number): {
+  paused: boolean;
+  tickDelayMs: number;
+  frameStrideTicks: number;
+} {
+  if (speed <= 0) return { paused: true, tickDelayMs: 25, frameStrideTicks: 1 };
+  if (speed <= 0.1) return { paused: false, tickDelayMs: 250, frameStrideTicks: 1 };
+  if (speed <= 0.25) return { paused: false, tickDelayMs: 120, frameStrideTicks: 1 };
+  if (speed <= 0.5) return { paused: false, tickDelayMs: 60, frameStrideTicks: 1 };
+  if (speed <= 1) return { paused: false, tickDelayMs: 25, frameStrideTicks: 1 };
+  if (speed <= 5) return { paused: false, tickDelayMs: 5, frameStrideTicks: 2 };
+  return { paused: false, tickDelayMs: 0, frameStrideTicks: 5 };
 }
 
 /**
@@ -576,9 +595,34 @@ export class RemoteArenaTransport implements SimTransport {
     // Remote frames allocate fresh buffers from WebSocket JSON; no worker pool to recycle
   }
 
-  public setSpeed(): void {}
-  public setPaused(): void {}
-  public step(): void {}
+  private postControl(payload: {
+    paused?: boolean;
+    tickDelayMs?: number;
+    frameStrideTicks?: number;
+    stepTicks?: number;
+  }): void {
+    if (this.disposed) return;
+    void fetch(`${this.serverUrl}/api/v1/matches/${encodeURIComponent(this.matchId)}/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {
+      // ignore transient network errors
+    });
+  }
+
+  public setSpeed(speed: number): void {
+    this.postControl(speedToArenaControl(speed));
+  }
+
+  public setPaused(paused: boolean): void {
+    this.postControl({ paused });
+  }
+
+  public step(ticks: number): void {
+    this.postControl({ paused: true, stepTicks: ticks });
+  }
+
   public newGalaxy(): void {}
   public applyScenario(): void {}
   public updateConfig(): void {}

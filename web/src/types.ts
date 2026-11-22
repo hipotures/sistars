@@ -482,6 +482,8 @@ export interface ArenaMatchSummary {
   tick: number;
   epoch: number;
   status: ArenaMatchStatus;
+  paused?: boolean;
+  tickDelayMs?: number;
   winner: number | null;
   planetCount: number;
   empireCount: number;
@@ -493,6 +495,18 @@ export interface ArenaMatchSummary {
   epochDeadlineMs: number | null;
   debugAudit: boolean;
   anomaliesCount: number;
+}
+
+export interface CreateArenaMatchOptions {
+  seed?: number;
+  galaxySize: string;
+  galaxyShape: string;
+  ticksPerEpoch: number;
+  epochTimeoutMs: number;
+  agentSeats: number[];
+  debugAudit: boolean;
+  frameStrideTicks: number;
+  tickDelayMs: number;
 }
 
 export interface CreateArenaMatchResponse {

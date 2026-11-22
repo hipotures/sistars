@@ -16,8 +16,9 @@ use uuid::Uuid;
 
 use crate::match_runner::{MatchHandle, QueuedDecision};
 use crate::models::{
-    ApiErrorBody, CreateMatchRequest, CreateMatchResponse, MatchPublicSummary, MatchStatus,
-    ObservationEnvelope, SubmitCommandsRequest, SubmitCommandsResponse,
+    ApiErrorBody, CreateMatchRequest, CreateMatchResponse, MatchControlRequest, MatchPublicSummary,
+    MatchStatus, ObservationEnvelope, SpectatorWsMessage, SubmitCommandsRequest,
+    SubmitCommandsResponse,
 };
 use crate::openapi::build_openapi_spec;
 
@@ -58,6 +59,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health_check))
         .route("/api/v1/matches", get(list_matches).post(create_match))
         .route("/api/v1/matches/{id}", get(get_match))
+        .route("/api/v1/matches/{id}/control", post(control_match))
         .route("/api/v1/matches/{id}/observation", get(get_observation))
         .route("/api/v1/matches/{id}/commands", post(submit_commands))
         .route("/api/v1/matches/{id}/system/{planet_idx}", get(get_star_system))
@@ -232,6 +234,59 @@ async fn get_match(
 
     let guard = handle.inner.read().await;
     Ok(Json(guard.public_summary()))
+}
+
+async fn control_match(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<MatchControlRequest>,
+) -> Result<Json<MatchPublicSummary>, (StatusCode, Json<ApiErrorBody>)> {
+    if let Some(ref expected_admin) = state.admin_token {
+        let supplied = extract_bearer_token(&headers).or_else(|| {
+            headers
+                .get("x-admin-token")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+        });
+        if supplied != Some(expected_admin.as_str()) {
+            return Err(api_error(
+                StatusCode::UNAUTHORIZED,
+                "admin_auth_required",
+                "Valid SISTARS_ADMIN_TOKEN required to control a match",
+            ));
+        }
+    }
+
+    let handle = {
+        let matches = state.matches.read().await;
+        matches.get(&id).cloned()
+    }
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match_not_found", "Match not found"))?;
+
+    let summary = {
+        let mut guard = handle.inner.write().await;
+        if let Some(p) = req.paused {
+            guard.paused = p;
+        }
+        if let Some(d) = req.tick_delay_ms {
+            guard.tick_delay_ms = d.min(1_000);
+        }
+        if let Some(s) = req.frame_stride_ticks {
+            guard.frame_stride_ticks = s.clamp(1, 50);
+        }
+        if let Some(steps) = req.step_ticks {
+            guard.pending_step_ticks = guard.pending_step_ticks.saturating_add(steps.min(100));
+        }
+        let summary = guard.public_summary();
+        let _ = handle.ws_tx.send(SpectatorWsMessage::Status {
+            summary: summary.clone(),
+        });
+        summary
+    };
+
+    handle.control_notify.notify_one();
+    Ok(Json(summary))
 }
 
 async fn get_observation(

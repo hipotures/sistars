@@ -86,6 +86,8 @@ pub struct MatchPublicSummary {
     pub tick: u64,
     pub epoch: u64,
     pub status: MatchStatus,
+    pub paused: bool,
+    pub tick_delay_ms: u64,
     pub winner: Option<usize>,
     pub planet_count: usize,
     pub empire_count: usize,
@@ -97,6 +99,15 @@ pub struct MatchPublicSummary {
     pub epoch_deadline_ms: Option<u64>,
     pub debug_audit: bool,
     pub anomalies_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchControlRequest {
+    pub paused: Option<bool>,
+    pub tick_delay_ms: Option<u64>,
+    pub frame_stride_ticks: Option<u32>,
+    pub step_ticks: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

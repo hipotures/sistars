@@ -47,6 +47,8 @@ pub struct MatchInner {
     pub match_id: String,
     pub sim: Simulation,
     pub status: MatchStatus,
+    pub paused: bool,
+    pub pending_step_ticks: u32,
     pub epoch: u64,
     pub ticks_per_epoch: u32,
     pub epoch_timeout_ms: u64,
@@ -85,6 +87,8 @@ impl MatchInner {
             tick: self.sim.ticks,
             epoch: self.epoch,
             status: self.status,
+            paused: self.paused,
+            tick_delay_ms: self.tick_delay_ms,
             winner: self.sim.winner,
             planet_count: self.sim.owner.len(),
             empire_count: self.sim.empires.len(),
@@ -198,6 +202,7 @@ impl MatchInner {
 pub struct MatchHandle {
     pub inner: Arc<RwLock<MatchInner>>,
     pub barrier_notify: Arc<Notify>,
+    pub control_notify: Arc<Notify>,
     pub ws_tx: broadcast::Sender<SpectatorWsMessage>,
     pub shutdown_tx: watch::Sender<bool>,
 }
@@ -279,6 +284,8 @@ impl MatchHandle {
             match_id,
             sim,
             status: initial_status,
+            paused: false,
+            pending_step_ticks: 0,
             epoch: 0,
             ticks_per_epoch,
             epoch_timeout_ms,
@@ -295,17 +302,25 @@ impl MatchHandle {
         }));
 
         let barrier_notify = Arc::new(Notify::new());
+        let control_notify = Arc::new(Notify::new());
         let (ws_tx, _) = broadcast::channel(256);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let handle = Arc::new(Self {
             inner: inner.clone(),
             barrier_notify: barrier_notify.clone(),
+            control_notify: control_notify.clone(),
             ws_tx: ws_tx.clone(),
             shutdown_tx,
         });
 
-        tokio::spawn(run_match_loop(inner, barrier_notify, ws_tx, shutdown_rx));
+        tokio::spawn(run_match_loop(
+            inner,
+            barrier_notify,
+            control_notify,
+            ws_tx,
+            shutdown_rx,
+        ));
 
         (handle, empire_tokens, agent_seats)
     }
@@ -314,6 +329,7 @@ impl MatchHandle {
 async fn run_match_loop(
     inner: Arc<RwLock<MatchInner>>,
     barrier_notify: Arc<Notify>,
+    control_notify: Arc<Notify>,
     ws_tx: broadcast::Sender<SpectatorWsMessage>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
@@ -483,7 +499,7 @@ async fn run_match_loop(
             )
         };
 
-        // Phase C: Step simulation for `ticks_per_epoch` ticks (halting immediately on victory)
+        // Phase C: Step simulation for `ticks_per_epoch` ticks (halting immediately on victory, honoring live pause/speed/step)
         let epoch_start = Instant::now();
         let mut finished = false;
         let mut ticks_done = 0u32;
@@ -492,15 +508,45 @@ async fn run_match_loop(
             if *shutdown_rx.borrow() {
                 return;
             }
-            let frame_opt = {
+
+            // Honor server-side pause & single-step controls cleanly
+            loop {
+                let (is_paused, has_step) = {
+                    let guard = inner.read().await;
+                    (guard.paused, guard.pending_step_ticks > 0)
+                };
+                if !is_paused || has_step {
+                    break;
+                }
+                tokio::select! {
+                    _ = control_notify.notified() => {}
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            let (frame_opt, cur_delay_ms) = {
                 let mut guard = inner.write().await;
+                let was_stepped = if guard.pending_step_ticks > 0 {
+                    guard.pending_step_ticks -= 1;
+                    true
+                } else {
+                    false
+                };
                 guard.sim.step_tick(false);
                 ticks_done += 1;
 
+                let cur_stride = guard.frame_stride_ticks.max(1);
+                let cur_delay = guard.tick_delay_ms;
                 let is_victory = guard.sim.winner.is_some();
                 let is_last = step_i + 1 == ticks_per_epoch;
-                let should_broadcast =
-                    is_victory || is_last || ((step_i + 1) % frame_stride == 0);
+                let should_broadcast = was_stepped
+                    || is_victory
+                    || is_last
+                    || ((step_i + 1) % cur_stride == 0);
 
                 if is_victory {
                     finished = true;
@@ -520,13 +566,18 @@ async fn run_match_loop(
                     let _ = ws_tx.send(SpectatorWsMessage::Feed { event: ev });
                 }
 
-                if should_broadcast && ws_tx.receiver_count() > 0 {
+                let frame = if should_broadcast && ws_tx.receiver_count() > 0 {
                     let elapsed = epoch_start.elapsed().as_secs_f32().max(0.001);
-                    let tps = ticks_done as f32 / elapsed;
+                    let tps = if guard.paused {
+                        0.0
+                    } else {
+                        ticks_done as f32 / elapsed
+                    };
                     Some(guard.build_frame_ws_message(tps))
                 } else {
                     None
-                }
+                };
+                (frame, cur_delay)
             };
 
             if let Some(frame) = frame_opt {
@@ -537,12 +588,16 @@ async fn run_match_loop(
                 break;
             }
 
-            if tick_delay_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(tick_delay_ms)).await;
+            if cur_delay_ms > 0 {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(cur_delay_ms)) => {}
+                    _ = control_notify.notified() => {}
+                }
             } else if step_i % 4 == 3 {
                 tokio::task::yield_now().await;
             }
         }
+        let _ = (frame_stride, tick_delay_ms);
 
         // Phase D: Post-epoch LiveAuditor flush & epoch increment
         {

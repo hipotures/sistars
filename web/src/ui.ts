@@ -17,6 +17,8 @@ import {
 import type {
   ArenaFeedEvent,
   ArenaMatchSummary,
+  CreateArenaMatchOptions,
+  CreateArenaMatchResponse,
   DebrisFieldView,
   Doctrine,
   EngineMeta,
@@ -87,7 +89,11 @@ export interface UiCallbacks {
   onTransportModeChange?: (mode: TransportMode) => void;
   onArenaRefreshMatches?: (serverUrl: string) => void;
   onArenaConnect?: (serverUrl: string, matchId: string) => void;
-  onArenaCreateTestMatch?: (serverUrl: string) => void;
+  onArenaCreateMatch?: (
+    serverUrl: string,
+    opts: CreateArenaMatchOptions,
+    initialSpeed: number,
+  ) => Promise<CreateArenaMatchResponse | null>;
 }
 
 const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
@@ -100,8 +106,15 @@ const FLEET_LABELS: Record<FleetClass, string> = {
   freight: '■ Freighter',
 };
 
-const DRAWER_IDS = ['drawerRaces', 'drawerTech', 'drawerStats', 'drawerReports', 'drawerSettings'] as const;
-const DRAWER_TAB_MAP: Record<(typeof DRAWER_IDS)[number], string> = {
+const DRAWER_IDS = [
+  'drawerRaces',
+  'drawerTech',
+  'drawerStats',
+  'drawerReports',
+  'drawerSettings',
+  'drawerArenaNew',
+] as const;
+const DRAWER_TAB_MAP: Partial<Record<(typeof DRAWER_IDS)[number], string>> = {
   drawerRaces: 'tabRaces',
   drawerTech: 'tabTech',
   drawerStats: 'tabStats',
@@ -1331,9 +1344,22 @@ export class UiController {
       const el = getEl(id);
       if (id === targetId) el.classList.toggle('open');
       else el.classList.remove('open');
-      getEl(DRAWER_TAB_MAP[id]).classList.toggle('active', el.classList.contains('open'));
+      const tabId = DRAWER_TAB_MAP[id];
+      if (tabId) {
+        getEl(tabId).classList.toggle('active', el.classList.contains('open'));
+      }
     }
     if (this.lastHud) this.renderOpenDrawers(this.lastHud);
+  }
+
+  private closeAllDrawers(): void {
+    for (const id of DRAWER_IDS) {
+      getEl(id).classList.remove('open');
+      const tabId = DRAWER_TAB_MAP[id];
+      if (tabId) {
+        getEl(tabId).classList.remove('active');
+      }
+    }
   }
 
   private formatTechBadges(perkMask: number): string {
@@ -3054,13 +3080,170 @@ export class UiController {
       }
     });
     btnNewMatch?.addEventListener('click', () => {
-      this.callbacks.onArenaCreateTestMatch?.(serverInput?.value ?? 'http://localhost:8080');
+      this.openArenaCreateDrawer();
     });
     btnToggleFeed?.addEventListener('click', () => {
       if (!feedPanel || !btnToggleFeed) return;
       const collapsed = feedPanel.classList.toggle('collapsed');
       btnToggleFeed.textContent = collapsed ? '▸ Show' : '▾ Hide';
     });
+
+    const ticksSlider = document.getElementById('arenaNewTicksPerEpoch') as HTMLInputElement | null;
+    const ticksVal = document.getElementById('v_arenaTicksPerEpoch');
+    ticksSlider?.addEventListener('input', () => {
+      if (ticksVal) ticksVal.textContent = ticksSlider.value;
+    });
+
+    const timeoutSlider = document.getElementById('arenaNewTimeoutSec') as HTMLInputElement | null;
+    const timeoutVal = document.getElementById('v_arenaTimeoutSec');
+    timeoutSlider?.addEventListener('input', () => {
+      if (timeoutVal) timeoutVal.textContent = `${timeoutSlider.value}s`;
+    });
+
+    const btnLaunch = document.getElementById('btnArenaLaunchMatch') as HTMLButtonElement | null;
+    btnLaunch?.addEventListener('click', async () => {
+      const srv = serverInput?.value ?? 'http://localhost:8080';
+      const size = (document.getElementById('arenaNewSize') as HTMLSelectElement | null)?.value ?? 'small';
+      const shape = (document.getElementById('arenaNewShape') as HTMLSelectElement | null)?.value ?? 'spiral';
+      const seedRaw = (document.getElementById('arenaNewSeed') as HTMLInputElement | null)?.value.trim() ?? '';
+      const seed = seedRaw !== '' ? Number(seedRaw) : undefined;
+      const ticksPerEpoch = Number(ticksSlider?.value ?? 20);
+      const epochTimeoutMs = Number(timeoutSlider?.value ?? 20) * 1000;
+      const speedSel = Number((document.getElementById('arenaNewSpeed') as HTMLSelectElement | null)?.value ?? 1);
+      const debugAudit = (document.getElementById('arenaNewDebugAudit') as HTMLInputElement | null)?.checked ?? true;
+
+      const agentSeats: number[] = [];
+      document
+        .querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]:checked')
+        .forEach((cb) => {
+          const seat = Number(cb.value);
+          if (Number.isInteger(seat)) agentSeats.push(seat);
+        });
+
+      const tickDelayMs =
+        speedSel <= 0.25 ? 120 : speedSel <= 0.5 ? 60 : speedSel <= 1 ? 25 : speedSel <= 5 ? 5 : 0;
+      const frameStrideTicks = speedSel <= 1 ? 1 : speedSel <= 5 ? 2 : 5;
+
+      const statusEl = document.getElementById('arenaNewStatus');
+      if (statusEl) statusEl.textContent = 'Creating Arena match...';
+      btnLaunch.disabled = true;
+
+      try {
+        const res = await this.callbacks.onArenaCreateMatch?.(
+          srv,
+          {
+            seed,
+            galaxySize: size,
+            galaxyShape: shape,
+            ticksPerEpoch,
+            epochTimeoutMs,
+            agentSeats,
+            debugAudit,
+            frameStrideTicks,
+            tickDelayMs,
+          },
+          speedSel,
+        );
+        if (res) {
+          this.showArenaCreatedMatch(srv, res);
+          if (statusEl) {
+            statusEl.textContent =
+              res.agentSeats.length > 0
+                ? `✓ Match ${res.matchId} created & connected! Copy agent CLI commands below.`
+                : `✓ Autonomous match ${res.matchId} live!`;
+          }
+          if (res.agentSeats.length === 0) {
+            this.closeAllDrawers();
+          }
+        }
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = `✗ Failed: ${err instanceof Error ? err.message : 'network error'}`;
+        }
+      } finally {
+        btnLaunch.disabled = false;
+      }
+    });
+  }
+
+  private openArenaCreateDrawer(): void {
+    const drawer = document.getElementById('drawerArenaNew');
+    if (!drawer) return;
+    const isOpen = drawer.classList.contains('open');
+    this.closeAllDrawers();
+    if (!isOpen) {
+      // Pre-fill size/shape from current config
+      const sizeSel = document.getElementById('arenaNewSize') as HTMLSelectElement | null;
+      const shapeSel = document.getElementById('arenaNewShape') as HTMLSelectElement | null;
+      if (sizeSel && this.lastConfig.galaxySize !== 'galactic') {
+        sizeSel.value = this.lastConfig.galaxySize;
+      }
+      if (shapeSel) {
+        shapeSel.value = this.lastConfig.galaxyShape;
+      }
+      drawer.classList.add('open');
+    }
+  }
+
+  private showArenaCreatedMatch(serverUrl: string, res: CreateArenaMatchResponse): void {
+    const box = document.getElementById('arenaCreatedBox');
+    const title = document.getElementById('arenaCreatedTitle');
+    const list = document.getElementById('arenaTokensList');
+    if (!box || !title || !list) return;
+
+    box.style.display = 'flex';
+    title.textContent = `✓ Match ${res.matchId} (${res.status})`;
+
+    const seatsToShow =
+      res.agentSeats.length > 0
+        ? res.agentSeats
+        : Object.keys(res.empireTokens)
+            .map(Number)
+            .sort((a, b) => a - b);
+
+    const cliServer = serverUrl.startsWith('https://')
+      ? `http://127.0.0.1:8080`
+      : serverUrl;
+
+    list.innerHTML = '';
+    for (const seat of seatsToShow) {
+      const token = res.empireTokens[String(seat)];
+      if (!token) continue;
+      const cmd = `python3 tools/llm_agent.py --server ${cliServer} --match ${res.matchId} --token ${token} --mock`;
+
+      const row = document.createElement('div');
+      row.className = 'arena-token-row';
+
+      const top = document.createElement('div');
+      top.className = 'arena-token-top';
+      const label = document.createElement('span');
+      label.textContent = `Seat #${seat} Token`;
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'hud-btn';
+      copyBtn.style.padding = '2px 6px';
+      copyBtn.style.fontSize = '0.6rem';
+      copyBtn.textContent = '📋 Copy CLI';
+      copyBtn.addEventListener('click', () => {
+        void navigator.clipboard?.writeText(cmd).then(() => {
+          copyBtn.textContent = '✓ Copied';
+          setTimeout(() => {
+            copyBtn.textContent = '📋 Copy CLI';
+          }, 1400);
+        });
+      });
+
+      top.appendChild(label);
+      top.appendChild(copyBtn);
+
+      const cmdDiv = document.createElement('div');
+      cmdDiv.className = 'arena-token-cmd';
+      cmdDiv.textContent = cmd;
+
+      row.appendChild(top);
+      row.appendChild(cmdDiv);
+      list.appendChild(row);
+    }
   }
 
   public setTransportMode(mode: TransportMode): void {
@@ -3074,11 +3257,11 @@ export class UiController {
     const feedPanel = document.getElementById('arenaFeedPanel');
     if (feedPanel) feedPanel.style.display = isRemote ? 'flex' : 'none';
 
-    // Disable local simulation mutation buttons while spectating a remote server match
+    // Keep speed & pause controls active in BOTH Local WASM and Remote Arena (controls server pacing!)
     const speedWrap = document.querySelector<HTMLElement>('.speed-controls');
     if (speedWrap) {
-      speedWrap.style.opacity = isRemote ? '0.4' : '1';
-      speedWrap.style.pointerEvents = isRemote ? 'none' : 'auto';
+      speedWrap.style.opacity = '1';
+      speedWrap.style.pointerEvents = 'auto';
     }
     const resetBtn = document.getElementById('btnReset') as HTMLButtonElement | null;
     if (resetBtn) {
@@ -3149,6 +3332,9 @@ export class UiController {
       if (summary.status === 'Finished') {
         badge.textContent = 'FINISHED';
         badge.classList.add('finished');
+      } else if (summary.paused) {
+        badge.textContent = 'PAUSED';
+        badge.classList.add('waiting');
       } else if (summary.status === 'WaitingForAgents') {
         badge.textContent = 'BARRIER';
         badge.classList.add('waiting');

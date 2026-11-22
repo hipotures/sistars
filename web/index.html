@@ -59,8 +59,91 @@
   </label>
   <button class="hud-btn" id="btnArenaRefresh" title="Refresh match list">↻</button>
   <button class="hud-btn active" id="btnArenaConnect">Connect</button>
-  <button class="hud-btn" id="btnArenaNewMatch" title="Create a new test Arena match on the server">+ New Test Match</button>
+  <button class="hud-btn" id="btnArenaNewMatch" title="Configure & launch a new Arena match on the server">+ New Match</button>
   <span class="arena-epoch-info" id="arenaEpochInfo">Epoch #0 • Idle</span>
+</div>
+
+<!-- DRAWER: NEW ARENA MATCH CONFIGURATOR -->
+<div class="drawer" id="drawerArenaNew">
+  <div class="drawer-head">
+    <div class="drawer-title">🏟️ New Arena Match</div>
+    <button class="insp-close" data-close-drawer="drawerArenaNew">✕</button>
+  </div>
+
+  <h3>1. Galaxy &amp; Map</h3>
+  <div class="field">
+    <div class="field-header"><span>Galaxy size</span></div>
+    <select id="arenaNewSize" class="select-input">
+      <option value="small" selected>Small (120 systems • 1000×650 ly)</option>
+      <option value="medium">Medium (250 systems • 1450×950 ly)</option>
+      <option value="large">Large (500 systems • 2000×1350 ly)</option>
+      <option value="huge">Huge (1,000 systems • 2800×1900 ly)</option>
+      <option value="colossal">Colossal (10,000 systems • 8800×6000 ly)</option>
+    </select>
+  </div>
+  <div class="field">
+    <div class="field-header"><span>Galaxy shape</span></div>
+    <select id="arenaNewShape" class="select-input">
+      <option value="spiral" selected>Spiral (Arms &amp; Core)</option>
+      <option value="random">Random (Uniform)</option>
+      <option value="ring">Ring (Hollow Core)</option>
+      <option value="clusters">Clusters (Archipelago)</option>
+      <option value="elliptical">Elliptical (Dense Bulge)</option>
+    </select>
+  </div>
+  <div class="field">
+    <div class="field-header"><span>Map seed (blank = random)</span></div>
+    <input type="number" id="arenaNewSeed" class="text-input" placeholder="e.g. 777001" />
+  </div>
+
+  <h3>2. Epoch Barrier &amp; Pacing</h3>
+  <div class="field">
+    <div class="field-header"><span>Ticks per epoch (20 = 1.0 yr)</span><span class="val" id="v_arenaTicksPerEpoch">20</span></div>
+    <input type="range" id="arenaNewTicksPerEpoch" min="5" max="100" step="5" value="20" />
+  </div>
+  <div class="field">
+    <div class="field-header"><span>Agent decision timeout (sec)</span><span class="val" id="v_arenaTimeoutSec">20s</span></div>
+    <input type="range" id="arenaNewTimeoutSec" min="5" max="120" step="5" value="20" />
+  </div>
+  <div class="field">
+    <div class="field-header"><span>Initial server speed</span></div>
+    <select id="arenaNewSpeed" class="select-input">
+      <option value="0.25">0.25x (Slow / Inspection)</option>
+      <option value="0.5">0.5x</option>
+      <option value="1" selected>1x (Normal Spectator)</option>
+      <option value="5">5x (Fast)</option>
+      <option value="20">20x (Max Speed)</option>
+    </select>
+  </div>
+  <label class="checkbox-row">
+    <input type="checkbox" id="arenaNewDebugAudit" checked />
+    <span>Enable LiveAuditor (verify invariants &amp; log anomalies)</span>
+  </label>
+
+  <h3>3. External AI Agent Seats</h3>
+  <div style="font-size:0.68rem; color:var(--muted); margin-bottom:2px;">
+    Unchecked seats run on the built-in Governor. Checked seats wait at the Macro-Epoch Barrier for external LLM / bot agents.
+  </div>
+  <div class="arena-seats-grid" id="arenaNewSeatsGrid">
+    <label class="checkbox-row"><input type="checkbox" value="0" /><span>Seat 0 • Humanoids</span></label>
+    <label class="checkbox-row"><input type="checkbox" value="1" /><span>Seat 1 • Rabbitoids</span></label>
+    <label class="checkbox-row"><input type="checkbox" value="2" /><span>Seat 2 • Insectoids</span></label>
+    <label class="checkbox-row"><input type="checkbox" value="3" /><span>Seat 3 • Nucleids</span></label>
+    <label class="checkbox-row"><input type="checkbox" value="4" /><span>Seat 4 • Silicanoids</span></label>
+    <label class="checkbox-row"><input type="checkbox" value="5" /><span>Seat 5 • Antethereals</span></label>
+  </div>
+
+  <button class="hud-btn active" id="btnArenaLaunchMatch" style="margin-top:6px; padding:8px 10px; font-size:0.76rem;">
+    🚀 Launch Arena Match &amp; Connect
+  </button>
+  <div id="arenaNewStatus" style="font-size:0.7rem; color:var(--purple); min-height:16px;"></div>
+
+  <div id="arenaCreatedBox" class="arena-created-box" style="display:none;">
+    <div class="arena-created-head">
+      <span id="arenaCreatedTitle">Match Ready</span>
+    </div>
+    <div id="arenaTokensList" class="arena-tokens-list"></div>
+  </div>
 </div>
 
 <!-- COLLAPSIBLE AI & DIPLOMACY FEED (Remote Arena Spectator Mode) -->

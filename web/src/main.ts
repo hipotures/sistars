@@ -799,29 +799,16 @@ async function bootstrap(): Promise<void> {
     onArenaConnect: (serverUrl, matchId) => {
       void connectToRemoteArena(serverUrl, matchId);
     },
-    onArenaCreateTestMatch: (serverUrl) => {
+    onArenaCreateMatch: async (serverUrl, opts, initialSpeed) => {
       arenaServerUrl = normalizeServerUrl(serverUrl);
-      ui.setArenaConnectionState('connecting', 'Creating test Arena match...');
-      void createArenaMatch(arenaServerUrl, {
-        galaxySize: 'small',
-        galaxyShape: 'spiral',
-        ticksPerEpoch: 20,
-        epochTimeoutMs: 20000,
-        agentSeats: [],
-        debugAudit: true,
-        frameStrideTicks: 1,
-        tickDelayMs: 25,
-      })
-        .then(async (created) => {
-          await refreshArenaMatches(arenaServerUrl, created.matchId);
-          await connectToRemoteArena(arenaServerUrl, created.matchId);
-        })
-        .catch((err) => {
-          ui.setArenaConnectionState(
-            'error',
-            `Create match failed (${err instanceof Error ? err.message : 'network error'})`,
-          );
-        });
+      ui.setArenaConnectionState('connecting', 'Creating Arena match...');
+      const created = await createArenaMatch(arenaServerUrl, opts);
+      await refreshArenaMatches(arenaServerUrl, created.matchId);
+      await connectToRemoteArena(arenaServerUrl, created.matchId);
+      speed = initialSpeed;
+      if (initialSpeed > 0) lastNonZeroSpeed = initialSpeed;
+      ui.setActiveSpeedButton(initialSpeed);
+      return created;
     },
     onLabAction: (action) => {
       if (action === 'copyjson') {
@@ -1076,7 +1063,6 @@ async function bootstrap(): Promise<void> {
       return;
     }
     if (e.code !== 'Space') return;
-    if (transport.mode === 'remote') return;
     e.preventDefault();
     if (speed > 0) {
       speed = 0;
