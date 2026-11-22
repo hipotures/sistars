@@ -7,7 +7,8 @@ export type ScenarioId =
   | 'core_rush'
   | 'fallen_empire'
   | 'hyper_blitz'
-  | 'graveyard';
+  | 'graveyard'
+  | 'finite_galaxy';
 
 export const GALAXY_SIZE_ORDER: readonly GalaxySize[] = [
   'small',
@@ -28,6 +29,7 @@ export const DEFAULT_SCENARIO_MODIFIERS: ScenarioModifiers = {
   allowStargates: true,
   debrisTtl: 12.0,
   autoSalvage: true,
+  allowAlchemy: true,
 };
 
 export interface ScenarioDefaults {
@@ -193,6 +195,26 @@ export const SCENARIOS: readonly ScenarioDef[] = [
       autoSalvage: false,
     },
     highlights: ['Debris TTL 1000 yr', 'Auto-Salvage OFF', 'Merged Graveyards'],
+  },
+  {
+    id: 'finite_galaxy',
+    name: 'Finite Galaxy (Zero Alchemy)',
+    shortTag: 'Finite Galaxy',
+    description:
+      'Mineral Alchemy is disabled. Planetary crusts are strictly finite — once worlds are mined dry, only battle salvage and freighter logistics sustain the war.',
+    defaults: {
+      galaxySize: 'large',
+      crustRichness: 550,
+      salvageRate: 100,
+    },
+    locks: {},
+    modifiers: {
+      ...DEFAULT_SCENARIO_MODIFIERS,
+      allowAlchemy: false,
+      debrisTtl: 1000.0,
+      autoSalvage: false,
+    },
+    highlights: ['No Alchemy', 'Finite Minerals', 'Debris TTL 1000 yr', 'Auto-Salvage OFF'],
   },
 ];
 

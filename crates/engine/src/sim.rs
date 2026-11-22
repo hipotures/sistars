@@ -1004,7 +1004,11 @@ impl Simulation {
                 fac_efficiency,
                 sprawl,
                 research_mult,
-                alch_mult: (0.45 * prt_alch * lrt_alch * perk_alch) / alch_base,
+                alch_mult: if mods.allow_alchemy {
+                    (0.45 * prt_alch * lrt_alch * perk_alch) / alch_base
+                } else {
+                    0.0
+                },
                 def_cap: 65.0 * (0.7 + tc.defense_coverage * 0.45) * prt_def_mult,
                 def_surplus_rate: if prt_is { 0.22 } else { 0.12 },
                 has_stargate_tech: mods.allow_stargates && tc.stargate_name.is_some(),
@@ -1143,7 +1147,7 @@ impl Simulation {
 
             let surplus_res = (fac_budget - built_fac * self.cfg.fac_cost_res).max(0.0);
 
-            if surplus_res > 0.0 {
+            if surplus_res > 0.0 && ec.alch_mult > 0.0 {
                 let transmuted = surplus_res * ec.alch_mult;
                 let mut min_m = 0usize;
                 if self.min_surf[base_idx + 1] < self.min_surf[base_idx + min_m] {

@@ -36,6 +36,8 @@ pub struct ScenarioModifiers {
     pub debris_ttl: f32,
     #[serde(default = "default_true")]
     pub auto_salvage: bool,
+    #[serde(default = "default_true")]
+    pub allow_alchemy: bool,
 }
 
 impl Default for ScenarioModifiers {
@@ -50,6 +52,7 @@ impl Default for ScenarioModifiers {
             allow_stargates: true,
             debris_ttl: 12.0,
             auto_salvage: true,
+            allow_alchemy: true,
         }
     }
 }

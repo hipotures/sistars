@@ -110,6 +110,7 @@ export interface ScenarioModifiers {
   allowStargates: boolean;
   debrisTtl: number;
   autoSalvage: boolean;
+  allowAlchemy: boolean;
 }
 
 export interface SimConfig {
