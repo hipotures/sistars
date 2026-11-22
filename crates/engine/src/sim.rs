@@ -165,6 +165,78 @@ impl UniformGrid {
     }
 }
 
+pub fn starbase_tier_name(tier: u8) -> &'static str {
+    match tier {
+        1 => "Orbital Fort",
+        2 => "Space Dock",
+        3 => "Space Station",
+        4 => "Ultra Station",
+        5 => "Death Star",
+        _ => "None",
+    }
+}
+
+#[inline]
+fn starbase_base_hp(tier: u8) -> f32 {
+    match tier {
+        1 => 100.0,
+        2 => 250.0,
+        3 => 500.0,
+        4 => 1000.0,
+        5 => 1500.0,
+        _ => 0.0,
+    }
+}
+
+#[inline]
+pub fn starbase_dock_mult(tier: u8) -> f32 {
+    match tier {
+        0 => 0.75,
+        1 => 1.00,
+        2 => 1.25,
+        3 => 1.45,
+        4 => 1.65,
+        _ => 1.90,
+    }
+}
+
+#[inline]
+pub fn starbase_repair_rate(tier: u8) -> f32 {
+    match tier {
+        0 => 0.03,
+        1 => 0.10,
+        2 => 0.14,
+        3 => 0.18,
+        4 => 0.22,
+        _ => 0.28,
+    }
+}
+
+#[inline]
+fn starbase_build_cost(tier: u8) -> (f32, f32, f32, f32) {
+    // (iron, bora, germ, res_buf)
+    match tier {
+        1 => (18.0, 5.0, 22.0, 45.0),
+        2 => (28.0, 10.0, 32.0, 90.0),
+        3 => (65.0, 40.0, 110.0, 200.0),
+        4 => (90.0, 60.0, 160.0, 320.0),
+        5 => (120.0, 80.0, 210.0, 450.0),
+        _ => (0.0, 0.0, 0.0, 0.0),
+    }
+}
+
+#[inline]
+fn starbase_upkeep(tier: u8) -> f32 {
+    match tier {
+        1 => 0.8,
+        2 => 1.5,
+        3 => 2.5,
+        4 => 4.0,
+        5 => 6.0,
+        _ => 0.0,
+    }
+}
+
 /// Per-empire precomputed tick constants to avoid string comparisons and redundant math in inner loops.
 #[derive(Debug, Clone, Copy, Default)]
 struct EmpireTickCache {
@@ -319,6 +391,9 @@ pub struct Simulation {
     pub act_fac: Vec<f32>,
     pub owner: Vec<u8>,
     pub has_gate: Vec<u8>,
+    pub starbase_tier: Vec<u8>, // 0 = none, 1 = Orbital Fort .. 5 = Death Star
+    pub starbase_hp: Vec<f32>,
+    pub starbase_max_hp: Vec<f32>,
     pub claim_mask: Vec<u16>,
     pub explored_mask: Vec<u16>,
 
@@ -414,6 +489,9 @@ impl Simulation {
             act_fac: Vec::new(),
             owner: Vec::new(),
             has_gate: Vec::new(),
+            starbase_tier: Vec::new(),
+            starbase_hp: Vec::new(),
+            starbase_max_hp: Vec::new(),
             claim_mask: Vec::new(),
             explored_mask: Vec::new(),
             neighbor_offsets: Vec::new(),
@@ -741,6 +819,12 @@ impl Simulation {
         self.owner.resize(n, 0);
         self.has_gate.clear();
         self.has_gate.resize(n, 0);
+        self.starbase_tier.clear();
+        self.starbase_tier.resize(n, 0);
+        self.starbase_hp.clear();
+        self.starbase_hp.resize(n, 0.0);
+        self.starbase_max_hp.clear();
+        self.starbase_max_hp.resize(n, 0.0);
         self.claim_mask.clear();
         self.claim_mask.resize(n, 0);
         self.explored_mask.clear();
@@ -764,6 +848,11 @@ impl Simulation {
             }
             self.defense[e] = if prt == "PRT_IS" { 55.0 } else { 40.0 };
             self.owner[e] = (e + 1) as u8;
+            // Homeworlds start with a Space Station (tier 3), matching Stars!
+            self.starbase_tier[e] = 3;
+            let sb_hp = starbase_base_hp(3);
+            self.starbase_hp[e] = sb_hp;
+            self.starbase_max_hp[e] = sb_hp;
 
             let emp = &mut self.empires[e];
             emp.race.doctrine.kills = 0;
@@ -828,6 +917,10 @@ impl Simulation {
                 self.mines[j] = 32.0;
                 self.factories[j] = 36.0;
                 self.defense[j] = 65.0; // Starbase-class planetary defense
+                self.starbase_tier[j] = 3;
+                let fe_sb_hp = starbase_base_hp(3) * 1.25;
+                self.starbase_hp[j] = fe_sb_hp;
+                self.starbase_max_hp[j] = fe_sb_hp;
                 let b = j * 3;
                 self.min_surf[b] = 140.0;
                 self.min_surf[b + 1] = 140.0;
@@ -1114,6 +1207,16 @@ impl Simulation {
                 }
             }
         }
+        // Add orbital Starbase upkeep to each empire's maintenance budget
+        for i in 0..n {
+            let sb_tier = self.starbase_tier[i];
+            if sb_tier > 0 && self.owner[i] > 0 {
+                let e = (self.owner[i] - 1) as usize;
+                if e < num_emp {
+                    emp_upkeep[e] += starbase_upkeep(sb_tier);
+                }
+            }
+        }
         let mut emp_upkeep_ratio = [0.0f32; MAX_EMPIRES];
         for e in 0..num_emp {
             emp_upkeep_ratio[e] = emp_upkeep[e] / self.empires[e].res_total.max(1.0);
@@ -1327,9 +1430,62 @@ impl Simulation {
                 self.min_surf[base_idx + 1] -= d_add * 0.15;
             }
 
-            // Accumulate shipyard buffer every tick
+            // Accumulate shipyard buffer every tick (boosted by orbital Starbase dock tier)
             if self.pop[i] > max_pop * ec.col_pop_req {
-                self.ship_prod_buf[i] += res_gen * ec.ship_share + surplus_res * 0.5;
+                let dock_mult = starbase_dock_mult(self.starbase_tier[i]);
+                self.ship_prod_buf[i] += (res_gen * ec.ship_share + surplus_res * 0.5) * dock_mult;
+            }
+
+            // Starbase self-repair & autonomous construction/upgrade
+            let cur_sb = self.starbase_tier[i];
+            if cur_sb > 0 && self.starbase_hp[i] < self.starbase_max_hp[i] {
+                self.starbase_hp[i] = (self.starbase_hp[i] + self.starbase_max_hp[i] * 0.08 * DT)
+                    .min(self.starbase_max_hp[i]);
+            }
+            let best_sb = self.empires[e].tech_cache.best_starbase_tier;
+            if cur_sb < best_sb
+                && self.pop[i] > 28.0
+                && self.factories[i] >= 14.0
+                && emp_upkeep_ratio[e] < 0.40
+                && self.next_rand() < 0.04
+            {
+                let target_tier = if cur_sb == 0 {
+                    // Start with Space Station on major worlds, Orbital Fort/Space Dock on smaller colonies
+                    if self.factories[i] >= 36.0 && best_sb >= 3 {
+                        3
+                    } else if best_sb >= 2 && self.factories[i] >= 22.0 {
+                        2
+                    } else {
+                        1
+                    }
+                } else {
+                    best_sb
+                };
+                if target_tier > cur_sb {
+                    let (ti, tb, tg, tr) = starbase_build_cost(target_tier);
+                    // Upgrading refunds 50% of previous starbase hull cost (matching craig-stars starbaseHullRefundFactor)
+                    let (pi, pb, pg, pr) = starbase_build_cost(cur_sb);
+                    let ci = (ti - pi * 0.5).max(0.0);
+                    let cb = (tb - pb * 0.5).max(0.0);
+                    let cg = (tg - pg * 0.5).max(0.0);
+                    let cr = (tr - pr * 0.5).max(0.0);
+                    if self.ship_prod_buf[i] >= cr
+                        && self.min_surf[base_idx] >= ci
+                        && self.min_surf[base_idx + 1] >= cb
+                        && self.min_surf[base_idx + 2] >= cg
+                    {
+                        self.ship_prod_buf[i] -= cr;
+                        self.min_surf[base_idx] -= ci;
+                        self.min_surf[base_idx + 1] -= cb;
+                        self.min_surf[base_idx + 2] -= cg;
+                        let tc = &self.empires[e].tech_cache;
+                        let tech_hp_mult = 1.0 + (tc.armor_val + tc.shield_val) * 0.0008;
+                        let new_max_hp = starbase_base_hp(target_tier) * tech_hp_mult;
+                        self.starbase_tier[i] = target_tier;
+                        self.starbase_max_hp[i] = new_max_hp;
+                        self.starbase_hp[i] = new_max_hp;
+                    }
+                }
             }
 
             // Time-sliced AI target search (freighters, colonizers, warships) using precomputed CSR neighbor lists
@@ -2171,12 +2327,13 @@ impl Simulation {
                     self.fleets[f_idx].y = oy;
                     self.fleets[f_idx].steer_x = ox;
                     self.fleets[f_idx].steer_y = oy;
-                    // Docked combat ships repair at 6% max_power/yr when empire upkeep is sustainable
+                    // Docked combat ships repair faster with an orbital Starbase drydock (3%/yr -> up to 28%/yr)
                     if self.fleets[f_idx].fleet_type.is_combat()
                         && emp_upkeep_ratio[e] <= 0.55
                         && self.fleets[f_idx].power < self.fleets[f_idx].max_power
                     {
-                        let rep = self.fleets[f_idx].max_power * 0.06 * DT;
+                        let r_rate = starbase_repair_rate(self.starbase_tier[p]);
+                        let rep = self.fleets[f_idx].max_power * r_rate * DT;
                         self.fleets[f_idx].power =
                             (self.fleets[f_idx].power + rep).min(self.fleets[f_idx].max_power);
                     }
@@ -2673,8 +2830,79 @@ impl Simulation {
                         }
                     }
                 } else {
-                    // Warship planetary assault
+                    // Warship planetary assault (must first defeat any orbital Starbase)
                     let def_e = (self.owner[target_idx] - 1) as usize;
+                    let mut fl_power = self.fleets[f_idx].power;
+
+                    // Orbital Starbase engagement
+                    let sb_tier = self.starbase_tier[target_idx];
+                    if sb_tier > 0 && self.starbase_hp[target_idx] > 0.0 {
+                        let sb_hp = self.starbase_hp[target_idx];
+                        let sb_combat_power = sb_hp * 0.22;
+                        let dmg_to_sb = fl_power * 1.15;
+                        self.starbase_hp[target_idx] = (sb_hp - dmg_to_sb).max(0.0);
+                        let dmg_to_fl = sb_combat_power * 0.65;
+                        fl_power -= dmg_to_fl;
+                        self.fleets[f_idx].power = fl_power;
+
+                        if self.starbase_hp[target_idx] <= 0.0 {
+                            // Starbase destroyed! Drop wreckage into debris field
+                            let (si, sb, sg, _) = starbase_build_cost(sb_tier);
+                            let rate = self.cfg.salvage_rate;
+                            if rate > 0.0 && (si + sb + sg) * rate > 0.5 {
+                                let ttl = self.cfg.scenario_modifiers.debris_ttl.max(1.0);
+                                let sx = self.pos_x[target_idx];
+                                let sy = self.pos_y[target_idx];
+                                self.debris_fields.push(DebrisField {
+                                    x: sx,
+                                    y: sy,
+                                    iron: si * rate,
+                                    bora: sb * rate,
+                                    germ: sg * rate,
+                                    ttl,
+                                    wrecks: vec![WreckEntry {
+                                        emp: (def_e + 1) as u8,
+                                        ship_type: FleetClass::Battleship,
+                                        count: 1,
+                                    }],
+                                });
+                            }
+                            self.starbase_tier[target_idx] = 0;
+                            self.starbase_max_hp[target_idx] = 0.0;
+                            if !silent && sb_tier >= 3 {
+                                let msg = format!(
+                                    "{} destroyed {} {} at #{}!",
+                                    self.empires[e].race.name,
+                                    self.empires[def_e].race.name,
+                                    starbase_tier_name(sb_tier),
+                                    target_idx + 1
+                                );
+                                let col = self.empires[e].race.color.clone();
+                                self.push_event(msg, &col);
+                            }
+                        }
+
+                        if fl_power <= 0.0 {
+                            let dead = self.fleets.swap_remove(f_idx);
+                            self.spawn_salvage_debris(
+                                self.pos_x[target_idx],
+                                self.pos_y[target_idx],
+                                &dead,
+                            );
+                            continue;
+                        }
+                        if self.starbase_tier[target_idx] > 0 {
+                            // Starbase held the orbit — repelled attacker is destroyed
+                            let dead = self.fleets.swap_remove(f_idx);
+                            self.spawn_salvage_debris(
+                                self.pos_x[target_idx],
+                                self.pos_y[target_idx],
+                                &dead,
+                            );
+                            continue;
+                        }
+                    }
+
                     let mut bunker_bonus: f32 = if emp_cache[def_e].prt_is {
                         1.30
                     } else {
@@ -2690,7 +2918,6 @@ impl Simulation {
                     }
                     let def_threshold =
                         (20.0 + effective_def + self.pop[target_idx] * 0.35) * bunker_bonus;
-                    let fl_power = self.fleets[f_idx].power;
                     if fl_power > def_threshold {
                         self.owner[target_idx] = fl_emp;
                         self.pop[target_idx] = (self.pop[target_idx] * 0.65).max(10.0);
@@ -3347,6 +3574,11 @@ impl Simulation {
             res: self.last_res[i],
             defense: self.defense[i],
             orbiting_fleets: self.orbit_count.get(i).copied().unwrap_or(0),
+            starbase_tier: self.starbase_tier.get(i).copied().unwrap_or(0),
+            starbase_name: starbase_tier_name(self.starbase_tier.get(i).copied().unwrap_or(0))
+                .to_string(),
+            starbase_hp: self.starbase_hp.get(i).copied().unwrap_or(0.0),
+            starbase_max_hp: self.starbase_max_hp.get(i).copied().unwrap_or(0.0),
         })
     }
 
@@ -3390,7 +3622,7 @@ impl Simulation {
             } else {
                 0.0
             },
-            has_starbase: emp_u8 > 0 && (self.has_gate[i] != 0 || self.defense[i] >= 55.0),
+            has_starbase: emp_u8 > 0 && self.starbase_tier.get(i).copied().unwrap_or(0) > 0,
             has_stargate: self.has_gate[i] != 0,
             has_jammer: self.planet_has_ecm_jammer(i),
         };

@@ -998,6 +998,9 @@ pub struct EmpireTechCache {
     pub range_cruiser: f32,
     pub range_battleship: f32,
     pub range_bomber: f32,
+
+    pub best_starbase_tier: u8,
+    pub starbase_name: String,
 }
 
 impl Default for EmpireTechCache {
@@ -1339,9 +1342,25 @@ impl EmpireTechCache {
         let mut best_cruiser_armor = 0i32;
         let mut best_bship_armor = 0i32;
         let mut best_bomber_armor = 0i32;
+        let mut best_starbase_tier: u8 = 1;
+        let mut starbase_name = "Orbital Fort".to_string();
 
         for (id, h) in &store.hulls {
             if !store.is_unlocked(&h.tech, int_levels, prt, lrt_mask, ignore_traits) {
+                continue;
+            }
+            if h.starbase {
+                let tier = match h.tech.name.as_str() {
+                    "Death Star" => 5,
+                    "Ultra Station" => 4,
+                    "Space Station" => 3,
+                    "Space Dock" => 2,
+                    _ => 1,
+                };
+                if tier >= best_starbase_tier {
+                    best_starbase_tier = tier;
+                    starbase_name = h.tech.name.clone();
+                }
                 continue;
             }
             mark(*id, &mut unlocked_bits, &mut unlocked_count);
@@ -1541,6 +1560,8 @@ impl EmpireTechCache {
             range_cruiser,
             range_battleship,
             range_bomber,
+            best_starbase_tier,
+            starbase_name,
         }
     }
 

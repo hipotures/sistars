@@ -1393,8 +1393,9 @@ export class UiController {
 
   public async openSystemView(planetIdx: number, highlightFleetId?: number): Promise<void> {
     const seq = ++this.modalReqSeq;
-    const [sys, orbitFleets] = await Promise.all([
+    const [sys, pl, orbitFleets] = await Promise.all([
       this.callbacks.getStarSystem(planetIdx),
+      this.callbacks.getPlanetDetail(planetIdx),
       this.callbacks.getPlanetFleets(planetIdx),
     ]);
     if (seq !== this.modalReqSeq || !sys) return;
@@ -1407,6 +1408,29 @@ export class UiController {
     const star2Meta = sys.companionStar ? ` + ${sys.companionStar.spectralClass}` : '';
     getEl('sysStarMeta').innerHTML =
       `${sys.star.spectralClass}${star2Meta} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub> • ${sys.star.luminositySolar.toFixed(2)} L<sub class="astro-sub">☉</sub>`;
+
+    const sbWrap = getEl('sysStarbaseWrap');
+    const sbTier = pl?.starbaseTier ?? 0;
+    if (pl && sbTier > 0) {
+      const dockMults = [0.75, 1.0, 1.25, 1.45, 1.65, 1.9];
+      const repRates = [3, 10, 14, 18, 22, 28];
+      const upkeeps = [0, 0.8, 1.5, 2.5, 4.0, 6.0];
+      const hp = Math.round(pl.starbaseHp ?? 0);
+      const maxHp = Math.max(1, Math.round(pl.starbaseMaxHp ?? 1));
+      const pct = Math.round((hp / maxHp) * 100);
+      sbWrap.style.display = 'flex';
+      getEl('sysStarbaseTitle').textContent = `🛡 ${pl.starbaseName ?? 'Starbase'} (Tier ${sbTier})`;
+      getEl('sysStarbaseHpBadge').textContent = `${hp} / ${maxHp} HP (${pct}%)`;
+      getEl('sysStarbaseStats').innerHTML = `
+        <div class="insp-stat"><span>Shipyard Dock</span><b style="color:var(--accent)">×${(dockMults[sbTier] ?? 1.0).toFixed(2)} build speed</b></div>
+        <div class="insp-stat"><span>Fleet Repair</span><b style="color:#34d399">${repRates[sbTier] ?? 10}% HP/yr</b></div>
+        <div class="insp-stat"><span>Orbital Firepower</span><b>${Math.round(hp * 0.22)} power</b></div>
+        <div class="insp-stat"><span>Upkeep</span><b style="color:var(--muted)">${(upkeeps[sbTier] ?? 1.0).toFixed(1)} Res/yr</b></div>
+      `;
+    } else {
+      sbWrap.style.display = 'none';
+      getEl('sysStarbaseStats').innerHTML = '';
+    }
 
     const fleetWrap = getEl('sysOrbitFleetsWrap');
     if (orbitFleets.length > 0) {
@@ -2038,11 +2062,15 @@ export class UiController {
       this.setInspCell(3, 'Production', `${Math.round(pl.res)} Res/yr`, 'var(--accent)');
       this.setInspCell(4, 'Factories / Mines', `${Math.round(pl.factories)} fac / ${Math.round(pl.mines)} mine`);
       const gateTxt = pl.hasGate ? '🌀 Gate' : 'No Gate';
+      const sbTxt =
+        (pl.starbaseTier ?? 0) > 0
+          ? ` · 🛡 ${pl.starbaseName} (${Math.round(((pl.starbaseHp ?? 0) / Math.max(1, pl.starbaseMaxHp ?? 1)) * 100)}%)`
+          : '';
       const orbTxt = (pl.orbitingFleets ?? 0) > 0 ? ` · 🛰 ${pl.orbitingFleets}` : '';
       const ecmTxt = pl.hasEcmJammer && emp
         ? ` · 📡 ECM ${Math.round(emp.loadout.ecmJammerStrength * 100)}% (${Math.round(emp.loadout.ecmJammerRange)}ly)`
         : '';
-      this.setInspCell(5, 'Defense / Garrison', `${Math.round(pl.defense)}${orbTxt} | ${gateTxt}${ecmTxt}`);
+      this.setInspCell(5, 'Defense / Garrison', `${Math.round(pl.defense)}${sbTxt}${orbTxt} | ${gateTxt}${ecmTxt}`);
 
       const maxC = this.lastConfig.crustRichness * 1.6;
       getEl('barIron').style.width = `${Math.min(100, (pl.ironCrust / maxC) * 100)}%`;

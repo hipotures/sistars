@@ -296,6 +296,14 @@ pub struct PlanetView {
     pub defense: f32,
     #[serde(default)]
     pub orbiting_fleets: u16,
+    #[serde(default)]
+    pub starbase_tier: u8,
+    #[serde(default)]
+    pub starbase_name: String,
+    #[serde(default)]
+    pub starbase_hp: f32,
+    #[serde(default)]
+    pub starbase_max_hp: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

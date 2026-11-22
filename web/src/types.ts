@@ -211,6 +211,10 @@ export interface PlanetView {
   res: number;
   defense: number;
   orbitingFleets?: number;
+  starbaseTier?: number;
+  starbaseName?: string;
+  starbaseHp?: number;
+  starbaseMaxHp?: number;
 }
 
 export interface FleetView {
