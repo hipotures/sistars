@@ -20,7 +20,7 @@ export type HitTarget =
 
 export const PLANET_STRIDE = 7; // [x, y, owner, factories, hab, hasGate, crustSum]
 export const FLEET_STRIDE = 7;  // [x, y, targetX, targetY, emp, typeCode, flags]
-export const DEBRIS_STRIDE = 2; // [x, y]
+export const DEBRIS_STRIDE = 3; // [x, y, totalKt]
 
 const MAX_VISIBLE_PLANET_LABELS = 250;
 
@@ -528,20 +528,27 @@ export class GalaxyRenderer {
       ctx.setLineDash([]);
     }
 
-    // Debris fields (4-point ✦ sparkle matching legend)
+    // Debris fields (4-point ✦ sparkle with mass-scaled glow halo)
     const debrisCount = Math.floor(debrisBuf.length / DEBRIS_STRIDE);
     if (debrisCount > 0) {
       for (let i = 0; i < debrisCount; i++) {
         const off = i * DEBRIS_STRIDE;
         const dx = sx(debrisBuf[off]);
         const dy = sy(debrisBuf[off + 1]);
-        const r = 6.5;
-        const inner = 1.8;
-        ctx.fillStyle = 'rgba(192, 132, 252, 0.28)';
+        const totalKt = Math.max(1, debrisBuf[off + 2] ?? 10);
+        const tier = Math.max(0, Math.min(1, (Math.log2(totalKt) - 4.5) / 9.0));
+        const r = 6.2 + tier * 2.0;
+        const inner = 1.7 + tier * 0.5;
+        const haloR = 7.0 + tier * 11.0;
+        const haloA = 0.18 + tier * 0.36;
+        const g = ctx.createRadialGradient(dx, dy, 1, dx, dy, haloR);
+        g.addColorStop(0, `rgba(216, 180, 254, ${haloA.toFixed(2)})`);
+        g.addColorStop(1, 'rgba(192, 132, 252, 0)');
+        ctx.fillStyle = g;
         ctx.beginPath();
-        ctx.arc(dx, dy, 7.5, 0, Math.PI * 2);
+        ctx.arc(dx, dy, haloR, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#c084fc';
+        ctx.fillStyle = tier > 0.6 ? '#d8b4fe' : '#c084fc';
         ctx.beginPath();
         ctx.moveTo(dx, dy - r);
         ctx.lineTo(dx + inner, dy - inner);
@@ -553,9 +560,9 @@ export class GalaxyRenderer {
         ctx.lineTo(dx - inner, dy - inner);
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = '#f5e8ff';
+        ctx.fillStyle = '#ffffff';
         ctx.beginPath();
-        ctx.arc(dx, dy, 1.4, 0, Math.PI * 2);
+        ctx.arc(dx, dy, 1.3 + tier * 1.1, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -918,8 +925,9 @@ export class GalaxyRenderer {
       const fx = sx(selectedFleet.x);
       const fy = sy(selectedFleet.y);
       const tOff = selectedFleet.target * PLANET_STRIDE;
+      const isSalvageOut = selectedFleet.salvageMode === 1;
       const hasSteer =
-        (selectedFleet.hunting || selectedFleet.whRoute >= 0) &&
+        (isSalvageOut || selectedFleet.hunting || selectedFleet.whRoute >= 0) &&
         Number.isFinite(selectedFleet.steerX);
       if (hasSteer || tOff + 1 < planetsBuf.length) {
         const tx = sx(hasSteer ? selectedFleet.steerX : planetsBuf[tOff]);
@@ -927,11 +935,13 @@ export class GalaxyRenderer {
         ctx.beginPath();
         ctx.moveTo(fx, fy);
         ctx.lineTo(tx, ty);
-        ctx.strokeStyle = selectedFleet.hunting
-          ? '#f87171'
-          : selectedFleet.whRoute >= 0
-            ? '#e879f9'
-            : '#ffffff';
+        ctx.strokeStyle = isSalvageOut
+          ? '#c084fc'
+          : selectedFleet.hunting
+            ? '#f87171'
+            : selectedFleet.whRoute >= 0
+              ? '#e879f9'
+              : '#ffffff';
         ctx.lineWidth = 1.8;
         ctx.setLineDash([5, 4]);
         ctx.stroke();

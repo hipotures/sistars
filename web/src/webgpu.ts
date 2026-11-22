@@ -605,38 +605,52 @@ const DEBRIS_WGSL =
 struct DebrisOut {
   @builtin(position) pos: vec4<f32>,
   @location(0) localPx: vec2<f32>,
+  @location(1) glowTier: f32,
 };
 
 @vertex
 fn vs_main(
   @builtin(vertex_index) vid: u32,
-  @location(0) worldPos: vec2<f32>,
+  @location(0) debrisData: vec3<f32>,
 ) -> DebrisOut {
+  // Smooth log-tier glow (0.0 for <50 kT, ~0.45 for 500 kT, ~0.8 for 3000 kT, 1.0 for >=10000 kT)
+  let totalKt = max(debrisData.z, 1.0);
+  let glowTier = clamp((log2(totalKt) - 4.5) / 9.0, 0.0, 1.0);
+  let quadHalf = mix(9.0, 18.0, glowTier);
   let corner = QUAD[vid];
-  let localPx = corner * 9.0;
-  let center = worldToScreen(worldPos);
+  let localPx = corner * quadHalf;
+  let center = worldToScreen(debrisData.xy);
   var out: DebrisOut;
   out.pos = screenToClip(center + localPx);
   out.localPx = localPx;
+  out.glowTier = glowTier;
   return out;
 }
 
 @fragment
 fn fs_main(in: DebrisOut) -> @location(0) vec4<f32> {
-  // Crisp 4-point ✦ sparkle + soft purple halo matching the HUD legend
+  // Keep 4-point ✦ sparkle crisp at a readable base size; scale luminous glow halo by mass tier
   let p = abs(in.localPx);
   let d = length(p);
-  let starDist = pow(max(p.x, 0.0001), 0.58) + pow(max(p.y, 0.0001), 0.58);
+  let tier = in.glowTier;
+  let starScale = mix(1.0, 1.25, tier);
+  let sp = p / starScale;
+  let starDist = pow(max(sp.x, 0.0001), 0.58) + pow(max(sp.y, 0.0001), 0.58);
   let star = 1.0 - smoothstep(2.45, 3.05, starDist);
-  let core = 1.0 - smoothstep(0.6, 2.2, d);
-  let halo = exp(-d * 0.34) * 0.42;
-  let alpha = clamp(max(star * 0.96, halo), 0.0, 1.0);
+  let core = 1.0 - smoothstep(0.6, mix(2.0, 3.2, tier), d);
+
+  let haloDecay = mix(0.42, 0.16, tier);
+  let haloStrength = mix(0.24, 0.78, tier);
+  let halo = exp(-d * haloDecay) * haloStrength;
+  let alpha = clamp(max(star * mix(0.84, 1.0, tier), halo), 0.0, 1.0);
   if (alpha < 0.02) {
     discard;
   }
-  let violet = vec3<f32>(0.753, 0.518, 0.988);
-  let coreWhite = vec3<f32>(0.965, 0.910, 1.0);
-  let rgb = mix(violet, coreWhite, clamp(core * 0.85, 0.0, 1.0));
+  let dimViolet = vec3<f32>(0.68, 0.46, 0.94);
+  let richViolet = vec3<f32>(0.82, 0.56, 1.0);
+  let coreWhite = vec3<f32>(1.0, 0.96, 1.0);
+  let baseCol = mix(dimViolet, richViolet, tier);
+  let rgb = mix(baseCol, coreWhite, clamp(core * mix(0.65, 1.0, tier), 0.0, 1.0));
   return vec4<f32>(rgb, alpha);
 }
 `;
@@ -1154,9 +1168,9 @@ export class WebGpuGalaxyBackend {
         entryPoint: 'vs_main',
         buffers: [
           {
-            arrayStride: 2 * 4,
+            arrayStride: 3 * 4,
             stepMode: 'instance',
-            attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }],
+            attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
           },
         ],
       },
@@ -1432,14 +1446,14 @@ export class WebGpuGalaxyBackend {
       this.lastUploadedVersion = dataVersion;
       planetCount = Math.floor(planetsBuf.length / 7);
       fleetCount = Math.floor(fleetsBuf.length / 7);
-      debrisCount = Math.floor(debrisBuf.length / 2);
+      debrisCount = Math.floor(debrisBuf.length / 3);
       this.lastPlanetCount = planetCount;
       this.lastFleetCount = fleetCount;
       this.lastDebrisCount = debrisCount;
 
       if (planetCount > 0) this.planetsGpuBuf.upload(planetsBuf, planetCount * 7 * 4);
       if (fleetCount > 0) this.fleetsGpuBuf.upload(fleetsBuf, fleetCount * 7 * 4);
-      if (debrisCount > 0) this.debrisGpuBuf.upload(debrisBuf, debrisCount * 2 * 4);
+      if (debrisCount > 0) this.debrisGpuBuf.upload(debrisBuf, debrisCount * 3 * 4);
     }
 
     const pBuf = planetCount > 0 ? this.planetsGpuBuf.gpuBuffer : null;

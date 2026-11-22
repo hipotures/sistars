@@ -40,7 +40,7 @@ const MAX_PLANET_NEIGHBORS: usize = 96;
 const AI_DECISION_STRIDE: usize = 6;
 pub const PLANET_RENDER_STRIDE: usize = 7;
 pub const FLEET_RENDER_STRIDE: usize = 7;
-pub const DEBRIS_RENDER_STRIDE: usize = 2;
+pub const DEBRIS_RENDER_STRIDE: usize = 3;
 
 const MAX_GRID_CELLS: usize = 4_096;
 
@@ -1061,6 +1061,24 @@ impl Simulation {
         let inv_fac_cost_germ = 1.0 / self.cfg.fac_cost_germ;
         let inv_crust_norm = 1.0 / (self.cfg.crust_richness * 3.0);
 
+        // Build debris spatial grid once per tick for O(1) AI salvage dispatch, multi-stop scooping & auto-salvage
+        let any_debris = !self.debris_fields.is_empty();
+        if any_debris {
+            let debris = &self.debris_fields;
+            let deb_cell = (self.cfg.intercept_rad * 4.0).max(90.0);
+            self.debris_grid
+                .build(self.world_w, self.world_h, deb_cell, debris.len(), |idx| {
+                    let deb = &debris[idx];
+                    GridEntry {
+                        x: deb.x,
+                        y: deb.y,
+                        idx: idx as u32,
+                        tag: 0,
+                        flags: 0,
+                    }
+                });
+        }
+
         // 1. Planetary economy, production, and time-sliced neighbor-list AI decisions
         for i in 0..n {
             let emp_u8 = self.owner[i];
@@ -1243,6 +1261,73 @@ impl Simulation {
                                 break;
                             }
                         }
+                    }
+                }
+
+                // Dedicated Salvage Freighter dispatch (flies to rich debris, scoops up to cargo_cap, chains nearby wrecks, returns home)
+                if any_debris
+                    && self.pop[i] > 20.0
+                    && self.next_rand() < 0.14
+                    && self.fleets.len() < 4000
+                {
+                    let xi = self.pos_x[i];
+                    let yi = self.pos_y[i];
+                    let f_range = ec.freight_range * 0.92;
+                    let f_range_sq = f_range * f_range;
+                    let min_worth = if ec.salvage_mult > 1.1 { 15.0 } else { 25.0 };
+                    let mut best_deb: Option<(f32, f32)> = None;
+                    let mut best_deb_score = 0.0f32;
+                    let debris_ref = &self.debris_fields;
+                    self.debris_grid
+                        .for_each_in_radius(xi, yi, f_range, |entry| {
+                            let d_idx = entry.idx as usize;
+                            if d_idx >= debris_ref.len() {
+                                return;
+                            }
+                            let deb = &debris_ref[d_idx];
+                            if deb.ttl <= 0.5 {
+                                return;
+                            }
+                            let tot = deb.iron + deb.bora + deb.germ;
+                            if tot < min_worth {
+                                return;
+                            }
+                            let dx = entry.x - xi;
+                            let dy = entry.y - yi;
+                            let d_sq = dx * dx + dy * dy;
+                            if d_sq > f_range_sq {
+                                return;
+                            }
+                            let score = tot / (d_sq.sqrt() + 35.0);
+                            if score > best_deb_score {
+                                best_deb_score = score;
+                                best_deb = Some((entry.x, entry.y));
+                            }
+                        });
+                    if let Some((dx, dy)) = best_deb {
+                        let id = self.next_fleet_id;
+                        self.next_fleet_id += 1;
+                        self.fleets.push(Fleet {
+                            id,
+                            x: xi,
+                            y: yi,
+                            from: i,
+                            target: i,
+                            emp: emp_u8,
+                            fleet_type: FleetClass::Freight,
+                            min_type: 0,
+                            power: 0.0,
+                            max_power: ec.cargo_cap,
+                            hunting: false,
+                            used_wh: false,
+                            steer_x: dx,
+                            steer_y: dy,
+                            wh_route: -1,
+                            salvage_mode: 1,
+                            cargo_iron: 0.0,
+                            cargo_bora: 0.0,
+                            cargo_germ: 0.0,
+                        });
                     }
                 }
 
@@ -1776,21 +1861,7 @@ impl Simulation {
                 });
         }
 
-        let has_debris = mods.auto_salvage && !self.debris_fields.is_empty();
-        if has_debris {
-            let debris = &self.debris_fields;
-            self.debris_grid
-                .build(self.world_w, self.world_h, scan_grid_cell, debris.len(), |idx| {
-                    let deb = &debris[idx];
-                    GridEntry {
-                        x: deb.x,
-                        y: deb.y,
-                        idx: idx as u32,
-                        tag: 0,
-                        flags: 0,
-                    }
-                });
-        }
+        let has_auto_salvage = mods.auto_salvage && any_debris;
 
         // 4. Fleet movement, wormholes, grid-accelerated interception pursuit, salvage, arrival
         let mut f_idx = self.fleets.len();
@@ -1798,6 +1869,135 @@ impl Simulation {
             f_idx -= 1;
             let emp_u8 = self.fleets[f_idx].emp;
             let e = (emp_u8 - 1) as usize;
+            let ec = &emp_cache[e];
+            let salvage_mode = self.fleets[f_idx].salvage_mode;
+
+            // Dedicated Salvage Freighter state machine (1 = outbound/multi-stop scoop, 2 = returning home)
+            if salvage_mode == 1 {
+                let fx = self.fleets[f_idx].x;
+                let fy = self.fleets[f_idx].y;
+                let sx = self.fleets[f_idx].steer_x;
+                let sy = self.fleets[f_idx].steer_y;
+                let step_dist = ec.base_step_dist * FleetClass::Freight.speed_mod();
+                let dx = sx - fx;
+                let dy = sy - fy;
+                let dist_sq = dx * dx + dy * dy;
+                let scoop_r = step_dist.max(10.0);
+
+                if dist_sq <= scoop_r * scoop_r {
+                    // Scoop up to remaining cargo capacity proportionally from debris fields at this site
+                    let cap = self.fleets[f_idx].max_power.max(45.0);
+                    let mut carried = self.fleets[f_idx].power;
+                    let salvage_mult = ec.salvage_mult;
+                    let debris_slice = &mut self.debris_fields;
+                    let mut add_i = 0.0f32;
+                    let mut add_b = 0.0f32;
+                    let mut add_g = 0.0f32;
+
+                    self.debris_grid
+                        .for_each_in_radius(sx, sy, 14.0, |entry| {
+                            let rem = (cap - carried).max(0.0);
+                            if rem <= 0.5 {
+                                return;
+                            }
+                            let d_idx = entry.idx as usize;
+                            if d_idx >= debris_slice.len() {
+                                return;
+                            }
+                            let deb = &mut debris_slice[d_idx];
+                            if deb.ttl <= 0.0 {
+                                return;
+                            }
+                            let ddx = deb.x - sx;
+                            let ddy = deb.y - sy;
+                            if ddx * ddx + ddy * ddy > 196.0 {
+                                return;
+                            }
+                            let avail = deb.iron + deb.bora + deb.germ;
+                            if avail <= 0.1 {
+                                deb.ttl = 0.0;
+                                return;
+                            }
+                            let take = avail.min(rem);
+                            let frac = (take / avail).clamp(0.0, 1.0);
+                            let ti = deb.iron * frac;
+                            let tb = deb.bora * frac;
+                            let tg = deb.germ * frac;
+                            deb.iron -= ti;
+                            deb.bora -= tb;
+                            deb.germ -= tg;
+                            if deb.iron + deb.bora + deb.germ <= 0.5 {
+                                deb.ttl = 0.0;
+                            }
+                            add_i += ti * salvage_mult;
+                            add_b += tb * salvage_mult;
+                            add_g += tg * salvage_mult;
+                            carried += take;
+                        });
+
+                    self.fleets[f_idx].cargo_iron += add_i;
+                    self.fleets[f_idx].cargo_bora += add_b;
+                    self.fleets[f_idx].cargo_germ += add_g;
+                    self.fleets[f_idx].power = self.fleets[f_idx].cargo_iron
+                        + self.fleets[f_idx].cargo_bora
+                        + self.fleets[f_idx].cargo_germ;
+
+                    // Multi-stop chaining: if hold still has room (>= 15 kT) and another wreck is within 85 ly & fuel range
+                    let rem_after = (cap - self.fleets[f_idx].power).max(0.0);
+                    let mut next_stop: Option<(f32, f32)> = None;
+                    if rem_after >= 15.0 {
+                        let home_idx = self.fleets[f_idx].from;
+                        let hx = self.pos_x[home_idx];
+                        let hy = self.pos_y[home_idx];
+                        let max_home_sq = (ec.freight_range * 0.95) * (ec.freight_range * 0.95);
+                        let mut best_d_sq = 85.0 * 85.0;
+                        let debris_ref = &self.debris_fields;
+                        self.debris_grid
+                            .for_each_in_radius(sx, sy, 85.0, |entry| {
+                                let d_idx = entry.idx as usize;
+                                if d_idx >= debris_ref.len() {
+                                    return;
+                                }
+                                let deb = &debris_ref[d_idx];
+                                if deb.ttl <= 0.0 || deb.iron + deb.bora + deb.germ < 5.0 {
+                                    return;
+                                }
+                                let hdx = entry.x - hx;
+                                let hdy = entry.y - hy;
+                                if hdx * hdx + hdy * hdy > max_home_sq {
+                                    return;
+                                }
+                                let ndx = entry.x - sx;
+                                let ndy = entry.y - sy;
+                                let nd_sq = ndx * ndx + ndy * ndy;
+                                if nd_sq > 9.0 && nd_sq < best_d_sq {
+                                    best_d_sq = nd_sq;
+                                    next_stop = Some((entry.x, entry.y));
+                                }
+                            });
+                    }
+
+                    if let Some((nx, ny)) = next_stop {
+                        self.fleets[f_idx].steer_x = nx;
+                        self.fleets[f_idx].steer_y = ny;
+                    } else {
+                        // Return home with salvaged minerals
+                        let home_idx = self.fleets[f_idx].from;
+                        self.fleets[f_idx].salvage_mode = 2;
+                        self.fleets[f_idx].target = home_idx;
+                        self.fleets[f_idx].steer_x = self.pos_x[home_idx];
+                        self.fleets[f_idx].steer_y = self.pos_y[home_idx];
+                    }
+                } else if dist_sq > 0.01 {
+                    let dist = dist_sq.sqrt();
+                    let move_dist = step_dist.min(dist);
+                    let inv_d = move_dist / dist;
+                    self.fleets[f_idx].x += dx * inv_d;
+                    self.fleets[f_idx].y += dy * inv_d;
+                }
+                continue;
+            }
+
             let mut target_idx = self.fleets[f_idx].target;
             let mut tx = self.pos_x[target_idx];
             let mut ty = self.pos_y[target_idx];
@@ -2016,10 +2216,10 @@ impl Simulation {
             self.fleets[f_idx].steer_x = tx;
             self.fleets[f_idx].steer_y = ty;
 
-            // Debris salvage using UniformGrid
+            // Debris salvage using UniformGrid (only when auto_salvage is enabled)
             let fx = self.fleets[f_idx].x;
             let fy = self.fleets[f_idx].y;
-            if has_debris && !self.debris_fields.is_empty() {
+            if has_auto_salvage && !self.debris_fields.is_empty() {
                 let from_idx = self.fleets[f_idx].from;
                 let salvage_mult = ec.salvage_mult;
                 let home_idx = if self.owner[from_idx] == emp_u8 {
@@ -2067,7 +2267,16 @@ impl Simulation {
                 self.reveal_around_planet(target_idx, e, ship_scan);
 
                 if fl.fleet_type == FleetClass::Freight {
-                    self.min_surf[target_idx * 3 + fl.min_type as usize] += fl.power;
+                    if fl.salvage_mode == 2 {
+                        let b = target_idx * 3;
+                        self.min_surf[b] += fl.cargo_iron;
+                        self.min_surf[b + 1] += fl.cargo_bora;
+                        self.min_surf[b + 2] += fl.cargo_germ;
+                        self.total_salvaged +=
+                            (fl.cargo_iron + fl.cargo_bora + fl.cargo_germ).round() as u32;
+                    } else {
+                        self.min_surf[target_idx * 3 + fl.min_type as usize] += fl.power;
+                    }
                 } else if self.owner[target_idx] == 0 {
                     self.owner[target_idx] = fl.emp;
                     self.pop[target_idx] = 9.0;
@@ -2495,6 +2704,10 @@ impl Simulation {
             steer_x: init_steer_x,
             steer_y: init_steer_y,
             wh_route: if jumped_gate { -1 } else { wh_route },
+            salvage_mode: 0,
+            cargo_iron: 0.0,
+            cargo_bora: 0.0,
+            cargo_germ: 0.0,
         });
     }
 
@@ -2504,15 +2717,26 @@ impl Simulation {
         }
         let ttl = self.cfg.scenario_modifiers.debris_ttl.max(1.0);
         let field = if dead_fleet.fleet_type == FleetClass::Freight {
-            let mut m = [0.0f32; 3];
-            m[dead_fleet.min_type as usize] = dead_fleet.max_power * self.cfg.salvage_rate;
-            DebrisField {
-                x,
-                y,
-                iron: m[0],
-                bora: m[1],
-                germ: m[2],
-                ttl,
+            if dead_fleet.salvage_mode != 0 {
+                DebrisField {
+                    x,
+                    y,
+                    iron: dead_fleet.cargo_iron * self.cfg.salvage_rate,
+                    bora: dead_fleet.cargo_bora * self.cfg.salvage_rate,
+                    germ: dead_fleet.cargo_germ * self.cfg.salvage_rate,
+                    ttl,
+                }
+            } else {
+                let mut m = [0.0f32; 3];
+                m[dead_fleet.min_type as usize] = dead_fleet.max_power * self.cfg.salvage_rate;
+                DebrisField {
+                    x,
+                    y,
+                    iron: m[0],
+                    bora: m[1],
+                    germ: m[2],
+                    ttl,
+                }
             }
         } else {
             let e = (dead_fleet.emp - 1) as usize;
@@ -2527,10 +2751,10 @@ impl Simulation {
             }
         };
 
-        // In persistent-debris / no-auto-salvage scenarios, merge nearby battle wreckage into larger graveyards
+        // Merge nearby battle wreckage within 10 ly into a single debris field
         let persistent_mode = !self.cfg.scenario_modifiers.auto_salvage || ttl > 50.0;
         if persistent_mode {
-            const MERGE_RAD_SQ: f32 = 18.0 * 18.0;
+            const MERGE_RAD_SQ: f32 = 10.0 * 10.0;
             for existing in &mut self.debris_fields {
                 let dx = existing.x - x;
                 let dy = existing.y - y;
@@ -2626,6 +2850,7 @@ impl Simulation {
         for deb in &self.debris_fields {
             self.debris_render_buf.push(deb.x);
             self.debris_render_buf.push(deb.y);
+            self.debris_render_buf.push(deb.iron + deb.bora + deb.germ);
         }
     }
 

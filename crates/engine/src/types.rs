@@ -180,6 +180,14 @@ pub struct Fleet {
     pub steer_x: f32,
     pub steer_y: f32,
     pub wh_route: i16,
+    #[serde(default)]
+    pub salvage_mode: u8, // 0 = normal, 1 = salvage outbound/scooping, 2 = salvage returning home
+    #[serde(default)]
+    pub cargo_iron: f32,
+    #[serde(default)]
+    pub cargo_bora: f32,
+    #[serde(default)]
+    pub cargo_germ: f32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

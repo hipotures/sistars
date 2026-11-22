@@ -1692,13 +1692,18 @@ export class UiController {
     if (seq !== this.fleetModalReqSeq || this.activeModalFleetId !== fleetId) return;
     const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
     const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
-    const statusTxt = fl.hunting
-      ? '🎯 Intercepting'
-      : fl.whRoute >= 0
-        ? '🌀 Wormhole Route'
-        : fl.usedWh
-          ? '⚡ Gate / WH Jump'
-          : 'En Route';
+    const statusTxt =
+      fl.salvageMode === 1
+        ? '✦ Salvage Outbound'
+        : fl.salvageMode === 2
+          ? '✦ Salvage Return'
+          : fl.hunting
+            ? '🎯 Intercepting'
+            : fl.whRoute >= 0
+              ? '🌀 Wormhole Route'
+              : fl.usedWh
+                ? '⚡ Gate / WH Jump'
+                : 'En Route';
 
     getEl('fleetModalTitle').textContent = `🚀 Fleet F#${fl.id} • ${FLEET_LABELS[fl.type]}`;
     getEl('fleetModalSub').textContent = `${hullName} • ${emp ? emp.name : `Empire #${fl.emp}`} • ${statusTxt}`;
@@ -1885,7 +1890,18 @@ export class UiController {
       const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
       const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
       this.setInspCell(3, 'Route / ETA', `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`);
-      const statusTxt = fl.hunting ? '🎯 Intercepting' : fl.whRoute >= 0 ? '🌀 Wormhole Route' : fl.usedWh ? '⚡ Gate/WH Jump' : 'En Route';
+      const statusTxt =
+        fl.salvageMode === 1
+          ? '✦ Salvage Outbound'
+          : fl.salvageMode === 2
+            ? '✦ Salvage Return'
+            : fl.hunting
+              ? '🎯 Intercepting'
+              : fl.whRoute >= 0
+                ? '🌀 Wormhole Route'
+                : fl.usedWh
+                  ? '⚡ Gate/WH Jump'
+                  : 'En Route';
       this.setInspCell(4, 'Orders / Dist', `${statusTxt} • ${Math.round(dist)}ly`);
       this.setInspCell(5, 'EW (Cloak/Tach/Jam)', `${cloakPct}% / ${tachPct}% / ${jamPct}%`);
       return;
@@ -2157,11 +2173,17 @@ export class UiController {
         const empCol = hud.empires[fl.emp - 1]?.color ?? '#94a3b8';
         const label =
           fl.type === 'freight'
-            ? `■ Freight (${minLetters[fl.minType] ?? 'I'})`
+            ? fl.salvageMode === 1
+              ? '✦ Salvage (Outbound)'
+              : fl.salvageMode === 2
+                ? '✦ Salvage (Return)'
+                : `■ Freight (${minLetters[fl.minType] ?? 'I'})`
             : `${FLEET_LABELS[fl.type]}${fl.hunting ? ' 🎯' : ''}${fl.usedWh ? ' ⚡' : ''}`;
         const col =
           fl.type === 'freight'
-            ? minCols[fl.minType] ?? '#60a5fa'
+            ? fl.salvageMode
+              ? '#c084fc'
+              : minCols[fl.minType] ?? '#60a5fa'
             : fl.type === 'bomber'
               ? '#34d399'
               : fl.type === 'battleship'

@@ -224,6 +224,10 @@ export interface FleetView {
   steerX: number;
   steerY: number;
   whRoute: number;
+  salvageMode?: number;
+  cargoIron?: number;
+  cargoBora?: number;
+  cargoGerm?: number;
 }
 
 export interface WormholeView {
