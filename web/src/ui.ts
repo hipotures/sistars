@@ -3070,6 +3070,13 @@ export class UiController {
     serverInput?.addEventListener('change', () => {
       this.callbacks.onArenaRefreshMatches?.(serverInput.value);
     });
+    matchSelect?.addEventListener('change', () => {
+      const srv = serverInput?.value ?? 'http://localhost:8080';
+      const mid = matchSelect.value;
+      if (mid) {
+        this.callbacks.onArenaConnect?.(srv, mid);
+      }
+    });
     btnConnect?.addEventListener('click', () => {
       const srv = serverInput?.value ?? 'http://localhost:8080';
       const mid = matchSelect?.value ?? '';
