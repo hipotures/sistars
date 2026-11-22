@@ -89,6 +89,7 @@ export interface UiCallbacks {
   onTransportModeChange?: (mode: TransportMode) => void;
   onArenaRefreshMatches?: (serverUrl: string) => void;
   onArenaConnect?: (serverUrl: string, matchId: string) => void;
+  onArenaDeleteMatch?: (serverUrl: string, matchId: string) => void;
   onArenaCreateMatch?: (
     serverUrl: string,
     opts: CreateArenaMatchOptions,
@@ -3049,6 +3050,7 @@ export class UiController {
     const matchSelect = document.getElementById('arenaMatchSelect') as HTMLSelectElement | null;
     const btnRefresh = document.getElementById('btnArenaRefresh');
     const btnConnect = document.getElementById('btnArenaConnect');
+    const btnDelete = document.getElementById('btnArenaDelete');
     const btnNewMatch = document.getElementById('btnArenaNewMatch');
     const btnToggleFeed = document.getElementById('btnToggleArenaFeed');
     const feedPanel = document.getElementById('arenaFeedPanel');
@@ -3084,6 +3086,13 @@ export class UiController {
         this.callbacks.onArenaConnect?.(srv, mid);
       } else {
         this.callbacks.onArenaRefreshMatches?.(srv);
+      }
+    });
+    btnDelete?.addEventListener('click', () => {
+      const srv = serverInput?.value ?? 'http://localhost:8080';
+      const mid = matchSelect?.value ?? '';
+      if (mid) {
+        this.callbacks.onArenaDeleteMatch?.(srv, mid);
       }
     });
     btnNewMatch?.addEventListener('click', () => {
@@ -3140,6 +3149,7 @@ export class UiController {
 
     const btnLaunch = document.getElementById('btnArenaLaunchMatch') as HTMLButtonElement | null;
     btnLaunch?.addEventListener('click', async () => {
+      btnLaunch.blur();
       const srv = serverInput?.value ?? 'http://localhost:8080';
       const scen = getScenarioById(scenSel?.value ?? 'standard');
       const size = (document.getElementById('arenaNewSize') as HTMLSelectElement | null)?.value ?? 'small';
@@ -3291,18 +3301,23 @@ export class UiController {
     box.style.display = 'flex';
     title.textContent = `✓ Match ${res.matchId} (${res.status})`;
 
-    const seatsToShow =
-      res.agentSeats.length > 0
-        ? res.agentSeats
-        : Object.keys(res.empireTokens)
-            .map(Number)
-            .sort((a, b) => a - b);
+    const seatsToShow = res.agentSeats;
+    list.innerHTML = '';
+
+    if (seatsToShow.length === 0) {
+      const note = document.createElement('div');
+      note.style.fontSize = '0.68rem';
+      note.style.color = 'var(--muted)';
+      note.textContent =
+        'All 6 empires run on the built-in Governor AI (no external managers selected). Check seats above if you want external AI managers to control specific empires.';
+      list.appendChild(note);
+      return;
+    }
 
     const cliServer = serverUrl.startsWith('https://')
       ? `http://127.0.0.1:8080`
       : serverUrl;
 
-    list.innerHTML = '';
     for (const seat of seatsToShow) {
       const token = res.empireTokens[String(seat)];
       if (!token) continue;

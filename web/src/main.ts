@@ -13,6 +13,7 @@ import {
 import { UiController } from './ui';
 import {
   createArenaMatch,
+  deleteArenaMatch,
   fetchArenaMatches,
   LocalWasmTransport,
   normalizeServerUrl,
@@ -798,6 +799,18 @@ async function bootstrap(): Promise<void> {
     },
     onArenaConnect: (serverUrl, matchId) => {
       void connectToRemoteArena(serverUrl, matchId);
+    },
+    onArenaDeleteMatch: (serverUrl, matchId) => {
+      arenaServerUrl = normalizeServerUrl(serverUrl);
+      void deleteArenaMatch(arenaServerUrl, matchId).then(async (ok) => {
+        if (ok) {
+          if (activeArenaMatchId === matchId) {
+            activeArenaMatchId = null;
+          }
+          ui.setStatus(`🗑 Deleted Arena match ${matchId}`);
+          await refreshArenaMatches(arenaServerUrl);
+        }
+      });
     },
     onArenaCreateMatch: async (serverUrl, opts, initialSpeed) => {
       arenaServerUrl = normalizeServerUrl(serverUrl);

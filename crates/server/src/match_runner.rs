@@ -275,11 +275,9 @@ impl MatchHandle {
         } else {
             MatchStatus::WaitingForAgents
         };
-        let initial_deadline = if agent_seats.is_empty() || start_paused {
-            None
-        } else {
-            Some(now_unix_ms() + epoch_timeout_ms)
-        };
+        // Epoch 0 never times out: when external agent seats are selected, the match waits
+        // indefinitely for every selected manager to connect and submit its initial Epoch 0 direction.
+        let initial_deadline = None;
 
         let inner = Arc::new(RwLock::new(MatchInner {
             match_id,
@@ -364,27 +362,31 @@ async fn run_match_loop(
         }
 
         // Phase A: Macro-Epoch Decision Barrier for external agent seats
-        let (has_agents, timeout_ms, already_finished) = {
+        let (has_agents, wait_indefinitely, timeout_ms, already_finished) = {
             let mut guard = inner.write().await;
             if guard.sim.winner.is_some() {
                 guard.status = MatchStatus::Finished;
                 guard.epoch_deadline_ms = None;
                 let summary = guard.public_summary();
                 let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
-                (false, 0, true)
+                (false, false, 0, true)
             } else if !guard.agent_seats.is_empty() {
                 guard.status = MatchStatus::WaitingForAgents;
+                let is_initial_connect = guard.epoch == 0;
                 let timeout = guard.epoch_timeout_ms;
-                if guard.epoch_deadline_ms.is_none() {
+                if is_initial_connect {
+                    // Never time out before initial connection & first direction acceptance on Epoch 0
+                    guard.epoch_deadline_ms = None;
+                } else if guard.epoch_deadline_ms.is_none() {
                     guard.epoch_deadline_ms = Some(now_unix_ms() + timeout);
                 }
                 let summary = guard.public_summary();
                 let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
-                (true, timeout, false)
+                (true, is_initial_connect, timeout, false)
             } else {
                 guard.status = MatchStatus::Running;
                 guard.epoch_deadline_ms = None;
-                (false, 0, false)
+                (false, false, 0, false)
             }
         };
 
@@ -405,14 +407,25 @@ async fn run_match_loop(
                 if all_submitted {
                     break;
                 }
-                tokio::select! {
-                    _ = barrier_notify.notified() => {}
-                    _ = tokio::time::sleep_until(deadline) => {
-                        break;
+                if wait_indefinitely {
+                    tokio::select! {
+                        _ = barrier_notify.notified() => {}
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                return;
+                            }
+                        }
                     }
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            return;
+                } else {
+                    tokio::select! {
+                        _ = barrier_notify.notified() => {}
+                        _ = tokio::time::sleep_until(deadline) => {
+                            break;
+                        }
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                return;
+                            }
                         }
                     }
                 }

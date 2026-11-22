@@ -58,7 +58,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/openapi.json", get(get_openapi))
         .route("/health", get(health_check))
         .route("/api/v1/matches", get(list_matches).post(create_match))
-        .route("/api/v1/matches/{id}", get(get_match))
+        .route("/api/v1/matches/{id}", get(get_match).delete(delete_match))
         .route("/api/v1/matches/{id}/control", post(control_match))
         .route("/api/v1/matches/{id}/observation", get(get_observation))
         .route("/api/v1/matches/{id}/commands", post(submit_commands))
@@ -220,6 +220,29 @@ async fn list_matches(State(state): State<Arc<AppState>>) -> Json<Vec<MatchPubli
     }
     list.sort_by(|a, b| a.match_id.cmp(&b.match_id));
     Json(list)
+}
+
+async fn delete_match(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiErrorBody>)> {
+    let removed = {
+        let mut matches = state.matches.write().await;
+        matches.remove(&id)
+    };
+    let Some(handle) = removed else {
+        return Err(api_error(
+            StatusCode::NOT_FOUND,
+            "match_not_found",
+            format!("Match '{id}' not found"),
+        ));
+    };
+    let _ = handle.shutdown_tx.send(true);
+    {
+        let mut tok_idx = state.token_index.write().await;
+        tok_idx.retain(|_, (mid, _)| mid != &id);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_match(
