@@ -428,6 +428,12 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
       break;
     }
 
+    case 'getPlanetFleets': {
+      const data = (engine.get_planet_fleets(msg.index) as FleetView[] | null) ?? [];
+      post({ type: 'planetFleets', reqId: msg.reqId, data });
+      break;
+    }
+
     case 'getReportsSnapshot': {
       const data = engine.get_reports_snapshot() as ReportsSnapshot;
       post({ type: 'reportsSnapshot', reqId: msg.reqId, data });

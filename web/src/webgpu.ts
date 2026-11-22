@@ -524,20 +524,22 @@ struct PlanetOut {
   @location(1) coreRad: f32,
   @location(2) color: vec3<f32>,
   @location(3) alphaMul: f32,
-  @location(4) hasGate: f32,
+  @location(4) flags: f32, // bit0 = hasGate, bit2 = hasGarrison
 };
 
 @vertex
 fn vs_main(
   @builtin(vertex_index) vid: u32,
   @location(0) worldPos: vec2<f32>,
-  @location(1) meta0: vec4<f32>, // [owner, factories, hab, hasGate]
+  @location(1) meta0: vec4<f32>, // [owner, factories, hab, flags]
   @location(2) crustSum: f32,
 ) -> PlanetOut {
   let owner = meta0.x;
   let factories = meta0.y;
   let hab = meta0.z;
-  let hasGate = select(0.0, 1.0, owner > 0.5 && (u32(round(meta0.w)) & 1u) != 0u);
+  let rawFlags = u32(round(meta0.w));
+  let hasGate = owner > 0.5 && (rawFlags & 1u) != 0u;
+  let hasGarrison = owner > 0.5 && (rawFlags & 4u) != 0u;
 
   var r: f32;
   var col: vec3<f32>;
@@ -558,7 +560,8 @@ fn vs_main(
     col = vec3<f32>(0.58, 0.643, 0.722);
   }
 
-  let quadRad = select(r + 1.4, r + 5.6, hasGate > 0.5);
+  let pad = select(select(1.4, 5.2, hasGarrison), 5.6, hasGate);
+  let quadRad = r + pad;
   let corner = QUAD[vid];
   let center = worldToScreen(worldPos);
   let localPx = corner * quadRad;
@@ -569,7 +572,7 @@ fn vs_main(
   out.coreRad = r;
   out.color = col;
   out.alphaMul = aMul;
-  out.hasGate = hasGate;
+  out.flags = select(0.0, 1.0, hasGate) + select(0.0, 4.0, hasGarrison);
   return out;
 }
 
@@ -577,17 +580,33 @@ fn vs_main(
 fn fs_main(in: PlanetOut) -> @location(0) vec4<f32> {
   let dist = length(in.localPx);
   let coreAlpha = (1.0 - smoothstep(in.coreRad - 0.75, in.coreRad + 0.75, dist)) * in.alphaMul;
+  let fl = u32(round(in.flags));
 
   var rgb = in.color;
   var alpha = coreAlpha;
 
-  if (in.hasGate > 0.5) {
+  if ((fl & 1u) != 0u) {
     let ringDist = abs(dist - (in.coreRad + 3.5));
     let ringAlpha = 1.0 - smoothstep(0.55, 1.35, ringDist);
     if (ringAlpha > 0.01) {
       let gateCol = vec3<f32>(0.133, 0.827, 0.933);
       let outA = ringAlpha + alpha * (1.0 - ringAlpha);
       rgb = (gateCol * ringAlpha + rgb * alpha * (1.0 - ringAlpha)) / max(0.001, outA);
+      alpha = outA;
+    }
+  }
+
+  // Subtle orbital garrison pip at top-right rim of the star (indicates stationed fleets in orbit)
+  if ((fl & 4u) != 0u) {
+    let pipOffset = (in.coreRad + 2.4) * 0.7071;
+    let pipCenter = vec2<f32>(pipOffset, -pipOffset);
+    let pipD = length(in.localPx - pipCenter);
+    let pipBorder = 1.0 - smoothstep(1.9, 2.5, pipD);
+    let pipCore = 1.0 - smoothstep(1.0, 1.5, pipD);
+    if (pipBorder > 0.01) {
+      let pipCol = mix(vec3<f32>(0.05, 0.09, 0.16), vec3<f32>(0.95, 0.98, 1.0), pipCore);
+      let outA = pipBorder + alpha * (1.0 - pipBorder);
+      rgb = (pipCol * pipBorder + rgb * alpha * (1.0 - pipBorder)) / max(0.001, outA);
       alpha = outA;
     }
   }

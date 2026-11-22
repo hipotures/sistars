@@ -162,6 +162,7 @@ async function bootstrap(): Promise<void> {
       case 'starSystem':
       case 'fleetDetail':
       case 'debrisDetail':
+      case 'planetFleets':
       case 'reportsSnapshot':
       case 'powerHistory':
       case 'exportStateJson':
@@ -763,6 +764,8 @@ async function bootstrap(): Promise<void> {
       requestWorker<FleetView | null>((reqId) => ({ type: 'getFleetById', reqId, id })),
     getDebrisDetail: (index) =>
       requestWorker<DebrisFieldView | null>((reqId) => ({ type: 'getDebrisDetail', reqId, index })),
+    getPlanetFleets: (index) =>
+      requestWorker<FleetView[]>((reqId) => ({ type: 'getPlanetFleets', reqId, index })),
     getReportsSnapshot: () =>
       requestWorker<ReportsSnapshot>((reqId) => ({ type: 'getReportsSnapshot', reqId })),
     getPowerHistory: () =>

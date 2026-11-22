@@ -578,7 +578,9 @@ export class GalaxyRenderer {
       const owner = planetsBuf[off + 2];
       const factories = planetsBuf[off + 3];
       const hab = planetsBuf[off + 4];
-      const hasGate = (Math.round(planetsBuf[off + 5]) & 1) !== 0;
+      const pFlags = Math.round(planetsBuf[off + 5]);
+      const hasGate = (pFlags & 1) !== 0;
+      const hasGarrison = (pFlags & 4) !== 0;
       const crustSum = planetsBuf[off + 6];
 
       if (fastDotMode && owner === 0) {
@@ -605,6 +607,18 @@ export class GalaxyRenderer {
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.lineWidth = 1.0;
+      }
+
+      if (owner > 0 && hasGarrison) {
+        const pipOff = (r + 2.4) * 0.7071;
+        ctx.beginPath();
+        ctx.arc(px + pipOff, py - pipOff, 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = '#0c1628';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(px + pipOff, py - pipOff, 1.3, 0, Math.PI * 2);
+        ctx.fillStyle = '#f8fafc';
+        ctx.fill();
       }
     }
 

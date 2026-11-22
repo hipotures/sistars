@@ -116,6 +116,20 @@
       </table>
     </div>
   </div>
+  <div id="inspPlanetFleetsWrap" class="insp-wreck-wrap" style="display:none;">
+    <button type="button" class="insp-wreck-toggle insp-orbit-toggle" id="btnTogglePlanetFleets">
+      <span id="inspOrbitToggleLabel">▸ Orbiting Fleets (0)</span>
+      <span class="insp-wreck-hint">Show</span>
+    </button>
+    <div id="inspPlanetFleetsBody" class="insp-wreck-body" style="display:none;">
+      <table class="insp-wreck-table">
+        <thead>
+          <tr><th>ID</th><th>Class</th><th>HP / Cap</th></tr>
+        </thead>
+        <tbody id="inspPlanetFleetsTbody"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class="map-legend">
@@ -533,6 +547,20 @@
               <button class="hud-btn" id="btnBackToParentPlanet" style="display:none;padding:2px 6px;font-size:0.62rem;">← Parent Planet</button>
             </div>
             <div class="sys-moons-strip" id="sysMoonsStrip"></div>
+          </div>
+          <div id="sysOrbitFleetsWrap" class="sys-orbit-fleets-wrap" style="display:none;">
+            <div class="sys-moons-head">
+              <span id="sysOrbitFleetsTitle">🛰 Stationed Fleets in Orbit (0)</span>
+              <span style="font-size:0.61rem;color:var(--muted);">Click ship for 3D view</span>
+            </div>
+            <div class="sys-orbit-fleets-table-wrap">
+              <table class="insp-wreck-table">
+                <thead>
+                  <tr><th>ID</th><th>Class</th><th>HP / Cap</th><th>Upkeep</th></tr>
+                </thead>
+                <tbody id="sysOrbitFleetsTbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

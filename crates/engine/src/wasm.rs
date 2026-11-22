@@ -160,9 +160,9 @@ impl WasmEngine {
         }
     }
 
-    /// On-demand detail for a clicked fleet by buffer index or stable fleet ID.
+    /// On-demand detail for a clicked in-flight fleet by render buffer index or stable fleet ID.
     pub fn get_fleet_by_index(&self, idx: usize) -> JsValue {
-        match self.sim.fleets.get(idx) {
+        match self.sim.fleets.iter().filter(|fl| !fl.orbiting).nth(idx) {
             Some(fl) => serde_wasm_bindgen::to_value(fl).unwrap_or(JsValue::NULL),
             None => JsValue::NULL,
         }
@@ -173,6 +173,12 @@ impl WasmEngine {
             Some(fl) => serde_wasm_bindgen::to_value(fl).unwrap_or(JsValue::NULL),
             None => JsValue::NULL,
         }
+    }
+
+    /// On-demand list of fleets currently stationed in orbit around planet `idx`.
+    pub fn get_planet_fleets(&self, idx: usize) -> JsValue {
+        let list = self.sim.orbiting_fleets_at(idx);
+        serde_wasm_bindgen::to_value(&list).unwrap_or(JsValue::NULL)
     }
 
     /// On-demand detail for a clicked salvage debris field.

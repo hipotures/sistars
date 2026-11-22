@@ -65,6 +65,7 @@ export type MainToWorkerMsg =
   | { type: 'getFleetById'; reqId: number; id: number }
   | { type: 'getFleetByIndex'; reqId: number; index: number }
   | { type: 'getDebrisDetail'; reqId: number; index: number }
+  | { type: 'getPlanetFleets'; reqId: number; index: number }
   | { type: 'getReportsSnapshot'; reqId: number }
   | { type: 'getPowerHistory'; reqId: number }
   | { type: 'exportStateJson'; reqId: number }
@@ -99,6 +100,7 @@ export type WorkerToMainMsg =
   | { type: 'starSystem'; reqId: number; data: StarSystemView | null }
   | { type: 'fleetDetail'; reqId: number; data: FleetView | null }
   | { type: 'debrisDetail'; reqId: number; data: DebrisFieldView | null }
+  | { type: 'planetFleets'; reqId: number; data: FleetView[] }
   | { type: 'reportsSnapshot'; reqId: number; data: ReportsSnapshot }
   | { type: 'powerHistory'; reqId: number; data: number[][] }
   | { type: 'exportStateJson'; reqId: number; data: string }

@@ -2008,9 +2008,8 @@ impl Simulation {
                             let power = self.compute_fleet_power(e, g_class, self.factories[i]);
                             let id = self.next_fleet_id;
                             self.next_fleet_id += 1;
-                            let ang = (id as f32) * 2.39996 + self.year * 0.8;
-                            let ox = self.pos_x[i] + ang.cos() * 7.0;
-                            let oy = self.pos_y[i] + ang.sin() * 7.0;
+                            let ox = self.pos_x[i];
+                            let oy = self.pos_y[i];
                             self.fleets.push(Fleet {
                                 id,
                                 x: ox,
@@ -2160,16 +2159,14 @@ impl Simulation {
             let e = (emp_u8 - 1) as usize;
             let ec = &emp_cache[e];
 
-            // Orbiting garrison / docked fleet maintenance & slow orbital ring motion
+            // Orbiting garrison / docked fleet maintenance (co-located with host star system)
             if self.fleets[f_idx].orbiting {
                 let p = self.fleets[f_idx].target;
                 if p >= n || self.owner[p] != emp_u8 {
                     self.fleets[f_idx].orbiting = false;
                 } else {
-                    let id = self.fleets[f_idx].id;
-                    let ang = (id as f32) * 2.39996 + self.year * 0.8;
-                    let ox = self.pos_x[p] + ang.cos() * 7.0;
-                    let oy = self.pos_y[p] + ang.sin() * 7.0;
+                    let ox = self.pos_x[p];
+                    let oy = self.pos_y[p];
                     self.fleets[f_idx].x = ox;
                     self.fleets[f_idx].y = oy;
                     self.fleets[f_idx].steer_x = ox;
@@ -2603,10 +2600,8 @@ impl Simulation {
                             self.min_surf[target_idx * 3 + mt] += self.fleets[f_idx].power;
                         }
                         // Dock freighter in orbit at friendly destination for reuse
-                        let id = self.fleets[f_idx].id;
-                        let ang = (id as f32) * 2.39996 + self.year * 0.8;
-                        let ox = self.pos_x[target_idx] + ang.cos() * 7.0;
-                        let oy = self.pos_y[target_idx] + ang.sin() * 7.0;
+                        let ox = self.pos_x[target_idx];
+                        let oy = self.pos_y[target_idx];
                         let fl = &mut self.fleets[f_idx];
                         fl.orbiting = true;
                         fl.from = target_idx;
@@ -2654,10 +2649,8 @@ impl Simulation {
                 } else if self.owner[target_idx] == fl_emp || self.owner[target_idx] == 0 {
                     // Warship arrives at friendly (or now-empty) world: dock in orbit if friendly
                     if self.owner[target_idx] == fl_emp {
-                        let id = self.fleets[f_idx].id;
-                        let ang = (id as f32) * 2.39996 + self.year * 0.8;
-                        let ox = self.pos_x[target_idx] + ang.cos() * 7.0;
-                        let oy = self.pos_y[target_idx] + ang.sin() * 7.0;
+                        let ox = self.pos_x[target_idx];
+                        let oy = self.pos_y[target_idx];
                         let fl = &mut self.fleets[f_idx];
                         fl.orbiting = true;
                         fl.from = target_idx;
@@ -2724,10 +2717,8 @@ impl Simulation {
                         }
                         // Victorious warship takes assault damage and stations in orbit around captured planet
                         let assault_dmg = (def_threshold * 0.35).min(fl_power * 0.72);
-                        let id = self.fleets[f_idx].id;
-                        let ang = (id as f32) * 2.39996 + self.year * 0.8;
-                        let ox = self.pos_x[target_idx] + ang.cos() * 7.0;
-                        let oy = self.pos_y[target_idx] + ang.sin() * 7.0;
+                        let ox = self.pos_x[target_idx];
+                        let oy = self.pos_y[target_idx];
                         let fl = &mut self.fleets[f_idx];
                         fl.power = (fl.power - assault_dmg).max(fl.max_power * 0.15);
                         fl.orbiting = true;
@@ -3251,7 +3242,8 @@ impl Simulation {
             let b = i * 3;
             let crust_sum = self.min_crust[b] + self.min_crust[b + 1] + self.min_crust[b + 2];
             let p_flags = (if self.has_gate[i] != 0 { 1 } else { 0 })
-                | (if self.planet_has_ecm_jammer(i) { 2 } else { 0 });
+                | (if self.planet_has_ecm_jammer(i) { 2 } else { 0 })
+                | (if self.orbit_count.get(i).copied().unwrap_or(0) > 0 { 4 } else { 0 });
             self.planet_render_buf.push(self.pos_x[i]);
             self.planet_render_buf.push(self.pos_y[i]);
             self.planet_render_buf.push(self.owner[i] as f32);
@@ -3265,6 +3257,10 @@ impl Simulation {
         self.fleet_render_buf
             .reserve(self.fleets.len() * FLEET_RENDER_STRIDE);
         for fl in &self.fleets {
+            // Orbiting/docked fleets are represented by the host star's garrison pip & System View list
+            if fl.orbiting {
+                continue;
+            }
             let type_code = match fl.fleet_type {
                 FleetClass::Col => 0.0,
                 FleetClass::Cruiser => 1.0,
@@ -3292,6 +3288,14 @@ impl Simulation {
             self.debris_render_buf.push(deb.y);
             self.debris_render_buf.push(deb.iron + deb.bora + deb.germ);
         }
+    }
+
+    pub fn orbiting_fleets_at(&self, planet_idx: usize) -> Vec<Fleet> {
+        self.fleets
+            .iter()
+            .filter(|fl| fl.orbiting && fl.target == planet_idx)
+            .cloned()
+            .collect()
     }
 
     pub fn planet_view(&self, i: usize) -> Option<PlanetView> {

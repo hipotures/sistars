@@ -1282,6 +1282,47 @@ tr:hover {
   cursor: default;
 }
 
+.insp-orbit-toggle {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.28);
+  color: #bae6fd;
+}
+
+.insp-orbit-toggle:hover {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.52);
+}
+
+.sys-orbit-fleets-wrap {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sys-orbit-fleets-table-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #1a263b;
+  background: #070b13;
+  scrollbar-width: thin;
+}
+
+.sys-orbit-fleets-table-wrap tr,
+#inspPlanetFleetsTbody tr {
+  cursor: pointer;
+}
+
+.sys-orbit-fleets-table-wrap tr:hover,
+#inspPlanetFleetsTbody tr:hover {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.sys-orbit-fleets-table-wrap tr.fleet-row-highlight {
+  background: rgba(56, 189, 248, 0.24);
+  outline: 1px solid rgba(56, 189, 248, 0.65);
+}
+
 /* Tech Cards & Loadouts */
 .tech-grid {
   display: grid;

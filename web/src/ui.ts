@@ -77,6 +77,7 @@ export interface UiCallbacks {
   getStarSystem: (index: number) => Promise<StarSystemView | null>;
   getFleetById: (id: number) => Promise<FleetView | null>;
   getDebrisDetail: (index: number) => Promise<DebrisFieldView | null>;
+  getPlanetFleets: (index: number) => Promise<FleetView[]>;
   getReportsSnapshot: () => Promise<ReportsSnapshot>;
   getPowerHistory: () => Promise<number[][]>;
 }
@@ -188,6 +189,7 @@ export class UiController {
   private fleetReportFilter: 'all' | 'flight' | 'orbiting' = 'all';
   private selection: MapSelection = null;
   private debrisWrecksExpanded = false;
+  private planetFleetsExpanded = false;
   private lastHud: HudSnapshot | null = null;
   private lastReports: ReportsSnapshot | null = null;
   private lastConfig: SimConfig;
@@ -420,8 +422,15 @@ export class UiController {
       sel?.kind === 'debris' &&
       this.selection?.kind === 'debris' &&
       sel.index === this.selection.index;
+    const samePlanet =
+      sel?.kind === 'planet' &&
+      this.selection?.kind === 'planet' &&
+      sel.index === this.selection.index;
     if (!sameDebris) {
       this.debrisWrecksExpanded = false;
+    }
+    if (!samePlanet) {
+      this.planetFleetsExpanded = false;
     }
     this.selection = sel;
     if (!sel) {
@@ -429,6 +438,7 @@ export class UiController {
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
       getEl('inspDebrisHistoryWrap').style.display = 'none';
+      getEl('inspPlanetFleetsWrap').style.display = 'none';
       this.inspGlobeRenderer.stop();
       this.inspShipRenderer.stop();
     } else if (this.lastHud) {
@@ -807,6 +817,29 @@ export class UiController {
       }
     });
 
+    getEl('btnTogglePlanetFleets').addEventListener('click', () => {
+      this.planetFleetsExpanded = !this.planetFleetsExpanded;
+      const body = getEl('inspPlanetFleetsBody');
+      body.style.display = this.planetFleetsExpanded ? 'block' : 'none';
+      const hint = getEl('btnTogglePlanetFleets').querySelector('.insp-wreck-hint');
+      if (hint) hint.textContent = this.planetFleetsExpanded ? 'Hide' : 'Show';
+      const lbl = getEl('inspOrbitToggleLabel');
+      if (lbl.textContent) {
+        lbl.textContent = lbl.textContent.replace(/^[▸▾]/, this.planetFleetsExpanded ? '▾' : '▸');
+      }
+    });
+
+    const handleStationedFleetClick = (e: Event): void => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-fleet-id]');
+      if (!row || !row.dataset.fleetId) return;
+      const id = Number(row.dataset.fleetId);
+      if (!Number.isNaN(id)) {
+        void this.openFleetView(id);
+      }
+    };
+    getEl('inspPlanetFleetsTbody').addEventListener('click', handleStationedFleetClick);
+    getEl('sysOrbitFleetsTbody').addEventListener('click', handleStationedFleetClick);
+
     // Procedural Planet Inspector -> System View modal events
     getEl('btnOpenSystemView').addEventListener('click', () => {
       if (this.selection?.kind === 'planet') {
@@ -1092,10 +1125,24 @@ export class UiController {
       const id = Number(row.dataset.fleetId);
       if (Number.isNaN(id)) return;
 
+      const isOrbiting = row.dataset.orbiting === '1';
+      const targetIdx = Number(row.dataset.targetIdx);
       const routeCell = target.closest<HTMLElement>('[data-route-focus]');
+
+      if (isOrbiting && !Number.isNaN(targetIdx)) {
+        // Orbiting fleet: focus host system on map and open System View with this fleet highlighted
+        this.callbacks.onSelectObject({ kind: 'planet', index: targetIdx });
+        void this.callbacks.getPlanetDetail(targetIdx).then((pl) => {
+          if (pl) this.focusWorldPointOnMap(pl.x, pl.y, 55);
+        });
+        if (!routeCell) {
+          void this.openSystemView(targetIdx, id);
+        }
+        return;
+      }
+
       if (routeCell) {
         const fromIdx = Number(row.dataset.fromIdx);
-        const targetIdx = Number(row.dataset.targetIdx);
         this.callbacks.onSelectObject({ kind: 'fleet', id });
         void this.focusFleetRouteOnMap(
           id,
@@ -1344,9 +1391,12 @@ export class UiController {
     v.style.color = color;
   }
 
-  public async openSystemView(planetIdx: number): Promise<void> {
+  public async openSystemView(planetIdx: number, highlightFleetId?: number): Promise<void> {
     const seq = ++this.modalReqSeq;
-    const sys = await this.callbacks.getStarSystem(planetIdx);
+    const [sys, orbitFleets] = await Promise.all([
+      this.callbacks.getStarSystem(planetIdx),
+      this.callbacks.getPlanetFleets(planetIdx),
+    ]);
     if (seq !== this.modalReqSeq || !sys) return;
 
     this.activeModalSystem = sys;
@@ -1357,6 +1407,40 @@ export class UiController {
     const star2Meta = sys.companionStar ? ` + ${sys.companionStar.spectralClass}` : '';
     getEl('sysStarMeta').innerHTML =
       `${sys.star.spectralClass}${star2Meta} • ${Math.round(sys.star.tempK)} K • ${sys.star.massSolar.toFixed(2)} M<sub class="astro-sub">☉</sub> • ${sys.star.luminositySolar.toFixed(2)} L<sub class="astro-sub">☉</sub>`;
+
+    const fleetWrap = getEl('sysOrbitFleetsWrap');
+    if (orbitFleets.length > 0) {
+      fleetWrap.style.display = 'flex';
+      getEl('sysOrbitFleetsTitle').textContent = `🛰 Stationed Fleets in Orbit (${orbitFleets.length})`;
+      const classColors: Record<FleetClass, string> = {
+        battleship: '#f87171',
+        cruiser: '#93c5fd',
+        bomber: '#34d399',
+        freight: '#c084fc',
+        col: '#fbbf24',
+      };
+      getEl('sysOrbitFleetsTbody').innerHTML = orbitFleets
+        .map((fl) => {
+          const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 100;
+          const col = classColors[fl.type] ?? '#e2e8f0';
+          const statTxt =
+            fl.type === 'freight'
+              ? `Cap ${Math.round(fl.maxPower)} kT`
+              : `${Math.round(fl.power)} (${hpPct}%)`;
+          const upkeepTxt = fl.upkeep !== undefined ? `${fl.upkeep.toFixed(1)} R/yr` : '—';
+          const hl = highlightFleetId !== undefined && fl.id === highlightFleetId ? ' class="fleet-row-highlight"' : '';
+          return `<tr data-fleet-id="${fl.id}"${hl} title="Open 3D Fleet View">
+            <td>F#${fl.id}</td>
+            <td style="color:${col};font-weight:bold;">${FLEET_LABELS[fl.type]}</td>
+            <td>${statTxt}</td>
+            <td style="color:var(--muted);">${upkeepTxt}</td>
+          </tr>`;
+        })
+        .join('');
+    } else {
+      fleetWrap.style.display = 'none';
+      getEl('sysOrbitFleetsTbody').innerHTML = '';
+    }
 
     const strip = getEl('sysOrbitStrip');
     strip.innerHTML = '';
@@ -1878,11 +1962,13 @@ export class UiController {
     const insp = getEl('planetInspector');
     const minWrap = getEl('inspMineralsWrap');
     const debrisHistWrap = getEl('inspDebrisHistoryWrap');
+    const planetFleetsWrap = getEl('inspPlanetFleetsWrap');
     if (!sel || this.activeModalFleetId !== null) {
       insp.style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
       debrisHistWrap.style.display = 'none';
+      planetFleetsWrap.style.display = 'none';
       this.inspGlobeRenderer.stop();
       this.inspShipRenderer.stop();
       return;
@@ -1890,6 +1976,9 @@ export class UiController {
 
     if (sel.kind !== 'debris') {
       debrisHistWrap.style.display = 'none';
+    }
+    if (sel.kind !== 'planet') {
+      planetFleetsWrap.style.display = 'none';
     }
 
     if (sel.kind === 'planet') {
@@ -1901,9 +1990,10 @@ export class UiController {
         this.inspGlobeRenderer.stop();
         return;
       }
-      const [pl, sys] = await Promise.all([
+      const [pl, sys, orbitFleets] = await Promise.all([
         this.callbacks.getPlanetDetail(sel.index),
         this.callbacks.getStarSystem(sel.index),
+        this.callbacks.getPlanetFleets(sel.index),
       ]);
       if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
       if (!pl) {
@@ -1961,6 +2051,39 @@ export class UiController {
       getEl('valBora').textContent = `${Math.round(pl.boraSurf)} (${Math.round(pl.boraCrust)})`;
       getEl('barGerm').style.width = `${Math.min(100, (pl.germCrust / maxC) * 100)}%`;
       getEl('valGerm').textContent = `${Math.round(pl.germSurf)} (${Math.round(pl.germCrust)})`;
+
+      if (orbitFleets.length > 0) {
+        planetFleetsWrap.style.display = 'flex';
+        const arrow = this.planetFleetsExpanded ? '▾' : '▸';
+        getEl('inspOrbitToggleLabel').textContent = `${arrow} Orbiting Fleets (${orbitFleets.length})`;
+        const hint = getEl('btnTogglePlanetFleets').querySelector('.insp-wreck-hint');
+        if (hint) hint.textContent = this.planetFleetsExpanded ? 'Hide' : 'Show';
+        getEl('inspPlanetFleetsBody').style.display = this.planetFleetsExpanded ? 'block' : 'none';
+        const classColors: Record<FleetClass, string> = {
+          battleship: '#f87171',
+          cruiser: '#93c5fd',
+          bomber: '#34d399',
+          freight: '#c084fc',
+          col: '#fbbf24',
+        };
+        getEl('inspPlanetFleetsTbody').innerHTML = orbitFleets
+          .map((fl) => {
+            const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 100;
+            const col = classColors[fl.type] ?? '#e2e8f0';
+            const statTxt =
+              fl.type === 'freight'
+                ? `Cap ${Math.round(fl.maxPower)} kT`
+                : `${Math.round(fl.power)} (${hpPct}%)`;
+            return `<tr data-fleet-id="${fl.id}" title="Open 3D Fleet View">
+              <td>F#${fl.id}</td>
+              <td style="color:${col};font-weight:bold;">${FLEET_LABELS[fl.type]}</td>
+              <td>${statTxt}</td>
+            </tr>`;
+          })
+          .join('');
+      } else {
+        planetFleetsWrap.style.display = 'none';
+      }
       return;
     }
 
@@ -2563,7 +2686,7 @@ export class UiController {
             : fl.type === 'freight'
               ? `${Math.round(fl.power)} kT`
               : `${Math.round(fl.power)} (${hpPct}%)`;
-        return `<tr data-fleet-id="${fl.id}" data-from-idx="${fl.from}" data-target-idx="${fl.target}">
+        return `<tr data-fleet-id="${fl.id}" data-from-idx="${fl.from}" data-target-idx="${fl.target}" data-orbiting="${fl.orbiting ? '1' : '0'}">
           <td>F${fl.id}</td>
           <td><span class="dot" style="background:${empCol}"></span></td>
           <td style="color:${col};font-weight:bold;">${label}</td>
