@@ -1093,7 +1093,29 @@ th {
   position: sticky;
   top: 0;
   z-index: 2;
+  cursor: default;
+  user-select: none;
+}
+
+th[data-sort] {
   cursor: pointer;
+}
+
+th[data-sort]:hover {
+  color: var(--text);
+  background: #131d30;
+}
+
+th[data-sort].sort-asc::after {
+  content: ' ▲';
+  color: var(--accent);
+  font-size: 0.56rem;
+}
+
+th[data-sort].sort-desc::after {
+  content: ' ▼';
+  color: var(--accent);
+  font-size: 0.56rem;
 }
 
 th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) {

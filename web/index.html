@@ -276,7 +276,7 @@
   </div>
 
   <div class="table-wrap" id="repPlanetsWrap">
-    <table>
+    <table data-sort-table="planets">
       <thead>
         <tr>
           <th data-sort="id">#</th><th data-sort="owner">AI</th><th data-sort="gate">🌀</th>
@@ -290,36 +290,50 @@
   </div>
 
   <div class="table-wrap" id="repFleetsWrap" style="display:none;">
-    <table>
+    <table data-sort-table="fleets">
       <thead>
-        <tr><th>#</th><th>AI</th><th>Class / Order</th><th>Route</th><th>Power / HP</th><th>Dist</th><th>ETA</th></tr>
+        <tr>
+          <th data-sort="id">#</th><th data-sort="emp">AI</th><th data-sort="label">Class / Order</th>
+          <th data-sort="route">Route</th><th data-sort="power">Power / HP</th><th data-sort="dist">Dist</th>
+          <th data-sort="eta">ETA</th>
+        </tr>
       </thead>
       <tbody id="fleetTableBody"></tbody>
     </table>
   </div>
 
   <div class="table-wrap" id="repStargatesWrap" style="display:none;">
-    <table>
+    <table data-sort-table="stargates">
       <thead>
-        <tr><th>Planet</th><th>AI</th><th>Stargate Tech</th><th>Defense</th><th>Res/yr</th><th>Coords</th></tr>
+        <tr>
+          <th data-sort="id">Planet</th><th data-sort="owner">AI</th><th data-sort="tech">Stargate Tech</th>
+          <th data-sort="def">Defense</th><th data-sort="res">Res/yr</th><th>Coords</th>
+        </tr>
       </thead>
       <tbody id="stargateTableBody"></tbody>
     </table>
   </div>
 
   <div class="table-wrap" id="repWormholesWrap" style="display:none;">
-    <table>
+    <table data-sort-table="wormholes">
       <thead>
-        <tr><th>#</th><th>Endpoint A</th><th>Endpoint B</th><th>Span</th><th>Focus</th></tr>
+        <tr>
+          <th data-sort="id">#</th><th>Endpoint A</th><th>Endpoint B</th>
+          <th data-sort="span">Span</th><th>Focus</th>
+        </tr>
       </thead>
       <tbody id="wormholeTableBody"></tbody>
     </table>
   </div>
 
   <div class="table-wrap" id="repDebrisWrap" style="display:none;">
-    <table>
+    <table data-sort-table="debris">
       <thead>
-        <tr><th>#</th><th>Total</th><th class="c-iron">Iron</th><th class="c-bora">Bora</th><th class="c-germ">Germ</th><th>TTL</th><th>Coords</th></tr>
+        <tr>
+          <th data-sort="id">#</th><th data-sort="total">Total</th>
+          <th data-sort="iron" class="c-iron">Iron</th><th data-sort="bora" class="c-bora">Bora</th>
+          <th data-sort="germ" class="c-germ">Germ</th><th data-sort="ttl">TTL</th><th>Coords</th>
+        </tr>
       </thead>
       <tbody id="debrisTableBody"></tbody>
     </table>

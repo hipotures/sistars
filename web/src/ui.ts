@@ -33,8 +33,15 @@ import type {
   TournamentResult,
 } from './types';
 
-type SortKey = 'id' | 'owner' | 'gate' | 'hab' | 'pop' | 'fac' | 'iron' | 'bora' | 'germ' | 'res' | 'def';
+type ReportTab = 'planets' | 'fleets' | 'stargates' | 'wormholes' | 'debris';
+type PlanetSortKey = 'id' | 'owner' | 'gate' | 'hab' | 'pop' | 'fac' | 'iron' | 'bora' | 'germ' | 'res' | 'def';
+type FleetSortKey = 'id' | 'emp' | 'label' | 'route' | 'power' | 'dist' | 'eta';
+type StargateSortKey = 'id' | 'owner' | 'tech' | 'def' | 'res';
+type WormholeSortKey = 'id' | 'span';
+type DebrisSortKey = 'id' | 'total' | 'iron' | 'bora' | 'germ' | 'ttl';
 type LabAction = 'tournament' | 'coevolve' | 'copyjson';
+
+const ASC_DEFAULT_SORT_KEYS = new Set(['id', 'owner', 'emp', 'label', 'tech', 'route']);
 
 export interface UiCallbacks {
   onSpeedChange: (speed: number) => void;
@@ -156,10 +163,22 @@ export class UiController {
   private readonly catalog: TechCatalogView;
   private readonly callbacks: UiCallbacks;
 
-  private sortKey: SortKey = 'res';
-  private sortAsc = false;
+  private reportSort: {
+    planets: { key: PlanetSortKey; asc: boolean };
+    fleets: { key: FleetSortKey; asc: boolean };
+    stargates: { key: StargateSortKey; asc: boolean };
+    wormholes: { key: WormholeSortKey; asc: boolean };
+    debris: { key: DebrisSortKey; asc: boolean };
+  } = {
+    planets: { key: 'res', asc: false },
+    fleets: { key: 'id', asc: false },
+    stargates: { key: 'res', asc: false },
+    wormholes: { key: 'id', asc: true },
+    debris: { key: 'total', asc: false },
+  };
   private selection: MapSelection = null;
   private lastHud: HudSnapshot | null = null;
+  private lastReports: ReportsSnapshot | null = null;
   private lastConfig: SimConfig;
   private lastHudSignature = '';
   private lastEventsSignature = '';
@@ -175,7 +194,7 @@ export class UiController {
   private customRaces: RaceDef[] = [];
   private selectedRaceIds: Set<string>;
   private activeTechTab: 'overview' | 'browser' = 'overview';
-  private activeReportTab: 'planets' | 'fleets' | 'stargates' | 'wormholes' | 'debris' = 'planets';
+  private activeReportTab: ReportTab = 'planets';
   private activeLensEmpires: Set<number> | null = null;
   private activeContourMode: RangeContourMode = 'subtle';
   private lastNonZeroContourOpacity = 22;
@@ -537,6 +556,7 @@ export class UiController {
       void this.callbacks
         .getReportsSnapshot()
         .then((rep) => {
+          this.lastReports = rep;
           const gateCount = rep.planets.reduce((acc, p) => acc + (p.hasGate ? 1 : 0), 0);
           getEl('repBtnPlanets').textContent = `Planets (${rep.planets.length})`;
           getEl('repBtnFleets').textContent = `Fleets (${rep.fleets.length})`;
@@ -544,23 +564,7 @@ export class UiController {
           getEl('repBtnWormholes').textContent = `🟣 Wormholes (${hud.wormholes.length})`;
           getEl('repBtnDebris').textContent = `✦ Debris (${rep.debrisFields.length})`;
 
-          switch (this.activeReportTab) {
-            case 'planets':
-              this.renderPlanetTable(hud, rep);
-              break;
-            case 'fleets':
-              this.renderFleetTable(hud, rep);
-              break;
-            case 'stargates':
-              this.renderStargateTable(hud, rep);
-              break;
-            case 'wormholes':
-              this.renderWormholeTable(hud);
-              break;
-            case 'debris':
-              this.renderDebrisTable(rep);
-              break;
-          }
+          this.renderActiveReportTab(hud, rep);
         })
         .finally(() => {
           this.reportsInFlight = false;
@@ -951,12 +955,7 @@ export class UiController {
     // Report tabs & sorting
     document.querySelectorAll<HTMLButtonElement>('[data-report]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const which = (btn.dataset.report ?? 'planets') as
-          | 'planets'
-          | 'fleets'
-          | 'stargates'
-          | 'wormholes'
-          | 'debris';
+        const which = (btn.dataset.report ?? 'planets') as ReportTab;
         this.activeReportTab = which;
         getEl('repPlanetsWrap').style.display = which === 'planets' ? 'block' : 'none';
         getEl('repFleetsWrap').style.display = which === 'fleets' ? 'block' : 'none';
@@ -972,19 +971,35 @@ export class UiController {
       });
     });
 
-    document.querySelectorAll<HTMLTableCellElement>('th[data-sort]').forEach((th) => {
+    this.updateReportSortIndicators();
+    document.querySelectorAll<HTMLTableCellElement>('table[data-sort-table] th[data-sort]').forEach((th) => {
       th.addEventListener('click', () => {
-        const key = th.dataset.sort as SortKey;
-        if (this.sortKey === key) this.sortAsc = !this.sortAsc;
-        else {
-          this.sortKey = key;
-          this.sortAsc = false;
+        const table = th.closest('table[data-sort-table]') as HTMLTableElement | null;
+        const tab = table?.dataset.sortTable as ReportTab | undefined;
+        const key = th.dataset.sort;
+        if (!tab || !key) return;
+
+        const state = this.reportSort[tab] as { key: string; asc: boolean };
+        if (state.key === key) {
+          state.asc = !state.asc;
+        } else {
+          state.key = key;
+          state.asc = ASC_DEFAULT_SORT_KEYS.has(key);
         }
+        this.updateReportSortIndicators(tab);
+
         if (this.lastHud) {
           const hud = this.lastHud;
-          void this.callbacks.getReportsSnapshot().then((rep) => {
-            this.renderPlanetTable(hud, rep);
-          });
+          if (tab === 'wormholes') {
+            this.renderWormholeTable(hud);
+          } else if (this.lastReports) {
+            this.renderActiveReportTab(hud, this.lastReports);
+          } else {
+            void this.callbacks.getReportsSnapshot().then((rep) => {
+              this.lastReports = rep;
+              this.renderActiveReportTab(hud, rep);
+            });
+          }
         }
       });
     });
@@ -2114,6 +2129,41 @@ export class UiController {
     }
   }
 
+  private renderActiveReportTab(hud: HudSnapshot, rep: ReportsSnapshot): void {
+    switch (this.activeReportTab) {
+      case 'planets':
+        this.renderPlanetTable(hud, rep);
+        break;
+      case 'fleets':
+        this.renderFleetTable(hud, rep);
+        break;
+      case 'stargates':
+        this.renderStargateTable(hud, rep);
+        break;
+      case 'wormholes':
+        this.renderWormholeTable(hud);
+        break;
+      case 'debris':
+        this.renderDebrisTable(rep);
+        break;
+    }
+  }
+
+  private updateReportSortIndicators(onlyTab?: ReportTab): void {
+    const selector = onlyTab
+      ? `table[data-sort-table="${onlyTab}"] th[data-sort]`
+      : 'table[data-sort-table] th[data-sort]';
+    document.querySelectorAll<HTMLTableCellElement>(selector).forEach((th) => {
+      const table = th.closest('table[data-sort-table]') as HTMLTableElement | null;
+      const tab = table?.dataset.sortTable as ReportTab | undefined;
+      if (!tab) return;
+      const state = this.reportSort[tab];
+      const active = th.dataset.sort === state.key;
+      th.classList.toggle('sort-asc', active && state.asc);
+      th.classList.toggle('sort-desc', active && !state.asc);
+    });
+  }
+
   private renderPlanetTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
     const n = rep.planets.length;
     getEl('repBtnPlanets').textContent = `Planets (${n})`;
@@ -2137,7 +2187,8 @@ export class UiController {
       def: Math.round(pl.defense),
     }));
 
-    rows.sort((a, b) => (this.sortAsc ? a[this.sortKey] - b[this.sortKey] : b[this.sortKey] - a[this.sortKey]));
+    const { key, asc } = this.reportSort.planets;
+    rows.sort((a, b) => (asc ? a[key] - b[key] : b[key] - a[key]));
     const visibleRows = rows.slice(0, 200);
     getEl('planetTableBody').innerHTML = visibleRows
       .map((r) => {
@@ -2160,25 +2211,59 @@ export class UiController {
   }
 
   private renderFleetTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
-    getEl('repBtnFleets').textContent = `Fleets in Flight (${rep.fleets.length})`;
+    getEl('repBtnFleets').textContent = `Fleets (${rep.fleets.length})`;
     const minLetters = ['I', 'B', 'G'];
     const minCols = ['#60a5fa', '#34d399', '#fbbf24'];
 
-    const slice = rep.fleets.slice(-80).reverse();
+    const rows = rep.fleets.map((fl) => {
+      const target = rep.planets[fl.target];
+      const dist = target ? Math.hypot(target.x - fl.x, target.y - fl.y) : 0;
+      const eta = dist / this.lastConfig.fleetSpeed;
+      const label =
+        fl.type === 'freight'
+          ? fl.salvageMode === 1
+            ? '✦ Salvage (Outbound)'
+            : fl.salvageMode === 2
+              ? '✦ Salvage (Return)'
+              : `■ Freight (${minLetters[fl.minType] ?? 'I'})`
+          : `${FLEET_LABELS[fl.type]}${fl.hunting ? ' 🎯' : ''}${fl.usedWh ? ' ⚡' : ''}`;
+      return { fl, dist, eta, label };
+    });
+
+    const { key, asc } = this.reportSort.fleets;
+    const dir = asc ? 1 : -1;
+    rows.sort((a, b) => {
+      let cmp = 0;
+      switch (key) {
+        case 'id':
+          cmp = a.fl.id - b.fl.id;
+          break;
+        case 'emp':
+          cmp = a.fl.emp - b.fl.emp;
+          break;
+        case 'label':
+          cmp = a.label.localeCompare(b.label);
+          break;
+        case 'route':
+          cmp = a.fl.from - b.fl.from || a.fl.target - b.fl.target;
+          break;
+        case 'power':
+          cmp = a.fl.power - b.fl.power;
+          break;
+        case 'dist':
+          cmp = a.dist - b.dist;
+          break;
+        case 'eta':
+          cmp = a.eta - b.eta;
+          break;
+      }
+      return (cmp || a.fl.id - b.fl.id) * dir;
+    });
+
+    const slice = rows.slice(0, 200);
     getEl('fleetTableBody').innerHTML = slice
-      .map((fl) => {
-        const target = rep.planets[fl.target];
-        const dist = target ? Math.hypot(target.x - fl.x, target.y - fl.y) : 0;
-        const eta = dist / this.lastConfig.fleetSpeed;
+      .map(({ fl, dist, eta, label }) => {
         const empCol = hud.empires[fl.emp - 1]?.color ?? '#94a3b8';
-        const label =
-          fl.type === 'freight'
-            ? fl.salvageMode === 1
-              ? '✦ Salvage (Outbound)'
-              : fl.salvageMode === 2
-                ? '✦ Salvage (Return)'
-                : `■ Freight (${minLetters[fl.minType] ?? 'I'})`
-            : `${FLEET_LABELS[fl.type]}${fl.hunting ? ' 🎯' : ''}${fl.usedWh ? ' ⚡' : ''}`;
         const col =
           fl.type === 'freight'
             ? fl.salvageMode
@@ -2204,19 +2289,44 @@ export class UiController {
   }
 
   private renderStargateTable(hud: HudSnapshot, rep: ReportsSnapshot): void {
-    const gates: { idx: number; pl: PlanetView }[] = [];
+    const gates: { idx: number; pl: PlanetView; gateTech: string }[] = [];
     for (let i = 0; i < rep.planets.length; i++) {
-      if (rep.planets[i].hasGate) {
-        gates.push({ idx: i, pl: rep.planets[i] });
+      const pl = rep.planets[i];
+      if (pl.hasGate) {
+        const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
+        gates.push({ idx: i, pl, gateTech: emp?.loadout.stargate ?? 'Stargate' });
       }
     }
-    gates.sort((a, b) => b.pl.res - a.pl.res);
+
+    const { key, asc } = this.reportSort.stargates;
+    const dir = asc ? 1 : -1;
+    gates.sort((a, b) => {
+      let cmp = 0;
+      switch (key) {
+        case 'id':
+          cmp = a.pl.id - b.pl.id;
+          break;
+        case 'owner':
+          cmp = a.pl.owner - b.pl.owner;
+          break;
+        case 'tech':
+          cmp = a.gateTech.localeCompare(b.gateTech);
+          break;
+        case 'def':
+          cmp = a.pl.defense - b.pl.defense;
+          break;
+        case 'res':
+          cmp = a.pl.res - b.pl.res;
+          break;
+      }
+      return (cmp || a.pl.id - b.pl.id) * dir;
+    });
+
     const slice = gates.slice(0, 200);
     getEl('stargateTableBody').innerHTML = slice
-      .map(({ idx, pl }) => {
+      .map(({ idx, pl, gateTech }) => {
         const emp = pl.owner > 0 ? hud.empires[pl.owner - 1] : null;
         const col = emp?.color ?? '#94a3b8';
-        const gateTech = emp?.loadout.stargate ?? 'Stargate';
         return `<tr data-planet-idx="${idx}" data-x="${pl.x}" data-y="${pl.y}">
           <td class="fleet-route-cell" title="Focus Stargate on map">🌀 #${pl.id}</td>
           <td><span class="dot" style="background:${col}"></span></td>
@@ -2230,10 +2340,21 @@ export class UiController {
   }
 
   private renderWormholeTable(hud: HudSnapshot): void {
-    const slice = hud.wormholes.slice(0, 250);
+    const rows = hud.wormholes.map((wh, idx) => ({
+      wh,
+      idx,
+      span: Math.round(Math.hypot(wh.x2 - wh.x1, wh.y2 - wh.y1)),
+    }));
+    const { key, asc } = this.reportSort.wormholes;
+    const dir = asc ? 1 : -1;
+    rows.sort((a, b) => {
+      const cmp = key === 'span' ? a.span - b.span : a.idx - b.idx;
+      return (cmp || a.idx - b.idx) * dir;
+    });
+
+    const slice = rows.slice(0, 250);
     getEl('wormholeTableBody').innerHTML = slice
-      .map((wh, idx) => {
-        const span = Math.round(Math.hypot(wh.x2 - wh.x1, wh.y2 - wh.y1));
+      .map(({ wh, idx, span }) => {
         return `<tr data-wh-idx="${idx}">
           <td style="color:#e879f9;font-weight:bold;">WH#${idx + 1}</td>
           <td class="fleet-route-cell" data-wh-end="a" title="Focus Endpoint A">(${Math.round(wh.x1)}, ${Math.round(wh.y1)})</td>
@@ -2246,16 +2367,42 @@ export class UiController {
   }
 
   private renderDebrisTable(rep: ReportsSnapshot): void {
-    const rows = rep.debrisFields
-      .map((deb, idx) => {
-        const iron = Math.round(deb.iron);
-        const bora = Math.round(deb.bora);
-        const germ = Math.round(deb.germ);
-        return { idx, deb, iron, bora, germ, total: iron + bora + germ };
-      })
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 200);
-    getEl('debrisTableBody').innerHTML = rows
+    const rows = rep.debrisFields.map((deb, idx) => {
+      const iron = Math.round(deb.iron);
+      const bora = Math.round(deb.bora);
+      const germ = Math.round(deb.germ);
+      return { idx, deb, iron, bora, germ, total: iron + bora + germ };
+    });
+
+    const { key, asc } = this.reportSort.debris;
+    const dir = asc ? 1 : -1;
+    rows.sort((a, b) => {
+      let cmp = 0;
+      switch (key) {
+        case 'id':
+          cmp = a.idx - b.idx;
+          break;
+        case 'total':
+          cmp = a.total - b.total;
+          break;
+        case 'iron':
+          cmp = a.iron - b.iron;
+          break;
+        case 'bora':
+          cmp = a.bora - b.bora;
+          break;
+        case 'germ':
+          cmp = a.germ - b.germ;
+          break;
+        case 'ttl':
+          cmp = a.deb.ttl - b.deb.ttl;
+          break;
+      }
+      return (cmp || a.idx - b.idx) * dir;
+    });
+
+    const slice = rows.slice(0, 200);
+    getEl('debrisTableBody').innerHTML = slice
       .map(({ idx, deb, iron, bora, germ, total }) => {
         return `<tr data-debris-idx="${idx}" data-x="${deb.x}" data-y="${deb.y}">
           <td class="fleet-route-cell" title="Focus Debris field on map">✦ D#${idx + 1}</td>
