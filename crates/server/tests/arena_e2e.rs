@@ -1,0 +1,604 @@
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use reqwest::StatusCode;
+use serde_json::{json, Value};
+use sistars_server::{build_router, AppState};
+use tokio::net::TcpListener;
+use tokio_tungstenite::connect_async;
+
+struct TestServer {
+    base_url: String,
+    ws_base_url: String,
+    state: std::sync::Arc<AppState>,
+    client: reqwest::Client,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            state.shutdown_all().await;
+        });
+    }
+}
+
+async fn spawn_test_server() -> TestServer {
+    let logs_dir = std::env::temp_dir().join(format!(
+        "sistars_test_logs_{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let state = AppState::new(None, logs_dir);
+    let app = build_router(state.clone());
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind random localhost port");
+    let addr: SocketAddr = listener.local_addr().expect("Failed to read local_addr");
+
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    TestServer {
+        base_url: format!("http://{addr}"),
+        ws_base_url: format!("ws://{addr}"),
+        state,
+        client: reqwest::Client::new(),
+    }
+}
+
+async fn wait_for_epoch(
+    srv: &TestServer,
+    match_id: &str,
+    target_epoch: u64,
+    timeout: Duration,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let resp = srv
+            .client
+            .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+            .send()
+            .await
+            .expect("GET match failed");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = resp.json().await.expect("Invalid JSON");
+        if body["epoch"].as_u64().unwrap_or(0) >= target_epoch {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Timed out waiting for match {match_id} to reach epoch {target_epoch}; last summary: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn e2e_token_isolation_and_fow() {
+    let srv = spawn_test_server().await;
+
+    // Create Match 1 with 2 agent seats (0 and 1)
+    let m1: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 111111,
+            "galaxySize": "small",
+            "ticksPerEpoch": 10,
+            "epochTimeoutMs": 5000,
+            "agentSeats": [0, 1]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let match1_id = m1["matchId"].as_str().unwrap().to_string();
+    let tok0 = m1["empireTokens"]["0"].as_str().unwrap().to_string();
+    let tok1 = m1["empireTokens"]["1"].as_str().unwrap().to_string();
+
+    // Create Match 2 to test cross-match token rejection
+    let m2: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 222222,
+            "galaxySize": "small",
+            "ticksPerEpoch": 10,
+            "epochTimeoutMs": 5000,
+            "agentSeats": [0]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let m2_tok0 = m2["empireTokens"]["0"].as_str().unwrap().to_string();
+
+    // 1. Missing token -> 401
+    let r_missing = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r_missing.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Bogus token -> 401
+    let r_bad = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .bearer_auth("invalid_token_12345")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r_bad.status(), StatusCode::UNAUTHORIZED);
+
+    // 3. Valid token from Match 2 used against Match 1 -> 403 Forbidden
+    let r_cross = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .bearer_auth(&m2_tok0)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r_cross.status(), StatusCode::FORBIDDEN);
+
+    // 4. Token 0 returns strictly Empire 1 (seat 0) FoW; Token 1 returns strictly Empire 2 (seat 1) FoW
+    let obs0: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .bearer_auth(&tok0)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let obs1: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .bearer_auth(&tok1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(obs0["observation"]["empire"]["empireId"].as_u64(), Some(1));
+    assert_eq!(obs1["observation"]["empire"]["empireId"].as_u64(), Some(2));
+
+    let p0_idx = obs0["observation"]["keyPoints"]["topOwnPlanets"][0]["planetIdx"]
+        .as_u64()
+        .unwrap();
+    let p1_idx = obs1["observation"]["keyPoints"]["topOwnPlanets"][0]["planetIdx"]
+        .as_u64()
+        .unwrap();
+    assert_ne!(p0_idx, p1_idx, "Empires 0 and 1 must see their own distinct homeworlds");
+
+    // 5. Private reasoning_note from Empire 0 MUST NEVER leak to Empire 1's observation
+    let secret_note = "SECRET_OMEGA_BACKSTAB_PLAN_999";
+    let sub0 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match1_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({
+            "epoch": 0,
+            "commands": [],
+            "reasoningNote": secret_note
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sub0.status(), StatusCode::OK);
+
+    let sub1 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match1_id}/commands", srv.base_url))
+        .bearer_auth(&tok1)
+        .json(&json!({
+            "epoch": 0,
+            "commands": []
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sub1.status(), StatusCode::OK);
+
+    wait_for_epoch(&srv, &match1_id, 1, Duration::from_secs(3)).await;
+
+    let obs1_after_text = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .bearer_auth(&tok1)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !obs1_after_text.contains(secret_note),
+        "Empire 0's private reasoning_note leaked into Empire 1's observation!"
+    );
+
+    // Public GET /matches/{id} must also not leak secret notes or tokens
+    let public_text = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match1_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!public_text.contains(secret_note));
+    assert!(!public_text.contains(&tok0));
+}
+
+#[tokio::test]
+async fn e2e_epoch_barrier_and_timeout() {
+    let srv = spawn_test_server().await;
+
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 333333,
+            "galaxySize": "small",
+            "ticksPerEpoch": 10,
+            "epochTimeoutMs": 450,
+            "agentSeats": [0, 1]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    let tok1 = created["empireTokens"]["1"].as_str().unwrap().to_string();
+
+    // 1. Submit ONLY Seat 0 -> barrier must still wait for Seat 1
+    let r0 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({ "epoch": 0, "commands": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r0.status(), StatusCode::OK);
+
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let mid_summary: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mid_summary["epoch"].as_u64(), Some(0));
+    assert_eq!(mid_summary["status"].as_str(), Some("WaitingForAgents"));
+    assert_eq!(mid_summary["waitingForSeats"], json!([1]));
+
+    // 2. Submit Seat 1 -> barrier immediately advances epoch 0 -> 1 (10 ticks)
+    let r1 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok1)
+        .json(&json!({ "epoch": 0, "commands": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), StatusCode::OK);
+
+    let ep1 = wait_for_epoch(&srv, &match_id, 1, Duration::from_secs(2)).await;
+    assert_eq!(ep1["epoch"].as_u64(), Some(1));
+    assert_eq!(ep1["tick"].as_u64(), Some(10));
+
+    // 3. On epoch 1, only Seat 0 responds while Seat 1 times out (> 450 ms) -> epoch MUST still advance to 2
+    let r0_ep1 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({ "epoch": 1, "commands": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r0_ep1.status(), StatusCode::OK);
+
+    let ep2 = wait_for_epoch(&srv, &match_id, 2, Duration::from_secs(3)).await;
+    assert!(ep2["epoch"].as_u64().unwrap_or(0) >= 2);
+    assert!(ep2["tick"].as_u64().unwrap_or(0) >= 20);
+}
+
+#[tokio::test]
+async fn e2e_diplomacy_and_spectator_ws_feed() {
+    let srv = spawn_test_server().await;
+
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 444444,
+            "galaxySize": "small",
+            "ticksPerEpoch": 10,
+            "epochTimeoutMs": 5000,
+            "frameStrideTicks": 2,
+            "agentSeats": [0, 1]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    let tok1 = created["empireTokens"]["1"].as_str().unwrap().to_string();
+
+    // Connect Spectator WebSocket client
+    let ws_url = format!("{}/ws/matches/{match_id}/spectate", srv.ws_base_url);
+    let (mut ws_stream, _) = connect_async(&ws_url)
+        .await
+        .expect("Failed to connect to Spectator WebSocket");
+
+    // First message must be Init with map geometry and HUD
+    let first_msg = tokio::time::timeout(Duration::from_secs(3), ws_stream.next())
+        .await
+        .expect("Timed out waiting for WS Init")
+        .expect("WS closed")
+        .expect("WS error");
+    let init_json: Value = serde_json::from_str(first_msg.to_text().unwrap()).unwrap();
+    assert_eq!(init_json["type"].as_str(), Some("init"));
+    assert!(init_json["planetsBuf"].as_array().unwrap().len() >= 120 * 7);
+
+    // Seat 0 sends SendDipMessage + SetDiplomacy(Ceasefire) + private reasoningNote
+    let cable_text = "Ceasefire proposal along northern spiral arm";
+    let reasoning_text = "Secure northern flank while ramping factories";
+    let res0 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({
+            "epoch": 0,
+            "reasoningNote": reasoning_text,
+            "commands": [
+                { "setDiplomacy": { "target_emp": 1, "stance": "Ceasefire" } },
+                { "sendDipMessage": { "to_emp": 1, "text": cable_text } }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res0.status(), StatusCode::OK);
+
+    // Seat 1 sets a SectorDirective
+    let res1 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok1)
+        .json(&json!({
+            "epoch": 0,
+            "commands": [
+                { "setSectorDirective": { "sector_id": 0, "mode": "Fortify" } }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res1.status(), StatusCode::OK);
+
+    // Wait for epoch 1 to complete
+    wait_for_epoch(&srv, &match_id, 1, Duration::from_secs(3)).await;
+
+    // Verify Seat 1 received Seat 0's diplomatic message in its inbox & Ceasefire stance
+    let obs1: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .bearer_auth(&tok1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let known = obs1["observation"]["knownEmpires"].as_array().unwrap();
+    let emp1_entry = known
+        .iter()
+        .find(|e| e["empId"].as_u64() == Some(1))
+        .expect("Seat 1 must see Empire 1 in knownEmpires after diplomatic contact");
+    assert_eq!(emp1_entry["stance"].as_str(), Some("Ceasefire"));
+    let inbox = emp1_entry["inbox"].as_array().unwrap();
+    assert!(
+        inbox.iter().any(|m| m["text"].as_str() == Some(cable_text)),
+        "Expected diplomatic message in Seat 1 inbox, got {inbox:?}"
+    );
+    assert!(
+        !serde_json::to_string(&obs1).unwrap().contains(reasoning_text),
+        "Private reasoningNote must not leak to Seat 1 observation"
+    );
+
+    // Drain Spectator WS messages and verify we received Frames + Reasoning + DipMessage + DiplomacyChange + SectorDirective
+    let mut saw_frame = false;
+    let mut saw_reasoning = false;
+    let mut saw_dip_msg = false;
+    let mut saw_dip_change = false;
+    let mut saw_sector_dir = false;
+
+    let collect_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < collect_deadline {
+        if saw_frame && saw_reasoning && saw_dip_msg && saw_dip_change && saw_sector_dir {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_millis(250), ws_stream.next()).await {
+            Ok(Some(Ok(msg))) if msg.is_text() => {
+                let v: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+                match v["type"].as_str() {
+                    Some("frame") => {
+                        if v["planetsBuf"].as_array().is_some() {
+                            saw_frame = true;
+                        }
+                    }
+                    Some("feed") => {
+                        let ev = &v["event"];
+                        match ev["kind"].as_str() {
+                            Some("Reasoning")
+                                if ev["summary"].as_str() == Some(reasoning_text) =>
+                            {
+                                saw_reasoning = true;
+                            }
+                            Some("DipMessage")
+                                if ev["summary"]
+                                    .as_str()
+                                    .is_some_and(|s| s.contains(cable_text)) =>
+                            {
+                                saw_dip_msg = true;
+                            }
+                            Some("DiplomacyChange") => saw_dip_change = true,
+                            Some("SectorDirective") => saw_sector_dir = true,
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(saw_frame, "Spectator WS must receive live map render frames");
+    assert!(
+        saw_reasoning,
+        "Spectator WS must receive private reasoningNote ArenaFeedEvent"
+    );
+    assert!(saw_dip_msg, "Spectator WS must receive DipMessage ArenaFeedEvent");
+    assert!(
+        saw_dip_change,
+        "Spectator WS must receive DiplomacyChange ArenaFeedEvent"
+    );
+    assert!(
+        saw_sector_dir,
+        "Spectator WS must receive SectorDirective ArenaFeedEvent"
+    );
+}
+
+#[tokio::test]
+async fn e2e_openapi_system_view_and_live_auditor() {
+    let srv = spawn_test_server().await;
+
+    // 1. OpenAPI 3.0 spec validation
+    let spec: Value = srv
+        .client
+        .get(format!("{}/openapi.json", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(spec["openapi"].as_str().unwrap().starts_with("3.0"));
+    assert!(spec["components"]["schemas"]["AgentObservation"].is_object());
+    assert!(spec["components"]["schemas"]["EmpirePolicy"].is_object());
+    assert!(spec["components"]["schemas"]["StrategicCommand"].is_object());
+
+    // 2. Create match with debug_audit = true and run 3 epochs
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 555555,
+            "galaxySize": "small",
+            "ticksPerEpoch": 15,
+            "epochTimeoutMs": 5000,
+            "agentSeats": [0],
+            "debugAudit": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+
+    // 3. On-demand Spectator REST endpoints: /system/0, /planet/0, /reports
+    let sys: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/system/0", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sys["planetId"].as_u64(), Some(1));
+    assert!(sys["star"]["spectralClass"].is_string());
+    assert!(!sys["bodies"].as_array().unwrap().is_empty());
+
+    let planet: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/planet/0", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(planet["id"].as_u64(), Some(1));
+
+    let reports: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/reports", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!reports["planets"].as_array().unwrap().is_empty());
+
+    // Advance 3 full epochs with LiveAuditor active
+    for ep in 0..3u64 {
+        let r = srv
+            .client
+            .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+            .bearer_auth(&tok0)
+            .json(&json!({ "epoch": ep, "commands": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        wait_for_epoch(&srv, &match_id, ep + 1, Duration::from_secs(3)).await;
+    }
+
+    // 4. Verify LiveAuditor recorded 0 anomalies
+    let anomalies: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/anomalies", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        anomalies["anomalies"].as_array().map(|a| a.len()),
+        Some(0),
+        "Expected 0 LiveAuditor anomalies, got: {anomalies}"
+    );
+}

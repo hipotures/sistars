@@ -15,6 +15,8 @@ import {
   renderProceduralThumbnailTo2d,
 } from './systemRenderer';
 import type {
+  ArenaFeedEvent,
+  ArenaMatchSummary,
   DebrisFieldView,
   Doctrine,
   EngineMeta,
@@ -31,6 +33,7 @@ import type {
   StarSystemView,
   TechCatalogView,
   TournamentResult,
+  TransportMode,
 } from './types';
 
 type ReportTab = 'planets' | 'fleets' | 'starbases' | 'stargates' | 'wormholes' | 'debris';
@@ -81,6 +84,10 @@ export interface UiCallbacks {
   getPlanetFleets: (index: number) => Promise<FleetView[]>;
   getReportsSnapshot: () => Promise<ReportsSnapshot>;
   getPowerHistory: () => Promise<number[][]>;
+  onTransportModeChange?: (mode: TransportMode) => void;
+  onArenaRefreshMatches?: (serverUrl: string) => void;
+  onArenaConnect?: (serverUrl: string, matchId: string) => void;
+  onArenaCreateTestMatch?: (serverUrl: string) => void;
 }
 
 const CUSTOM_RACES_STORAGE_KEY = 'sistars.customRaces.v1';
@@ -275,6 +282,7 @@ export class UiController {
 
     this.initStaticControls();
     this.bindEvents();
+    this.bindArenaEvents();
     this.renderRaceRoster();
   }
 
@@ -3004,5 +3012,221 @@ export class UiController {
         </tr>`;
       })
       .join('');
+  }
+
+  private arenaFeedCount = 0;
+
+  private bindArenaEvents(): void {
+    const btnLocal = document.getElementById('btnModeLocal');
+    const btnRemote = document.getElementById('btnModeRemote');
+    const serverInput = document.getElementById('arenaServerInput') as HTMLInputElement | null;
+    const matchSelect = document.getElementById('arenaMatchSelect') as HTMLSelectElement | null;
+    const btnRefresh = document.getElementById('btnArenaRefresh');
+    const btnConnect = document.getElementById('btnArenaConnect');
+    const btnNewMatch = document.getElementById('btnArenaNewMatch');
+    const btnToggleFeed = document.getElementById('btnToggleArenaFeed');
+    const feedPanel = document.getElementById('arenaFeedPanel');
+
+    btnLocal?.addEventListener('click', () => {
+      this.callbacks.onTransportModeChange?.('local');
+    });
+    btnRemote?.addEventListener('click', () => {
+      this.callbacks.onTransportModeChange?.('remote');
+    });
+    btnRefresh?.addEventListener('click', () => {
+      this.callbacks.onArenaRefreshMatches?.(serverInput?.value ?? 'http://localhost:8080');
+    });
+    btnConnect?.addEventListener('click', () => {
+      const srv = serverInput?.value ?? 'http://localhost:8080';
+      const mid = matchSelect?.value ?? '';
+      if (mid) {
+        this.callbacks.onArenaConnect?.(srv, mid);
+      } else {
+        this.callbacks.onArenaRefreshMatches?.(srv);
+      }
+    });
+    btnNewMatch?.addEventListener('click', () => {
+      this.callbacks.onArenaCreateTestMatch?.(serverInput?.value ?? 'http://localhost:8080');
+    });
+    btnToggleFeed?.addEventListener('click', () => {
+      if (!feedPanel || !btnToggleFeed) return;
+      const collapsed = feedPanel.classList.toggle('collapsed');
+      btnToggleFeed.textContent = collapsed ? '▸ Show' : '▾ Hide';
+    });
+  }
+
+  public setTransportMode(mode: TransportMode): void {
+    const isRemote = mode === 'remote';
+    document.getElementById('btnModeLocal')?.classList.toggle('active', !isRemote);
+    document.getElementById('btnModeRemote')?.classList.toggle('active', isRemote);
+
+    const arenaBar = document.getElementById('arenaBar');
+    if (arenaBar) arenaBar.style.display = isRemote ? 'flex' : 'none';
+
+    const feedPanel = document.getElementById('arenaFeedPanel');
+    if (feedPanel) feedPanel.style.display = isRemote ? 'flex' : 'none';
+
+    // Disable local simulation mutation buttons while spectating a remote server match
+    const speedWrap = document.querySelector<HTMLElement>('.speed-controls');
+    if (speedWrap) {
+      speedWrap.style.opacity = isRemote ? '0.4' : '1';
+      speedWrap.style.pointerEvents = isRemote ? 'none' : 'auto';
+    }
+    const resetBtn = document.getElementById('btnReset') as HTMLButtonElement | null;
+    if (resetBtn) {
+      resetBtn.disabled = isRemote;
+      resetBtn.style.opacity = isRemote ? '0.4' : '1';
+    }
+  }
+
+  public setArenaServerUrl(url: string): void {
+    const input = document.getElementById('arenaServerInput') as HTMLInputElement | null;
+    if (input) input.value = url;
+  }
+
+  public setArenaMatchList(matches: ArenaMatchSummary[], selectedId?: string): void {
+    const sel = document.getElementById('arenaMatchSelect') as HTMLSelectElement | null;
+    if (!sel) return;
+    const prev = selectedId ?? sel.value;
+    if (matches.length === 0) {
+      sel.innerHTML = '<option value="">-- No active matches --</option>';
+      return;
+    }
+    sel.innerHTML = matches
+      .map((m) => {
+        const seats = m.agentSeats.length > 0 ? `${m.agentSeats.length} AI` : 'Auto';
+        return `<option value="${m.matchId}">${m.matchId} • ${m.status} • Ep#${m.epoch} • Yr ${m.year.toFixed(1)} (${seats})</option>`;
+      })
+      .join('');
+    if (prev && matches.some((m) => m.matchId === prev)) {
+      sel.value = prev;
+    } else if (matches.length > 0) {
+      sel.value = matches[0].matchId;
+    }
+  }
+
+  public setArenaConnectionState(
+    state: 'connecting' | 'connected' | 'disconnected' | 'error',
+    detail?: string,
+  ): void {
+    const badge = document.getElementById('arenaConnBadge');
+    const info = document.getElementById('arenaEpochInfo');
+    if (badge) {
+      badge.className = 'arena-badge';
+      if (state === 'connected') {
+        badge.textContent = 'LIVE';
+        badge.classList.add('live');
+      } else if (state === 'connecting') {
+        badge.textContent = 'SYNC';
+        badge.classList.add('waiting');
+      } else if (state === 'error') {
+        badge.textContent = 'ERR';
+        badge.classList.add('error');
+      } else {
+        badge.textContent = 'OFFLINE';
+      }
+    }
+    if (info && detail) {
+      info.textContent = detail;
+    }
+  }
+
+  public updateArenaStatus(summary: ArenaMatchSummary): void {
+    const badge = document.getElementById('arenaConnBadge');
+    const info = document.getElementById('arenaEpochInfo');
+    const waitPill = document.getElementById('arenaWaitPill');
+
+    if (badge) {
+      badge.className = 'arena-badge';
+      if (summary.status === 'Finished') {
+        badge.textContent = 'FINISHED';
+        badge.classList.add('finished');
+      } else if (summary.status === 'WaitingForAgents') {
+        badge.textContent = 'BARRIER';
+        badge.classList.add('waiting');
+      } else {
+        badge.textContent = 'LIVE';
+        badge.classList.add('live');
+      }
+    }
+
+    if (info) {
+      const waitTxt =
+        summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0
+          ? `Waiting seats [${summary.waitingForSeats.join(', ')}]`
+          : summary.status === 'Finished'
+            ? `Winner: Empire #${(summary.winner ?? 0) + 1}`
+            : `Running (${summary.planetCount}p)`;
+      info.textContent = `Match ${summary.matchId} • Epoch #${summary.epoch} • ${waitTxt}`;
+    }
+
+    if (waitPill) {
+      if (summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0) {
+        waitPill.style.display = 'inline-block';
+        waitPill.textContent = `WAIT [${summary.waitingForSeats.join(',')}]`;
+      } else {
+        waitPill.style.display = 'none';
+      }
+    }
+  }
+
+  public clearArenaFeed(): void {
+    this.arenaFeedCount = 0;
+    const body = document.getElementById('arenaFeedBody');
+    if (body) {
+      body.innerHTML =
+        '<div class="arena-feed-empty">Waiting for AI reasoning, diplomatic cables &amp; sector directives...</div>';
+    }
+  }
+
+  public appendArenaFeedEvent(ev: ArenaFeedEvent): void {
+    const body = document.getElementById('arenaFeedBody');
+    if (!body) return;
+    if (this.arenaFeedCount === 0) {
+      body.innerHTML = '';
+    }
+    this.arenaFeedCount += 1;
+
+    const kindIcons: Record<ArenaFeedEvent['kind'], string> = {
+      Reasoning: '🧠',
+      DipMessage: '📨',
+      DiplomacyChange: '🤝',
+      SectorDirective: '🎯',
+      BuildHub: '🌀',
+      PolicyUpdate: '📜',
+      EpochStatus: '⏱',
+      MatchFinished: '🏆',
+    };
+
+    const item = document.createElement('div');
+    item.className = 'arena-feed-item';
+    item.style.borderLeftColor = ev.empireColor || '#38bdf8';
+
+    const meta = document.createElement('div');
+    meta.className = 'arena-feed-meta';
+
+    const empSpan = document.createElement('span');
+    empSpan.className = 'arena-feed-emp';
+    empSpan.style.color = ev.empireColor || '#38bdf8';
+    empSpan.textContent = `${kindIcons[ev.kind] ?? '•'} ${ev.empireName}`;
+
+    const tagSpan = document.createElement('span');
+    tagSpan.className = 'arena-feed-tag';
+    tagSpan.textContent = `Ep#${ev.epoch} • Yr ${ev.year.toFixed(1)} • ${ev.kind}`;
+
+    meta.appendChild(empSpan);
+    meta.appendChild(tagSpan);
+
+    const text = document.createElement('div');
+    text.className = 'arena-feed-text';
+    text.textContent = ev.summary;
+
+    item.appendChild(meta);
+    item.appendChild(text);
+
+    body.prepend(item);
+    while (body.children.length > 150) {
+      body.lastElementChild?.remove();
+    }
   }
 }

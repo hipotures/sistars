@@ -11,27 +11,28 @@ import {
   type PersistedSettings,
 } from './settingsStorage';
 import { UiController } from './ui';
+import {
+  createArenaMatch,
+  fetchArenaMatches,
+  LocalWasmTransport,
+  normalizeServerUrl,
+  RemoteArenaTransport,
+  type SimTransport,
+  type TransportFrame,
+} from './transport';
 import type {
-  CoEvolutionResult,
-  DebrisFieldView,
-  EngineMeta,
   EquilibriumMode,
   FleetView,
   GalaxyShape,
   GalaxySize,
   HudSnapshot,
   MapSelection,
-  PlanetView,
   RangeContourMode,
   RenderFrame,
-  ReportsSnapshot,
   ScannerFieldSettings,
-  SimConfig,
-  StarSystemView,
-  TechCatalogView,
-  TournamentResult,
+  TransportMode,
 } from './types';
-import type { MainToWorkerMsg, WorkerToMainMsg } from './workerProtocol';
+import type { InitialSimSettings } from './workerProtocol';
 
 const MAX_HISTORY_SNAPSHOTS = 600;
 const HISTORY_SAMPLE_EVERY_TICKS = 2;
@@ -87,97 +88,6 @@ interface LiveBufferBacking {
 }
 
 async function bootstrap(): Promise<void> {
-  const worker = new Worker(new URL('./sim.worker.ts', import.meta.url), {
-    type: 'module',
-  });
-
-  // Request/response Promise map for on-demand worker queries
-  let nextReqId = 1;
-  const pending = new Map<number, (val: unknown) => void>();
-
-  const postToWorker = (msg: MainToWorkerMsg, transfer?: Transferable[]): void => {
-    if (transfer && transfer.length > 0) {
-      worker.postMessage(msg, transfer);
-    } else {
-      worker.postMessage(msg);
-    }
-  };
-
-  const requestWorker = <T>(buildMsg: (reqId: number) => MainToWorkerMsg): Promise<T> => {
-    const reqId = nextReqId++;
-    return new Promise<T>((resolve) => {
-      pending.set(reqId, (val) => resolve(val as T));
-      postToWorker(buildMsg(reqId));
-    });
-  };
-
-  // Wait for worker WASM initialization + initial metadata & first frame
-  let resolveReady!: (init: {
-    meta: EngineMeta;
-    catalog: TechCatalogView;
-    config: SimConfig;
-  }) => void;
-  const readyPromise = new Promise<{
-    meta: EngineMeta;
-    catalog: TechCatalogView;
-    config: SimConfig;
-  }>((res) => {
-    resolveReady = res;
-  });
-
-  let resolveFirstFrame!: (msg: Extract<WorkerToMainMsg, { type: 'frame' }>) => void;
-  const firstFramePromise = new Promise<Extract<WorkerToMainMsg, { type: 'frame' }>>((res) => {
-    resolveFirstFrame = res;
-  });
-  let gotFirstFrame = false;
-
-  let onFrameHandler: ((msg: Extract<WorkerToMainMsg, { type: 'frame' }>) => void) | null = null;
-
-  worker.onmessage = (event: MessageEvent<WorkerToMainMsg>): void => {
-    const msg = event.data;
-    switch (msg.type) {
-      case 'ready':
-        resolveReady({ meta: msg.meta, catalog: msg.catalog, config: msg.config });
-        break;
-      case 'frame':
-        if (!gotFirstFrame) {
-          gotFirstFrame = true;
-          resolveFirstFrame(msg);
-        } else if (onFrameHandler) {
-          onFrameHandler(msg);
-        } else {
-          // Return unused buffers if UI isn't ready yet
-          postToWorker(
-            {
-              type: 'returnBuffers',
-              planets: msg.planets,
-              fleets: msg.fleets,
-              debris: msg.debris,
-            },
-            [msg.planets, msg.fleets, msg.debris],
-          );
-        }
-        break;
-      case 'planetDetail':
-      case 'starSystem':
-      case 'fleetDetail':
-      case 'debrisDetail':
-      case 'planetFleets':
-      case 'reportsSnapshot':
-      case 'powerHistory':
-      case 'exportStateJson':
-      case 'tournamentResult':
-      case 'coEvolutionResult': {
-        const resolver = pending.get(msg.reqId);
-        if (resolver) {
-          pending.delete(msg.reqId);
-          resolver(msg.data);
-        }
-        break;
-      }
-    }
-  };
-
   const persisted: PersistedSettings = loadPersistedSettings();
   const persistSettings = (): void => {
     savePersistedSettings(persisted);
@@ -214,30 +124,53 @@ async function bootstrap(): Promise<void> {
     persisted.sprawlPenalty = initialScenario.locks.sprawlPenalty;
   }
 
-  postToWorker({
-    type: 'init',
-    seed: randomSeed(),
-    initialSettings: {
-      ignoreRacialTraits: persisted.ignoreRacialTraits,
-      scenarioModifiers: initialScenario.modifiers,
-      galaxySize: persisted.galaxySize,
-      galaxyShape: persisted.galaxyShape,
-      wormholePairs: persisted.wormholePairs,
-      crustRichness: persisted.crustRichness,
-      gateCost: persisted.gateCost,
-      colCostMult: persisted.colCostMult,
-      interceptRad: persisted.interceptRad,
-      salvageRate: persisted.salvageRate,
-      aggroBias: persisted.aggroBias,
-      sprawlPenalty: persisted.sprawlPenalty,
-      speed: persisted.speed,
-    },
+  const buildInitialLocalSettings = (): InitialSimSettings => ({
+    ignoreRacialTraits: persisted.ignoreRacialTraits,
+    scenarioModifiers: getScenarioById(persisted.scenarioId).modifiers,
+    galaxySize: persisted.galaxySize,
+    galaxyShape: persisted.galaxyShape,
+    wormholePairs: persisted.wormholePairs,
+    crustRichness: persisted.crustRichness,
+    gateCost: persisted.gateCost,
+    colCostMult: persisted.colCostMult,
+    interceptRad: persisted.interceptRad,
+    salvageRate: persisted.salvageRate,
+    aggroBias: persisted.aggroBias,
+    sprawlPenalty: persisted.sprawlPenalty,
+    speed: persisted.speed,
   });
 
-  const [{ meta, catalog, config: initialConfig }, firstFrame] = await Promise.all([
-    readyPromise,
-    firstFramePromise,
-  ]);
+  // Check URL parameters (?server=http://localhost:8080&match=<id>) for direct Spectator Mode launch
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlServer = urlParams.get('server');
+  const urlMatch = urlParams.get('match');
+  let arenaServerUrl = normalizeServerUrl(urlServer ?? 'http://localhost:8080');
+  let activeArenaMatchId: string | null = urlMatch;
+
+  let transport: SimTransport;
+  let initResult;
+  let initialMode: TransportMode = 'local';
+
+  if (urlMatch) {
+    try {
+      const remote = new RemoteArenaTransport(arenaServerUrl, urlMatch);
+      initResult = await remote.init();
+      transport = remote;
+      initialMode = 'remote';
+    } catch {
+      const local = new LocalWasmTransport();
+      initResult = await local.init(randomSeed(), buildInitialLocalSettings());
+      transport = local;
+      initialMode = 'local';
+    }
+  } else {
+    const local = new LocalWasmTransport();
+    initResult = await local.init(randomSeed(), buildInitialLocalSettings());
+    transport = local;
+    initialMode = 'local';
+  }
+
+  const { meta, catalog, config: initialConfig, firstFrame } = initResult;
   let config = initialConfig;
 
   const canvas = document.getElementById('galaxyCanvas') as HTMLCanvasElement;
@@ -401,7 +334,7 @@ async function bootstrap(): Promise<void> {
     historyBuffer = [];
     historyViewIndex = null;
     lastRecordedTick = -1;
-    postToWorker({ type: 'setScrubIndex', index: null });
+    transport.setScrubIndex(null);
     if (debugHistoryEnabled) {
       recordHistoryFrame(lastHud, true);
     }
@@ -455,22 +388,104 @@ async function bootstrap(): Promise<void> {
     ui.setSelection(sel);
     syncLensUi(activeFrame(), sel);
     const fleetId = sel?.kind === 'fleet' ? sel.id : null;
-    postToWorker({ type: 'setSelectedFleet', fleetId });
+    transport.setSelectedFleet(fleetId);
     if (fleetId === null) {
       liveSelectedFleet = null;
       scheduleRender();
     } else {
-      void requestWorker<FleetView | null>((reqId) => ({
-        type: 'getFleetById',
-        reqId,
-        id: fleetId,
-      })).then((fl) => {
+      void transport.getFleetById(fleetId).then((fl) => {
         if (ui.getSelection()?.kind === 'fleet') {
           liveSelectedFleet = fl;
           scheduleRender();
         }
       });
     }
+  };
+
+  let handleTransportFrame!: (msg: TransportFrame) => void;
+
+  const refreshArenaMatches = async (serverUrl: string, preferredMatchId?: string): Promise<void> => {
+    arenaServerUrl = normalizeServerUrl(serverUrl);
+    ui.setArenaServerUrl(arenaServerUrl);
+    try {
+      const list = await fetchArenaMatches(arenaServerUrl);
+      ui.setArenaMatchList(list, preferredMatchId ?? activeArenaMatchId ?? undefined);
+      if (list.length === 0) {
+        ui.setArenaConnectionState('disconnected', 'Connected to server • No active matches yet');
+      }
+    } catch (err) {
+      ui.setArenaMatchList([]);
+      ui.setArenaConnectionState(
+        'error',
+        `Server unreachable (${err instanceof Error ? err.message : 'network error'})`,
+      );
+    }
+  };
+
+  const bindTransportHandlers = (t: SimTransport): void => {
+    t.onFrame((msg) => handleTransportFrame(msg));
+    t.onArenaFeed?.((ev) => ui.appendArenaFeedEvent(ev));
+    t.onArenaStatus?.((summary) => ui.updateArenaStatus(summary));
+    t.onConnectionState?.((state, msg) => ui.setArenaConnectionState(state, msg));
+  };
+
+  const connectToRemoteArena = async (serverUrl: string, matchId: string): Promise<void> => {
+    arenaServerUrl = normalizeServerUrl(serverUrl);
+    activeArenaMatchId = matchId;
+    ui.setTransportMode('remote');
+    ui.setArenaServerUrl(arenaServerUrl);
+    ui.clearArenaFeed();
+    ui.setArenaConnectionState('connecting', `Connecting to match ${matchId}...`);
+
+    const nextTransport = new RemoteArenaTransport(arenaServerUrl, matchId);
+    nextTransport.onArenaFeed((ev) => ui.appendArenaFeedEvent(ev));
+    nextTransport.onArenaStatus((summary) => ui.updateArenaStatus(summary));
+    nextTransport.onConnectionState((state, msg) => ui.setArenaConnectionState(state, msg));
+
+    try {
+      const res = await nextTransport.init();
+      const prev = transport;
+      transport = nextTransport;
+      prev.dispose();
+
+      bindTransportHandlers(transport);
+      hudLensEmpires.clear();
+      applySelection(null);
+      handleTransportFrame(res.firstFrame);
+
+      // Update URL query string cleanly for shareable Spectator links
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set('server', arenaServerUrl);
+      nextUrl.searchParams.set('match', matchId);
+      window.history.replaceState({}, '', nextUrl.toString());
+    } catch (err) {
+      nextTransport.dispose();
+      ui.setArenaConnectionState(
+        'error',
+        err instanceof Error ? err.message : 'Failed to connect to match',
+      );
+    }
+  };
+
+  const switchToLocalWasm = async (): Promise<void> => {
+    ui.setTransportMode('local');
+    if (transport.mode === 'local') return;
+
+    const nextTransport = new LocalWasmTransport();
+    const res = await nextTransport.init(randomSeed(), buildInitialLocalSettings());
+    const prev = transport;
+    transport = nextTransport;
+    prev.dispose();
+
+    bindTransportHandlers(transport);
+    hudLensEmpires.clear();
+    applySelection(null);
+    handleTransportFrame(res.firstFrame);
+
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete('server');
+    nextUrl.searchParams.delete('match');
+    window.history.replaceState({}, '', nextUrl.toString());
   };
 
   const ui = new UiController(meta, catalog, config, {
@@ -490,11 +505,11 @@ async function bootstrap(): Promise<void> {
       if (newSpeed > 0 && historyViewIndex !== null) {
         historyViewIndex = null;
         dataVersion++;
-        postToWorker({ type: 'setScrubIndex', index: null });
+        transport.setScrubIndex(null);
         ui.update(lastHud, true);
         syncHistoryBar();
       }
-      postToWorker({ type: 'setSpeed', speed: newSpeed });
+      transport.setSpeed(newSpeed);
       scheduleRender();
     },
     onStepTick: () => {
@@ -503,13 +518,13 @@ async function bootstrap(): Promise<void> {
       persistSettings();
       ui.setActiveSpeedButton(0);
       historyViewIndex = null;
-      postToWorker({ type: 'setScrubIndex', index: null });
-      postToWorker({ type: 'step', ticks: 1 });
+      transport.setScrubIndex(null);
+      transport.step(1);
     },
     onReset: () => {
       hudLensEmpires.clear();
       applySelection(null);
-      postToWorker({ type: 'newGalaxy', seed: randomSeed() });
+      transport.newGalaxy(randomSeed());
     },
     onParamChange: (key, value) => {
       if (key === 'ignoreRacialTraits') persisted.ignoreRacialTraits = value !== 0;
@@ -522,7 +537,7 @@ async function bootstrap(): Promise<void> {
       else if (key === 'aggroBias') persisted.aggroBias = value;
       else if (key === 'sprawlPenalty') persisted.sprawlPenalty = value;
       persistSettings();
-      postToWorker({ type: 'updateConfig', key, value, seed: randomSeed() });
+      transport.updateConfig(key, value, randomSeed());
     },
     onScenarioChange: (scenarioId: ScenarioId) => {
       const scen = getScenarioById(scenarioId);
@@ -561,8 +576,7 @@ async function bootstrap(): Promise<void> {
       ui.applyPersistedSettings(persisted);
       hudLensEmpires.clear();
       applySelection(null);
-      postToWorker({
-        type: 'applyScenario',
+      transport.applyScenario({
         seed: randomSeed(),
         modifiers: scen.modifiers,
         galaxySize: persisted.galaxySize,
@@ -570,7 +584,7 @@ async function bootstrap(): Promise<void> {
         wormholePairs: persisted.wormholePairs,
         crustRichness: persisted.crustRichness,
         gateCost: persisted.gateCost,
-      colCostMult: persisted.colCostMult,
+        colCostMult: persisted.colCostMult,
         interceptRad: persisted.interceptRad,
         salvageRate: persisted.salvageRate,
         aggroBias: persisted.aggroBias,
@@ -583,7 +597,7 @@ async function bootstrap(): Promise<void> {
       persistSettings();
       hudLensEmpires.clear();
       applySelection(null);
-      postToWorker({ type: 'newGalaxy', seed: randomSeed(), size, shape });
+      transport.newGalaxy(randomSeed(), size, shape);
     },
     onSelectObject: (sel) => {
       applySelection(sel);
@@ -595,7 +609,7 @@ async function bootstrap(): Promise<void> {
     onLaunchRaces: (races) => {
       hudLensEmpires.clear();
       applySelection(null);
-      postToWorker({ type: 'setRaces', races, seed: randomSeed() });
+      transport.setRaces(races, randomSeed());
     },
     onToggleEmpireLens: (empIndex) => {
       if (hudLensEmpires.has(empIndex)) {
@@ -638,7 +652,7 @@ async function bootstrap(): Promise<void> {
       debugPerfEnabled = enabled;
       persisted.debugPerf = enabled;
       persistSettings();
-      postToWorker({ type: 'setProfiling', enabled });
+      transport.setProfiling(enabled);
       perfFrames = 0;
       perfUiSum = 0;
       perfDrawSum = 0;
@@ -665,12 +679,12 @@ async function bootstrap(): Promise<void> {
         historyBuffer = [];
         historyViewIndex = null;
         lastRecordedTick = -1;
-        postToWorker({ type: 'setScrubIndex', index: null });
+        transport.setScrubIndex(null);
         recordHistoryFrame(lastHud, true);
       } else {
         historyBuffer = [];
         historyViewIndex = null;
-        postToWorker({ type: 'setScrubIndex', index: null });
+        transport.setScrubIndex(null);
         ui.update(lastHud, true);
       }
       syncHistoryBar();
@@ -725,8 +739,8 @@ async function bootstrap(): Promise<void> {
       workerTps = 0;
       workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
-      postToWorker({ type: 'setPaused', paused: true });
-      postToWorker({ type: 'setScrubIndex', index: clamped });
+      transport.setPaused(true);
+      transport.setScrubIndex(clamped);
       renderer.clearFx();
       historyViewIndex = clamped;
       dataVersion++;
@@ -742,8 +756,8 @@ async function bootstrap(): Promise<void> {
       workerTps = 0;
       workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
-      postToWorker({ type: 'setPaused', paused: true });
-      postToWorker({ type: 'setScrubIndex', index: next });
+      transport.setPaused(true);
+      transport.setScrubIndex(next);
       renderer.clearFx();
       historyViewIndex = next;
       dataVersion++;
@@ -754,28 +768,59 @@ async function bootstrap(): Promise<void> {
     onHistoryLive: () => {
       historyViewIndex = null;
       dataVersion++;
-      postToWorker({ type: 'setScrubIndex', index: null });
+      transport.setScrubIndex(null);
       ui.update(lastHud, true);
       syncHistoryBar();
       scheduleRender();
     },
-    getPlanetDetail: (index) =>
-      requestWorker<PlanetView | null>((reqId) => ({ type: 'getPlanetDetail', reqId, index })),
-    getStarSystem: (index) =>
-      requestWorker<StarSystemView | null>((reqId) => ({ type: 'getStarSystem', reqId, index })),
-    getFleetById: (id) =>
-      requestWorker<FleetView | null>((reqId) => ({ type: 'getFleetById', reqId, id })),
-    getDebrisDetail: (index) =>
-      requestWorker<DebrisFieldView | null>((reqId) => ({ type: 'getDebrisDetail', reqId, index })),
-    getPlanetFleets: (index) =>
-      requestWorker<FleetView[]>((reqId) => ({ type: 'getPlanetFleets', reqId, index })),
-    getReportsSnapshot: () =>
-      requestWorker<ReportsSnapshot>((reqId) => ({ type: 'getReportsSnapshot', reqId })),
-    getPowerHistory: () =>
-      requestWorker<number[][]>((reqId) => ({ type: 'getPowerHistory', reqId })),
+    getPlanetDetail: (index) => transport.getPlanetDetail(index),
+    getStarSystem: (index) => transport.getStarSystem(index),
+    getFleetById: (id) => transport.getFleetById(id),
+    getDebrisDetail: (index) => transport.getDebrisDetail(index),
+    getPlanetFleets: (index) => transport.getPlanetFleets(index),
+    getReportsSnapshot: () => transport.getReportsSnapshot(),
+    getPowerHistory: () => transport.getPowerHistory(),
+    onTransportModeChange: (mode) => {
+      if (mode === 'local') {
+        void switchToLocalWasm();
+      } else {
+        ui.setTransportMode('remote');
+        void refreshArenaMatches(arenaServerUrl);
+      }
+    },
+    onArenaRefreshMatches: (serverUrl) => {
+      void refreshArenaMatches(serverUrl);
+    },
+    onArenaConnect: (serverUrl, matchId) => {
+      void connectToRemoteArena(serverUrl, matchId);
+    },
+    onArenaCreateTestMatch: (serverUrl) => {
+      arenaServerUrl = normalizeServerUrl(serverUrl);
+      ui.setArenaConnectionState('connecting', 'Creating test Arena match...');
+      void createArenaMatch(arenaServerUrl, {
+        galaxySize: 'small',
+        galaxyShape: 'spiral',
+        ticksPerEpoch: 20,
+        epochTimeoutMs: 20000,
+        agentSeats: [],
+        debugAudit: true,
+        frameStrideTicks: 1,
+        tickDelayMs: 25,
+      })
+        .then(async (created) => {
+          await refreshArenaMatches(arenaServerUrl, created.matchId);
+          await connectToRemoteArena(arenaServerUrl, created.matchId);
+        })
+        .catch((err) => {
+          ui.setArenaConnectionState(
+            'error',
+            `Create match failed (${err instanceof Error ? err.message : 'network error'})`,
+          );
+        });
+    },
     onLabAction: (action) => {
       if (action === 'copyjson') {
-        void requestWorker<string>((reqId) => ({ type: 'exportStateJson', reqId })).then((json) => {
+        void transport.exportStateJson().then((json) => {
           void copyTextToClipboard(json).then((ok) => {
             if (ok) {
               ui.setStatus('✓ Copied state JSON to clipboard!');
@@ -788,16 +833,16 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      if (transport.mode === 'remote') {
+        ui.setStatus('Tournament & Co-Evolution lab tools are only available in Local WASM mode.');
+        return;
+      }
+
       if (action === 'tournament') {
         const numGames = 30;
         ui.setStatus(`🏆 Running ${numGames}-map Monte Carlo tournament...`);
-        void requestWorker<TournamentResult>((reqId) => ({
-          type: 'runTournament',
-          reqId,
-          numGames,
-          ticksPerGame: 1200,
-          seed: randomSeed(),
-        })).then((res) => {
+        void transport.runTournament(numGames, 1200, randomSeed()).then((res) => {
+          if (!res) return;
           ui.updateWinRateBar(res, lastHud);
           const summary = lastHud.empires
             .map((e, i) => `${e.name.slice(0, 4)} ${res.winRates[i] ?? 0}%`)
@@ -809,12 +854,8 @@ async function bootstrap(): Promise<void> {
 
       if (action === 'coevolve') {
         ui.setStatus('🧬 Co-evolution: training budgets, fleet classes & 6 tech fields...');
-        void requestWorker<CoEvolutionResult>((reqId) => ({
-          type: 'trainAi',
-          reqId,
-          evoSeed: randomSeed(),
-          resetSeed: randomSeed(),
-        })).then((res) => {
+        void transport.trainAi(randomSeed(), randomSeed()).then((res) => {
+          if (!res) return;
           ui.updateWinRateBar(res.tournament, lastHud);
           const summary = lastHud.empires
             .map((e, i) => `${e.name.slice(0, 4)} ${res.tournament.winRates[i] ?? 0}%`)
@@ -825,8 +866,8 @@ async function bootstrap(): Promise<void> {
     },
   });
 
-  // Receive ping-pong frame buffers from Web Worker and immediately recycle the previous slot
-  onFrameHandler = (msg) => {
+  // Receive frame buffers from active transport (Local WASM Worker or Remote Arena WebSocket)
+  handleTransportFrame = (msg: TransportFrame) => {
     const prev = liveBacking;
     liveBacking = {
       planets: msg.planets,
@@ -838,16 +879,8 @@ async function bootstrap(): Promise<void> {
       fleetsBuf: new Float32Array(msg.fleets, 0, msg.fleetsLen),
       debrisBuf: new Float32Array(msg.debris, 0, msg.debrisLen),
     };
-    // Return previous ArrayBuffers to worker for zero-GC reuse
-    postToWorker(
-      {
-        type: 'returnBuffers',
-        planets: prev.planets,
-        fleets: prev.fleets,
-        debris: prev.debris,
-      },
-      [prev.planets, prev.fleets, prev.debris],
-    );
+    // Return previous ArrayBuffers to Local WASM worker (no-op for Remote Arena)
+    transport.returnBuffers(prev.planets, prev.fleets, prev.debris);
 
     if (msg.config) {
       config = msg.config;
@@ -874,7 +907,7 @@ async function bootstrap(): Promise<void> {
     } else if (historyViewIndex === null) {
       recordHistoryFrame(lastHud);
       recordYearlyTelemetry(lastHud);
-      ui.update(lastHud, speed === 0 && msg.stepsDone > 0);
+      ui.update(lastHud, (speed === 0 && msg.stepsDone > 0) || transport.mode === 'remote');
       if (debugHistoryEnabled) syncHistoryBar();
     }
     if (debugPerfEnabled) {
@@ -882,6 +915,8 @@ async function bootstrap(): Promise<void> {
     }
     scheduleRender();
   };
+
+  bindTransportHandlers(transport);
 
   // Camera zoom (wheel + 2-finger pinch), pan (mouse drag + 1-finger drag),
   // reset (dblclick / Home / 0) & object tap/click
@@ -999,11 +1034,7 @@ async function bootstrap(): Promise<void> {
         if (!hit) {
           applySelection(null);
         } else if (hit.kind === 'fleet') {
-          void requestWorker<FleetView | null>((reqId) => ({
-            type: 'getFleetByIndex',
-            reqId,
-            index: hit.index,
-          })).then((fl) => {
+          void transport.getFleetByIndex(hit.index).then((fl) => {
             applySelection(fl ? { kind: 'fleet', id: fl.id } : null);
           });
         } else {
@@ -1040,6 +1071,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
     if (e.code !== 'Space') return;
+    if (transport.mode === 'remote') return;
     e.preventDefault();
     if (speed > 0) {
       speed = 0;
@@ -1048,7 +1080,7 @@ async function bootstrap(): Promise<void> {
       workerTps = 0;
       workerWasmMs = 0;
       ui.setActiveSpeedButton(0);
-      postToWorker({ type: 'setSpeed', speed: 0 });
+      transport.setSpeed(0);
       if (debugPerfEnabled) {
         const f = activeFrame();
         ui.updatePerfHud(true, renderer.backendName, 0, 0, 0, 0, 0, f.hud.planetCount, f.hud.fleetCount);
@@ -1061,18 +1093,23 @@ async function bootstrap(): Promise<void> {
       if (historyViewIndex !== null) {
         historyViewIndex = null;
         dataVersion++;
-        postToWorker({ type: 'setScrubIndex', index: null });
+        transport.setScrubIndex(null);
         ui.update(lastHud, true);
         syncHistoryBar();
       }
-      postToWorker({ type: 'setSpeed', speed });
+      transport.setSpeed(speed);
       scheduleRender();
     }
   });
 
   ui.applyPersistedSettings(persisted);
+  ui.setArenaServerUrl(arenaServerUrl);
+  ui.setTransportMode(initialMode);
+  if (initialMode === 'remote') {
+    void refreshArenaMatches(arenaServerUrl, activeArenaMatchId ?? undefined);
+  }
   if (debugPerfEnabled) {
-    postToWorker({ type: 'setProfiling', enabled: true });
+    transport.setProfiling(true);
     ui.updatePerfHud(
       true,
       renderer.backendName,

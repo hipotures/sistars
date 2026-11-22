@@ -31,6 +31,10 @@
   <div class="empires-bar" id="empiresBar"></div>
 
   <div class="nav-actions">
+    <div class="mode-switch" id="modeSwitch" title="Switch between Local WASM engine and Remote Arena Spectator Mode">
+      <button class="hud-btn active" id="btnModeLocal" data-mode="local">Local WASM</button>
+      <button class="hud-btn" id="btnModeRemote" data-mode="remote">Arena</button>
+    </div>
     <button class="hud-btn" id="tabRaces" data-drawer="drawerRaces">🧬 Races</button>
     <button class="hud-btn" id="tabTech" data-drawer="drawerTech">🔬 Tech (239)</button>
     <button class="hud-btn" id="tabStats" data-drawer="drawerStats">📊 Charts &amp; AI</button>
@@ -39,6 +43,39 @@
     <button class="hud-btn danger" id="btnReset" title="New galaxy">↺ Map</button>
   </div>
 </header>
+
+<!-- REMOTE ARENA SPECTATOR CONTROL BAR -->
+<div id="arenaBar" style="display:none;">
+  <span class="arena-badge" id="arenaConnBadge">OFFLINE</span>
+  <label class="arena-field">
+    <span>SERVER</span>
+    <input type="text" id="arenaServerInput" class="text-input arena-input" value="http://localhost:8080" placeholder="http://localhost:8080" />
+  </label>
+  <label class="arena-field">
+    <span>MATCH</span>
+    <select id="arenaMatchSelect" class="select-input arena-select">
+      <option value="">-- Select active match --</option>
+    </select>
+  </label>
+  <button class="hud-btn" id="btnArenaRefresh" title="Refresh match list">↻</button>
+  <button class="hud-btn active" id="btnArenaConnect">Connect</button>
+  <button class="hud-btn" id="btnArenaNewMatch" title="Create a new test Arena match on the server">+ New Test Match</button>
+  <span class="arena-epoch-info" id="arenaEpochInfo">Epoch #0 • Idle</span>
+</div>
+
+<!-- COLLAPSIBLE AI & DIPLOMACY FEED (Remote Arena Spectator Mode) -->
+<div id="arenaFeedPanel" style="display:none;">
+  <div class="arena-feed-head" id="arenaFeedHeader">
+    <div class="arena-feed-title">
+      <span>🧠 AI &amp; DIPLOMACY FEED</span>
+      <span class="arena-wait-pill" id="arenaWaitPill" style="display:none;">WAIT</span>
+    </div>
+    <button class="hud-btn" id="btnToggleArenaFeed" style="padding:2px 6px;font-size:0.62rem;">▾ Hide</button>
+  </div>
+  <div class="arena-feed-body" id="arenaFeedBody">
+    <div class="arena-feed-empty">Connect to an Arena match to stream LLM reasoning, diplomacy cables &amp; sector directives.</div>
+  </div>
+</div>
 
 <!-- DEBUG HISTORY SCRUBBER -->
 <div id="historyBar">

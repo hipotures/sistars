@@ -472,3 +472,60 @@ export interface StarSystemView {
   primaryIndex: number;
   bodies: SystemBodyView[];
 }
+
+export type TransportMode = 'local' | 'remote';
+export type ArenaMatchStatus = 'WaitingForAgents' | 'Running' | 'Finished';
+
+export interface ArenaMatchSummary {
+  matchId: string;
+  year: number;
+  tick: number;
+  epoch: number;
+  status: ArenaMatchStatus;
+  winner: number | null;
+  planetCount: number;
+  empireCount: number;
+  agentSeats: number[];
+  submittedSeats: number[];
+  waitingForSeats: number[];
+  ticksPerEpoch: number;
+  epochTimeoutMs: number;
+  epochDeadlineMs: number | null;
+  debugAudit: boolean;
+  anomaliesCount: number;
+}
+
+export interface CreateArenaMatchResponse {
+  matchId: string;
+  spectatorWsUrl: string;
+  empireTokens: Record<string, string>;
+  status: ArenaMatchStatus;
+  epoch: number;
+  ticksPerEpoch: number;
+  epochTimeoutMs: number;
+  agentSeats: number[];
+  debugAudit: boolean;
+}
+
+export type ArenaFeedKind =
+  | 'Reasoning'
+  | 'DipMessage'
+  | 'DiplomacyChange'
+  | 'SectorDirective'
+  | 'BuildHub'
+  | 'PolicyUpdate'
+  | 'EpochStatus'
+  | 'MatchFinished';
+
+export interface ArenaFeedEvent {
+  id: number;
+  epoch: number;
+  tick: number;
+  year: number;
+  empireIdx: number | null;
+  empireName: string;
+  empireColor: string;
+  kind: ArenaFeedKind;
+  summary: string;
+  detail?: string;
+}
