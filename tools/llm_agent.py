@@ -104,15 +104,18 @@ def build_system_prompt(empire_name: str, prt: str, goal: str, victory_goal: dic
     )
     p_dom = victory_goal.get("planetDominancePct", 60.0)
     r_dom = victory_goal.get("resourceDominancePct", 60.0)
-    max_yr = victory_goal.get("maxYear", 2700.0)
+    max_yr = float(victory_goal.get("maxYear", 0.0) or 0.0)
+    victory_line = (
+        f"Victory Conditions: Control >= {p_dom}% of galaxy planets OR >= {r_dom}% of galaxy resources"
+        + (f" (or lead at year {max_yr})." if max_yr > 0.0 else ".")
+    )
 
     return (
         "You are the Grand Strategist AI commanding an interstellar empire in SI-Stars (4X strategy).\n"
         f"Empire: {empire_name} | Trait: {prt}\n"
         f"Racial Profile: {prt_desc}\n"
         f"Strategic Goal: {goal}\n"
-        f"Victory Conditions: Control >= {p_dom}% of galaxy planets OR >= {r_dom}% of galaxy resources "
-        f"(or lead at year {max_yr}).\n\n"
+        f"{victory_line}\n\n"
         "=== ARCHITECTURE & ROLE ===\n"
         "- Each macro-epoch equals 1 game year (default 20 simulation ticks).\n"
         "- A deterministic built-in Governor continuously handles all low-level micro (individual ship "
@@ -129,7 +132,8 @@ def build_system_prompt(empire_name: str, prt: str, goal: str, victory_goal: dic
         "- sectors: non-empty grid sectors with sectorId, row, col, directive, unexploredStars, ownPlanets, "
         "ownResPerYear, neutralKnown, neutralPenScanned, avgNeutralHab (0.0-1.0), enemyPlanetsByEmp [[empId, count]], "
         "detectedEnemyFleetPower, avgIntelAgeYears.\n"
-        "- ownHubs: top 10 own worlds (planetId, sectorId, pop, factories, defense, starbaseTier, hasGate, minerals).\n"
+        "- ownHubs: top 10 own worlds (planetId, sectorId, pop, maxPop, factories, defense, starbaseTier, hasGate, "
+        "shipProdBuf, minerals). Use pop/maxPop against colPopReq/minShipyardPopRatio and shipProdBuf for build progress.\n"
         "- enemyPlanets: strictly foreign planets (never neutrals) with planetId, sectorId, ownerEmp, starbaseTier, "
         "hasStargate, intelAgeYears (higher = staler Fog-of-War snapshot), penScanned (true = penetrating scanner "
         "revealed popEst/facEst/defEst; false = surface scanner only).\n"
@@ -164,7 +168,7 @@ def build_system_prompt(empire_name: str, prt: str, goal: str, victory_goal: dic
         '    {"setSectorDirective": {"sectorId": 14, "mode": "Expand"}},\n'
         '    {"setDiplomacy": {"targetEmp": 2, "stance": "Neutral"}},\n'
         '    {"sendDipMessage": {"toEmp": 2, "text": "Short diplomatic cable"}},\n'
-        '    {"buildHub": {"planetIdx": 0, "kind": "Stargate"}}\n'
+        '    {"buildHub": {"planetId": 0, "kind": "Stargate"}}\n'
         "  ]\n"
         "}\n"
         "Rules:\n"
@@ -669,6 +673,18 @@ def main() -> int:
         help="Optional maximum number of epochs to play before exiting (0 = play until match ends)",
     )
     parser.add_argument(
+        "--min-year-step",
+        type=float,
+        default=1.0,
+        help="In realtimeAsync mode, minimum in-game year interval between LLM calls (default: 1.0)",
+    )
+    parser.add_argument(
+        "--min-wall-sec",
+        type=float,
+        default=3.0,
+        help="In realtimeAsync mode, minimum wall-clock seconds between LLM API calls (default: 3.0)",
+    )
+    parser.add_argument(
         "--poll-interval",
         type=float,
         default=0.25,
@@ -683,6 +699,9 @@ def main() -> int:
 
     epochs_handled = 0
     last_submitted_epoch: int | None = None
+    last_decision_year: float | None = None
+    last_decision_wall: float | None = None
+    warned_manual_mode = False
     system_prompt: str | None = None
     printed_system_once = False
     thread_messages: list[dict[str, str]] = []
@@ -715,6 +734,9 @@ def main() -> int:
             continue
 
         match_status = env.get("status")
+        exec_mode = str(env.get("executionMode", "realtimeAsync"))
+        is_paused = bool(env.get("paused", False))
+        epoch_timeout_ms = int(env.get("epochTimeoutMs", 0))
         epoch = int(env.get("epoch", 0))
         year = float(env.get("year", 2400.0))
         already_submitted = bool(env.get("alreadySubmitted", False))
@@ -727,9 +749,42 @@ def main() -> int:
             )
             return 0
 
-        if match_status not in ("WaitingForAgents", "Running") or already_submitted or last_submitted_epoch == epoch:
-            time.sleep(args.poll_interval)
-            continue
+        if args.manual and not warned_manual_mode:
+            warned_manual_mode = True
+            if exec_mode == "realtimeAsync":
+                print(
+                    "[llm_agent] WARNING: Match is running in 'realtimeAsync' mode! "
+                    "For manual copy-paste without the clock advancing while you type, "
+                    "switch the match to Lockstep (no timeout) or pause in the browser.",
+                    flush=True,
+                )
+            elif 0 < epoch_timeout_ms < 60_000:
+                print(
+                    f"[llm_agent] WARNING: Lockstep timeout is only {epoch_timeout_ms / 1000.0:.0f}s (< 60s). "
+                    "Consider creating Lockstep matches with timeout = 0 (infinite wait) for --manual mode.",
+                    flush=True,
+                )
+
+        if exec_mode == "realtimeAsync" and not args.manual:
+            if is_paused and last_decision_year is not None:
+                time.sleep(args.poll_interval)
+                continue
+            now_wall = time.monotonic()
+            year_ready = (
+                last_decision_year is None
+                or (year - last_decision_year) >= args.min_year_step
+            )
+            wall_ready = (
+                last_decision_wall is None
+                or (now_wall - last_decision_wall) >= (0.2 if args.mock else args.min_wall_sec)
+            )
+            if not (year_ready and wall_ready):
+                time.sleep(args.poll_interval)
+                continue
+        else:
+            if match_status not in ("WaitingForAgents", "Running") or already_submitted or last_submitted_epoch == epoch:
+                time.sleep(args.poll_interval)
+                continue
 
         if system_prompt is None:
             obs = env.get("observation", {})
@@ -744,6 +799,7 @@ def main() -> int:
 
         strategy_mem: dict[str, Any] | None = None
         reasoning_note: str | None = None
+        think_t0 = time.monotonic()
         try:
             if args.manual:
                 strategy_mem, commands = decide_manual(env, system_prompt, printed_system_once)
@@ -770,6 +826,7 @@ def main() -> int:
             )
             reasoning_note = f"Fallback to Governor autopilot due to agent error: {exc}"
             commands = []
+        think_sec = time.monotonic() - think_t0
 
         body_payload: dict[str, Any] = {
             "epoch": epoch,
@@ -790,6 +847,8 @@ def main() -> int:
             )
             if post_status == 200:
                 last_submitted_epoch = epoch
+                last_decision_year = year
+                last_decision_wall = time.monotonic()
                 epochs_handled += 1
                 summary_txt = (
                     f"[{strategy_mem.get('phase')}] {strategy_mem.get('rationale')}"
@@ -797,7 +856,8 @@ def main() -> int:
                     else (reasoning_note or "Pass")
                 )
                 print(
-                    f"[llm_agent] Epoch {epoch} (yr {year:.1f}): submitted {len(commands)} cmd(s) | {summary_txt}",
+                    f"[llm_agent] Epoch {epoch} (yr {year:.1f}, think {think_sec:.2f}s, {exec_mode}): "
+                    f"submitted {len(commands)} cmd(s) | {summary_txt}",
                     flush=True,
                 )
                 if args.max_epochs > 0 and epochs_handled >= args.max_epochs:

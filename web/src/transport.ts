@@ -70,9 +70,10 @@ export interface SimTransport {
   onConnectionState?(handler: (state: ArenaConnectionState, message?: string) => void): void;
   returnBuffers(planets: ArrayBuffer, fleets: ArrayBuffer, debris: ArrayBuffer): void;
 
-  // Local simulation controls (no-op in Remote Arena Spectator Mode)
+  // Local simulation controls (also bridged to POST /control in Remote Arena Spectator Mode)
   setSpeed(speed: number): void;
   setPaused(paused: boolean): void;
+  setExecutionMode?(mode: 'realtimeAsync' | 'lockstepEpoch'): void;
   step(ticks: number): void;
   newGalaxy(seed: number, size?: string, shape?: string): void;
   applyScenario(payload: ApplyScenarioPayload): void;
@@ -322,7 +323,14 @@ interface WsStatusPayload {
   summary: ArenaMatchSummary;
 }
 
-type WsMessage = WsInitPayload | WsFramePayload | WsFeedPayload | WsStatusPayload;
+interface WsControlPayload {
+  type: 'control';
+  paused: boolean;
+  speedMult: number;
+  executionMode: 'realtimeAsync' | 'lockstepEpoch';
+}
+
+type WsMessage = WsInitPayload | WsFramePayload | WsFeedPayload | WsStatusPayload | WsControlPayload;
 
 function toFloat32ArrayBuffer(arr: number[]): ArrayBuffer {
   const f32 = Float32Array.from(arr);
@@ -366,6 +374,8 @@ export async function createArenaMatch(
     scenarioModifiers?: ScenarioModifiers;
     galaxySize?: string;
     galaxyShape?: string;
+    executionMode?: 'realtimeAsync' | 'lockstepEpoch';
+    speedMult?: number;
     ticksPerEpoch?: number;
     epochTimeoutMs?: number;
     agentSeats?: number[];
@@ -379,14 +389,20 @@ export async function createArenaMatch(
   const body: Record<string, unknown> = {
     galaxySize: options?.galaxySize ?? 'small',
     galaxyShape: options?.galaxyShape ?? 'spiral',
+    executionMode: options?.executionMode ?? 'realtimeAsync',
+    speedMult: options?.speedMult ?? 1.0,
     ticksPerEpoch: options?.ticksPerEpoch ?? 20,
     epochTimeoutMs: options?.epochTimeoutMs ?? 20000,
     agentSeats: options?.agentSeats ?? [],
     debugAudit: options?.debugAudit ?? true,
-    frameStrideTicks: options?.frameStrideTicks ?? 1,
-    tickDelayMs: options?.tickDelayMs ?? 25,
     startPaused: options?.startPaused ?? false,
   };
+  if (options?.frameStrideTicks !== undefined) {
+    body.frameStrideTicks = options.frameStrideTicks;
+  }
+  if (options?.tickDelayMs !== undefined) {
+    body.tickDelayMs = options.tickDelayMs;
+  }
   if (options?.simConfig) {
     body.simConfig = options.simConfig;
   }
@@ -579,6 +595,19 @@ export class RemoteArenaTransport implements SimTransport {
         if (msg.type === 'status') {
           this.lastSummary = msg.summary;
           this.statusHandler?.(msg.summary);
+          return;
+        }
+
+        if (msg.type === 'control') {
+          if (this.lastSummary) {
+            this.lastSummary = {
+              ...this.lastSummary,
+              paused: msg.paused,
+              speedMult: msg.speedMult,
+              executionMode: msg.executionMode,
+            };
+            this.statusHandler?.(this.lastSummary);
+          }
         }
       };
     });
@@ -613,8 +642,12 @@ export class RemoteArenaTransport implements SimTransport {
     // Remote frames allocate fresh buffers from WebSocket JSON; no worker pool to recycle
   }
 
+  private speedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
   private postControl(payload: {
     paused?: boolean;
+    speedMult?: number;
+    executionMode?: 'realtimeAsync' | 'lockstepEpoch';
     tickDelayMs?: number;
     frameStrideTicks?: number;
     stepTicks?: number;
@@ -630,11 +663,30 @@ export class RemoteArenaTransport implements SimTransport {
   }
 
   public setSpeed(speed: number): void {
-    this.postControl(speedToArenaControl(speed));
+    if (this.speedDebounceTimer !== null) {
+      clearTimeout(this.speedDebounceTimer);
+      this.speedDebounceTimer = null;
+    }
+    if (speed <= 0) {
+      this.postControl({ paused: true });
+      return;
+    }
+    this.speedDebounceTimer = setTimeout(() => {
+      this.speedDebounceTimer = null;
+      this.postControl({ paused: false, speedMult: speed });
+    }, 60);
   }
 
   public setPaused(paused: boolean): void {
+    if (this.speedDebounceTimer !== null) {
+      clearTimeout(this.speedDebounceTimer);
+      this.speedDebounceTimer = null;
+    }
     this.postControl({ paused });
+  }
+
+  public setExecutionMode(mode: 'realtimeAsync' | 'lockstepEpoch'): void {
+    this.postControl({ executionMode: mode });
   }
 
   public step(ticks: number): void {

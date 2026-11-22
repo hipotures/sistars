@@ -87,6 +87,7 @@ async fn e2e_token_isolation_and_fow() {
         .json(&json!({
             "seed": 111111,
             "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
             "ticksPerEpoch": 10,
             "epochTimeoutMs": 5000,
             "agentSeats": [0, 1]
@@ -109,6 +110,7 @@ async fn e2e_token_isolation_and_fow() {
         .json(&json!({
             "seed": 222222,
             "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
             "ticksPerEpoch": 10,
             "epochTimeoutMs": 5000,
             "agentSeats": [0]
@@ -255,6 +257,7 @@ async fn e2e_epoch_barrier_and_timeout() {
         .json(&json!({
             "seed": 333333,
             "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
             "ticksPerEpoch": 10,
             "epochTimeoutMs": 450,
             "agentSeats": [0, 1]
@@ -336,6 +339,7 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
         .json(&json!({
             "seed": 444444,
             "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
             "ticksPerEpoch": 10,
             "epochTimeoutMs": 5000,
             "frameStrideTicks": 2,
@@ -562,6 +566,7 @@ async fn e2e_openapi_system_view_and_live_auditor() {
         .json(&json!({
             "seed": 555555,
             "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
             "ticksPerEpoch": 15,
             "epochTimeoutMs": 5000,
             "agentSeats": [0],
@@ -641,4 +646,289 @@ async fn e2e_openapi_system_view_and_live_auditor() {
         Some(0),
         "Expected 0 LiveAuditor anomalies, got: {anomalies}"
     );
+}
+
+#[tokio::test]
+async fn e2e_realtime_async_and_live_control() {
+    let srv = spawn_test_server().await;
+
+    // 1. Default executionMode must be `realtimeAsync`, advancing ticks smoothly without blocking on agentSeats
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 666001,
+            "galaxySize": "small",
+            "speedMult": 5.0,
+            "ticksPerEpoch": 20,
+            "agentSeats": [0]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(created["executionMode"].as_str(), Some("realtimeAsync"));
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+
+    // Ticks must advance smoothly even though Seat 0 has NOT submitted anything yet
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let s1: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let t1 = s1["tick"].as_u64().unwrap();
+    assert!(t1 > 0, "RealtimeAsync match must advance ticks without blocking on agents");
+
+    // 2. Live pause via POST /control -> ticks MUST freeze
+    let ctrl_pause: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/control", srv.base_url))
+        .json(&json!({ "paused": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ctrl_pause["paused"].as_bool(), Some(true));
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let t_paused_a = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["tick"]
+        .as_u64()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let t_paused_b = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["tick"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(t_paused_a, t_paused_b, "Paused match must not advance ticks");
+
+    // 3. stepTicks: 2 while paused -> advances by exactly 2 ticks and stays paused
+    let _ = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/control", srv.base_url))
+        .json(&json!({ "stepTicks": 2 }))
+        .send()
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let s_stepped: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s_stepped["tick"].as_u64(), Some(t_paused_b + 2));
+    assert_eq!(s_stepped["paused"].as_bool(), Some(true));
+
+    // 4. Resume at speedMult: 10.0 and submit an async POST /commands in flight (even with stale epoch: 0!)
+    let ctrl_resume: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/control", srv.base_url))
+        .json(&json!({ "paused": false, "speedMult": 10.0 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ctrl_resume["paused"].as_bool(), Some(false));
+    assert_eq!(ctrl_resume["speedMult"].as_f64(), Some(10.0));
+
+    let cmd_resp = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({
+            "epoch": 0,
+            "strategyMemory": {
+                "phase": "Async Blitz",
+                "priorities": ["Maintain tempo"],
+                "rationale": "Testing async command application in RealtimeAsync mode",
+                "diplomacyNotes": "None",
+                "pivotTriggers": []
+            },
+            "commands": [
+                { "setPolicy": { "colonizeVsAttackBias": 0.2 } }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cmd_resp.status(), StatusCode::OK);
+
+    tokio::time::sleep(Duration::from_millis(180)).await;
+    let obs_after: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .bearer_auth(&tok0)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        obs_after["previousStrategy"]["phase"].as_str(),
+        Some("Async Blitz"),
+        "Async strategyMemory must be applied on the fly without blocking clock"
+    );
+    let bias = obs_after["observation"]["empire"]["policy"]["colonizeVsAttackBias"]
+        .as_f64()
+        .unwrap();
+    assert!((bias - 0.2).abs() < 0.02, "Expected patched bias 0.2, got {bias}");
+    assert!(obs_after["tick"].as_u64().unwrap() > t_paused_b + 2);
+}
+
+#[tokio::test]
+async fn e2e_lockstep_no_timeout_and_exact_epoch_ticks() {
+    let srv = spawn_test_server().await;
+
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 666002,
+            "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
+            "ticksPerEpoch": 20,
+            "epochTimeoutMs": 0,
+            "agentSeats": [0]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+
+    // Epoch 0 -> submit -> must execute EXACTLY 20 ticks (tick == 20, epoch == 1)
+    let r0 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({ "epoch": 0, "commands": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r0.status(), StatusCode::OK);
+    let ep1 = wait_for_epoch(&srv, &match_id, 1, Duration::from_secs(3)).await;
+    assert_eq!(ep1["tick"].as_u64(), Some(20));
+
+    // With epochTimeoutMs == 0, Epoch 1 must wait indefinitely without timing out
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let still_ep1: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(still_ep1["epoch"].as_u64(), Some(1));
+    assert_eq!(still_ep1["tick"].as_u64(), Some(20));
+    assert_eq!(still_ep1["status"].as_str(), Some("WaitingForAgents"));
+    assert!(still_ep1["epochDeadlineMs"].is_null());
+
+    // Submit Epoch 1 -> must execute EXACTLY 20 ticks (tick == 40, epoch == 2, zero drift!)
+    let r1 = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({ "epoch": 1, "commands": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), StatusCode::OK);
+    let ep2 = wait_for_epoch(&srv, &match_id, 2, Duration::from_secs(3)).await;
+    assert_eq!(ep2["tick"].as_u64(), Some(40));
+}
+
+#[tokio::test]
+async fn e2e_observation_hub_metrics_and_build_hub_alias() {
+    let srv = spawn_test_server().await;
+
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 666003,
+            "galaxySize": "small",
+            "executionMode": "lockstepEpoch",
+            "ticksPerEpoch": 10,
+            "epochTimeoutMs": 0,
+            "agentSeats": [0]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+
+    // 1. Verify ownHubs includes `maxPop` and `shipProdBuf`
+    let obs: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .bearer_auth(&tok0)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let hub0 = &obs["observation"]["ownHubs"][0];
+    assert!(hub0["maxPop"].as_f64().unwrap_or(0.0) > 10.0, "ownHubs[0] must include maxPop, got {hub0}");
+    assert!(hub0["shipProdBuf"].is_number(), "ownHubs[0] must include shipProdBuf, got {hub0}");
+    let pid = hub0["planetId"].as_u64().unwrap();
+
+    // 2. Verify buildHub accepts BOTH `planetId` alias AND `planetIdx`
+    let res = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({
+            "epoch": 0,
+            "commands": [
+                { "buildHub": { "planetId": pid, "kind": "Stargate" } },
+                { "buildHub": { "planetIdx": pid, "kind": "Starbase" } }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["commandsQueued"].as_u64(), Some(2));
 }

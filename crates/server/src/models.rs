@@ -9,6 +9,14 @@ use sistars_engine::types::{
     StrategyMemory, TechCatalogView, VictoryConfig,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionMode {
+    #[default]
+    RealtimeAsync,
+    LockstepEpoch,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchStatus {
     WaitingForAgents,
@@ -62,6 +70,10 @@ pub struct CreateMatchRequest {
     pub frame_stride_ticks: Option<u32>,
     /// Optional per-tick delay in milliseconds for human spectator viewing (default: 0).
     pub tick_delay_ms: Option<u64>,
+    /// Execution clock mode: `realtimeAsync` (default smooth RTS) or `lockstepEpoch` (turn-based barrier).
+    pub execution_mode: Option<ExecutionMode>,
+    /// Simulation speed multiplier (`1.0` = 20 ticks/s, range `0.05..=20.0`).
+    pub speed_mult: Option<f32>,
     /// Start the match paused at tick 0 until unpaused via `/control` (default: false).
     pub start_paused: Option<bool>,
 }
@@ -73,6 +85,9 @@ pub struct CreateMatchResponse {
     pub spectator_ws_url: String,
     pub empire_tokens: HashMap<usize, String>,
     pub status: MatchStatus,
+    pub execution_mode: ExecutionMode,
+    pub paused: bool,
+    pub speed_mult: f32,
     pub epoch: u64,
     pub ticks_per_epoch: u32,
     pub epoch_timeout_ms: u64,
@@ -88,7 +103,9 @@ pub struct MatchPublicSummary {
     pub tick: u64,
     pub epoch: u64,
     pub status: MatchStatus,
+    pub execution_mode: ExecutionMode,
     pub paused: bool,
+    pub speed_mult: f32,
     pub tick_delay_ms: u64,
     pub winner: Option<usize>,
     pub planet_count: usize,
@@ -107,6 +124,8 @@ pub struct MatchPublicSummary {
 #[serde(rename_all = "camelCase")]
 pub struct MatchControlRequest {
     pub paused: Option<bool>,
+    pub speed_mult: Option<f32>,
+    pub execution_mode: Option<ExecutionMode>,
     pub tick_delay_ms: Option<u64>,
     pub frame_stride_ticks: Option<u32>,
     pub step_ticks: Option<u32>,
@@ -120,6 +139,10 @@ pub struct ObservationEnvelope {
     pub tick: u64,
     pub year: f32,
     pub status: MatchStatus,
+    pub execution_mode: ExecutionMode,
+    pub paused: bool,
+    pub speed_mult: f32,
+    pub epoch_timeout_ms: u64,
     pub deadline_ms: Option<u64>,
     pub already_submitted: bool,
     pub previous_strategy: Option<StrategyMemory>,
@@ -216,6 +239,12 @@ pub enum SpectatorWsMessage {
     #[serde(rename_all = "camelCase")]
     Status {
         summary: MatchPublicSummary,
+    },
+    #[serde(rename_all = "camelCase")]
+    Control {
+        paused: bool,
+        speed_mult: f32,
+        execution_mode: ExecutionMode,
     },
 }
 

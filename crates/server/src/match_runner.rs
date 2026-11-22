@@ -16,11 +16,33 @@ use sistars_engine::types::{
 use tokio::sync::{broadcast, watch, Notify, RwLock};
 
 use crate::models::{
-    ArenaFeedEvent, ArenaFeedKind, CreateMatchRequest, EngineMetadata, MatchPublicSummary,
-    MatchStatus, SpectatorWsMessage,
+    ArenaFeedEvent, ArenaFeedKind, CreateMatchRequest, EngineMetadata, ExecutionMode,
+    MatchPublicSummary, MatchStatus, SpectatorWsMessage,
 };
 
 const MAX_FEED_HISTORY: usize = 250;
+
+/// Maps `speed_mult` (`1.0` = 20 ticks/s -> 50 ms/tick) to per-tick delay in ms.
+pub fn speed_to_tick_delay_ms(speed_mult: f32) -> u64 {
+    let clamped = speed_mult.clamp(0.05, 20.0);
+    let tps = (20.0 * clamped).max(1.0);
+    if tps >= 400.0 {
+        0
+    } else {
+        (1000.0 / tps).round() as u64
+    }
+}
+
+/// At `<= 1.5x` (`<= 30 ticks/s`), emit a WebSocket frame every single tick for silky-smooth motion.
+/// Above `1.5x`, group ticks to keep WebSocket output around 25-30 FPS.
+pub fn speed_to_frame_stride(speed_mult: f32) -> u32 {
+    let clamped = speed_mult.clamp(0.05, 20.0);
+    if clamped <= 1.5 {
+        1
+    } else {
+        ((20.0 * clamped) / 28.0).ceil().clamp(1.0, 20.0) as u32
+    }
+}
 
 pub fn now_unix_ms() -> u64 {
     SystemTime::now()
@@ -65,7 +87,9 @@ pub struct MatchInner {
     pub match_id: String,
     pub sim: Simulation,
     pub status: MatchStatus,
+    pub execution_mode: ExecutionMode,
     pub paused: bool,
+    pub speed_mult: f32,
     pub pending_step_ticks: u32,
     pub epoch: u64,
     pub ticks_per_epoch: u32,
@@ -107,7 +131,9 @@ impl MatchInner {
             tick: self.sim.ticks,
             epoch: self.epoch,
             status: self.status,
+            execution_mode: self.execution_mode,
             paused: self.paused,
+            speed_mult: self.speed_mult,
             tick_delay_ms: self.tick_delay_ms,
             winner: self.sim.winner,
             planet_count: self.sim.owner.len(),
@@ -168,7 +194,7 @@ impl MatchInner {
         empire_idx: usize,
         cur_obs: &AgentObservation,
     ) -> Option<EpochDelta> {
-        if self.epoch == 0 {
+        if self.sim.ticks == 0 && self.epoch == 0 {
             return None;
         }
         let prev = self.prev_epoch_snapshots.get(&empire_idx)?;
@@ -416,26 +442,46 @@ impl MatchHandle {
             }
         }
 
+        let execution_mode = req.execution_mode.unwrap_or(ExecutionMode::RealtimeAsync);
+        let speed_mult = req.speed_mult.unwrap_or(1.0).clamp(0.05, 20.0);
         let ticks_per_epoch = req.ticks_per_epoch.unwrap_or(20).clamp(1, 500);
-        let epoch_timeout_ms = req.epoch_timeout_ms.unwrap_or(20_000).clamp(50, 600_000);
-        let frame_stride_ticks = req.frame_stride_ticks.unwrap_or(2).max(1);
-        let tick_delay_ms = req.tick_delay_ms.unwrap_or(0).min(1_000);
+        // `0` means infinite wait (no timeout) in LockstepEpoch mode.
+        let epoch_timeout_ms = match req.epoch_timeout_ms {
+            Some(0) => 0,
+            Some(ms) => ms.clamp(50, 600_000),
+            None => 20_000,
+        };
+        let frame_stride_ticks = req
+            .frame_stride_ticks
+            .map(|s| s.clamp(1, 50))
+            .unwrap_or_else(|| speed_to_frame_stride(speed_mult));
+        let tick_delay_ms = match req.tick_delay_ms {
+            Some(d) => d.min(2_000),
+            None => {
+                if execution_mode == ExecutionMode::LockstepEpoch && req.speed_mult.is_none() {
+                    0
+                } else {
+                    speed_to_tick_delay_ms(speed_mult)
+                }
+            }
+        };
         let start_paused = req.start_paused.unwrap_or(false);
 
-        let initial_status = if agent_seats.is_empty() {
-            MatchStatus::Running
-        } else {
+        let initial_status = if execution_mode == ExecutionMode::LockstepEpoch && !agent_seats.is_empty() {
             MatchStatus::WaitingForAgents
+        } else {
+            MatchStatus::Running
         };
-        // Epoch 0 never times out: when external agent seats are selected, the match waits
-        // indefinitely for every selected manager to connect and submit its initial Epoch 0 direction.
+        // Epoch 0 never times out in LockstepEpoch; in RealtimeAsync there is no barrier deadline.
         let initial_deadline = None;
 
-        let inner = Arc::new(RwLock::new(MatchInner {
+        let mut match_inner = MatchInner {
             match_id,
             sim,
             status: initial_status,
+            execution_mode,
             paused: start_paused,
+            speed_mult,
             pending_step_ticks: 0,
             epoch: 0,
             ticks_per_epoch,
@@ -452,7 +498,13 @@ impl MatchHandle {
             debug_audit,
             audit_log_path,
             last_written_anomaly_idx: 0,
-        }));
+        };
+        // Seed initial baseline snapshots at tick 0 so RealtimeAsync agents get an accurate delta immediately
+        for emp_i in 0..num_empires {
+            let snap = match_inner.capture_empire_snapshot(emp_i);
+            match_inner.prev_epoch_snapshots.insert(emp_i, snap);
+        }
+        let inner = Arc::new(RwLock::new(match_inner));
 
         let barrier_notify = Arc::new(Notify::new());
         let control_notify = Arc::new(Notify::new());
@@ -479,6 +531,135 @@ impl MatchHandle {
     }
 }
 
+fn apply_submissions_locked(
+    guard: &mut MatchInner,
+    capture_per_empire_delta: bool,
+) -> Vec<ArenaFeedEvent> {
+    let submissions = std::mem::take(&mut guard.pending_submissions);
+    let mut new_feed_events = Vec::new();
+    for (emp_idx, decision) in submissions {
+        if let Some(mem) = decision.strategy_memory {
+            guard.latest_strategy.insert(emp_idx, mem.clone());
+            let summary = if mem.phase.is_empty() {
+                mem.rationale.clone()
+            } else if mem.rationale.is_empty() {
+                format!("[{}]", mem.phase)
+            } else {
+                format!("[{}] {}", mem.phase, mem.rationale)
+            };
+            let ev = guard.push_feed_event_with_strategy(
+                Some(emp_idx),
+                ArenaFeedKind::StrategyUpdate,
+                summary,
+                None,
+                Some(mem),
+            );
+            new_feed_events.push(ev);
+        } else if let Some(note) = decision.reasoning_note {
+            let trimmed = note.trim();
+            if !trimmed.is_empty() {
+                let ev = guard.push_feed_event(
+                    Some(emp_idx),
+                    ArenaFeedKind::Reasoning,
+                    trimmed.to_string(),
+                    None,
+                );
+                new_feed_events.push(ev);
+            }
+        }
+
+        for cmd in &decision.commands {
+            let ev = match cmd {
+                StrategicCommand::SetPolicy(patch) => {
+                    let mut parts = Vec::new();
+                    if let Some(v) = patch.fac_share {
+                        parts.push(format!("fac {:.0}%", v * 100.0));
+                    }
+                    if let Some(v) = patch.ship_share {
+                        parts.push(format!("ship {:.0}%", v * 100.0));
+                    }
+                    if let Some(v) = patch.tech_share {
+                        parts.push(format!("tech {:.0}%", v * 100.0));
+                    }
+                    if let Some(v) = patch.mine_share {
+                        parts.push(format!("mine {:.0}%", v * 100.0));
+                    }
+                    if let Some(v) = patch.colonize_vs_attack_bias {
+                        parts.push(format!("colBias {:.2}", v));
+                    }
+                    if let Some(v) = patch.min_force_ratio {
+                        parts.push(format!("minForce {:.2}x", v));
+                    }
+                    if patch.tech_alloc.is_some() {
+                        parts.push("techAlloc".to_string());
+                    }
+                    if patch.mineral_weights.is_some() {
+                        parts.push("mineralWeights".to_string());
+                    }
+                    let desc = if parts.is_empty() {
+                        "Updated policy sliders".to_string()
+                    } else {
+                        format!("Updated policy ({})", parts.join(", "))
+                    };
+                    guard.push_feed_event(Some(emp_idx), ArenaFeedKind::PolicyUpdate, desc, None)
+                }
+                StrategicCommand::SetDiplomacy { target_emp, stance } => {
+                    let target_name = guard
+                        .sim
+                        .empires
+                        .get(*target_emp)
+                        .or_else(|| target_emp.checked_sub(1).and_then(|i| guard.sim.empires.get(i)))
+                        .map(|e| e.race.name.clone())
+                        .unwrap_or_else(|| format!("Empire #{target_emp}"));
+                    guard.push_feed_event(
+                        Some(emp_idx),
+                        ArenaFeedKind::DiplomacyChange,
+                        format!("Set diplomatic stance with {target_name} -> {stance:?}"),
+                        None,
+                    )
+                }
+                StrategicCommand::SetSectorDirective { sector_id, mode } => {
+                    guard.push_feed_event(
+                        Some(emp_idx),
+                        ArenaFeedKind::SectorDirective,
+                        format!("Sector #{sector_id} directive -> {mode:?}"),
+                        None,
+                    )
+                }
+                StrategicCommand::BuildHub { planet_idx, kind } => guard.push_feed_event(
+                    Some(emp_idx),
+                    ArenaFeedKind::BuildHub,
+                    format!("Ordered {kind:?} hub at Planet #{}", planet_idx + 1),
+                    None,
+                ),
+                StrategicCommand::SendDipMessage { to_emp, text } => {
+                    let target_name = guard
+                        .sim
+                        .empires
+                        .get(*to_emp)
+                        .or_else(|| to_emp.checked_sub(1).and_then(|i| guard.sim.empires.get(i)))
+                        .map(|e| e.race.name.clone())
+                        .unwrap_or_else(|| format!("Empire #{to_emp}"));
+                    guard.push_feed_event(
+                        Some(emp_idx),
+                        ArenaFeedKind::DipMessage,
+                        format!("Diplomatic cable to {target_name}: \"{text}\""),
+                        None,
+                    )
+                }
+            };
+            new_feed_events.push(ev);
+        }
+
+        guard.sim.submit_commands(emp_idx, decision.commands);
+        if capture_per_empire_delta {
+            let snap = guard.capture_empire_snapshot(emp_idx);
+            guard.prev_epoch_snapshots.insert(emp_idx, snap);
+        }
+    }
+    new_feed_events
+}
+
 async fn run_match_loop(
     inner: Arc<RwLock<MatchInner>>,
     barrier_notify: Arc<Notify>,
@@ -486,13 +667,16 @@ async fn run_match_loop(
     ws_tx: broadcast::Sender<SpectatorWsMessage>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let mut last_ws_broadcast = Instant::now() - Duration::from_secs(1);
+    let mut tps_window_start = Instant::now();
+    let mut tps_window_ticks = 0u32;
+
     loop {
         if *shutdown_rx.borrow() {
             break;
         }
 
-        // If the match is paused (and no manual single-step is queued), stay completely frozen
-        // before starting any epoch or agent timeout countdown.
+        // Wait cleanly (0% CPU) while paused and no manual single-step is queued
         loop {
             let (is_paused, has_step, is_done) = {
                 let guard = inner.read().await;
@@ -515,55 +699,200 @@ async fn run_match_loop(
             }
         }
 
-        // Phase A: Macro-Epoch Decision Barrier for external agent seats
-        let (has_agents, wait_indefinitely, timeout_ms, already_finished) = {
+        let (mode, is_finished) = {
             let mut guard = inner.write().await;
             if guard.sim.winner.is_some() {
                 guard.status = MatchStatus::Finished;
                 guard.epoch_deadline_ms = None;
                 let summary = guard.public_summary();
                 let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
-                (false, false, 0, true)
-            } else if !guard.agent_seats.is_empty() {
+                (guard.execution_mode, true)
+            } else {
+                (guard.execution_mode, false)
+            }
+        };
+        if is_finished {
+            break;
+        }
+
+        // =====================================================================
+        // MODE A: RealtimeAsync (smooth continuous RTS + async AI commands)
+        // =====================================================================
+        if mode == ExecutionMode::RealtimeAsync {
+            let (frame_opt, feed_events, status_opt, cur_delay_ms, finished) = {
+                let mut guard = inner.write().await;
+                guard.status = MatchStatus::Running;
+                guard.epoch_deadline_ms = None;
+
+                let feed_events = if !guard.pending_submissions.is_empty() {
+                    apply_submissions_locked(&mut guard, true)
+                } else {
+                    Vec::new()
+                };
+
+                let was_stepped = if guard.pending_step_ticks > 0 {
+                    guard.pending_step_ticks -= 1;
+                    true
+                } else {
+                    false
+                };
+
+                guard.sim.step_tick(false);
+                tps_window_ticks += 1;
+
+                let tpe = guard.ticks_per_epoch.max(1) as u64;
+                let new_epoch = guard.sim.ticks / tpe;
+                let epoch_advanced = new_epoch > guard.epoch;
+                if epoch_advanced {
+                    guard.epoch = new_epoch;
+                    guard.flush_live_auditor();
+                }
+
+                let is_victory = guard.sim.winner.is_some();
+                let mut victory_feed = None;
+                if is_victory {
+                    guard.status = MatchStatus::Finished;
+                    guard.flush_live_auditor();
+                    let winner_idx = guard.sim.winner;
+                    let winner_name = winner_idx
+                        .and_then(|w| guard.sim.empires.get(w))
+                        .map(|e| e.race.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let win_year = guard.sim.year;
+                    victory_feed = Some(guard.push_feed_event(
+                        winner_idx,
+                        ArenaFeedKind::MatchFinished,
+                        format!("{winner_name} achieved galactic victory in year {win_year:.1}!"),
+                        None,
+                    ));
+                }
+
+                let cur_stride = guard.frame_stride_ticks.max(1) as u64;
+                let cur_delay = guard.tick_delay_ms;
+                let planet_count = guard.sim.owner.len();
+                let min_ws_interval_ms: u64 = if planet_count >= 50_000 {
+                    250
+                } else if planet_count >= 5_000 {
+                    80
+                } else if guard.speed_mult <= 1.5 {
+                    0
+                } else {
+                    33
+                };
+                let ws_due = min_ws_interval_ms == 0
+                    || last_ws_broadcast.elapsed() >= Duration::from_millis(min_ws_interval_ms);
+                let should_broadcast = was_stepped
+                    || is_victory
+                    || (ws_due && (guard.sim.ticks % cur_stride == 0));
+
+                let frame = if should_broadcast && ws_tx.receiver_count() > 0 {
+                    last_ws_broadcast = Instant::now();
+                    let elapsed = tps_window_start.elapsed().as_secs_f32().max(0.001);
+                    let tps = if guard.paused {
+                        0.0
+                    } else {
+                        tps_window_ticks as f32 / elapsed
+                    };
+                    if elapsed >= 0.5 {
+                        tps_window_start = Instant::now();
+                        tps_window_ticks = 0;
+                    }
+                    Some(guard.build_frame_ws_message(tps))
+                } else {
+                    None
+                };
+
+                let mut all_feeds = feed_events;
+                if let Some(vf) = victory_feed {
+                    all_feeds.push(vf);
+                }
+                let status_opt = if epoch_advanced || is_victory {
+                    Some(guard.public_summary())
+                } else {
+                    None
+                };
+
+                (frame, all_feeds, status_opt, cur_delay, is_victory)
+            };
+
+            for ev in feed_events {
+                let _ = ws_tx.send(SpectatorWsMessage::Feed { event: ev });
+            }
+            if let Some(frame) = frame_opt {
+                let _ = ws_tx.send(frame);
+            }
+            if let Some(summary) = status_opt {
+                let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
+            }
+            if finished {
+                break;
+            }
+
+            if cur_delay_ms > 0 {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(cur_delay_ms)) => {}
+                    _ = control_notify.notified() => {}
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            return;
+                        }
+                    }
+                }
+            } else {
+                tokio::task::yield_now().await;
+            }
+            continue;
+        }
+
+        // =====================================================================
+        // MODE B: LockstepEpoch (deterministic turn-based barrier, exact ticks)
+        // =====================================================================
+        // Phase A: Macro-Epoch Decision Barrier for external agent seats
+        let (has_agents, wait_indefinitely, timeout_ms) = {
+            let mut guard = inner.write().await;
+            if !guard.agent_seats.is_empty() {
                 guard.status = MatchStatus::WaitingForAgents;
-                let is_initial_connect = guard.epoch == 0;
                 let timeout = guard.epoch_timeout_ms;
-                if is_initial_connect {
-                    // Never time out before initial connection & first direction acceptance on Epoch 0
+                // Wait indefinitely on Epoch 0 OR whenever epoch_timeout_ms == 0
+                let infinite = guard.epoch == 0 || timeout == 0;
+                if infinite {
                     guard.epoch_deadline_ms = None;
                 } else if guard.epoch_deadline_ms.is_none() {
                     guard.epoch_deadline_ms = Some(now_unix_ms() + timeout);
                 }
                 let summary = guard.public_summary();
                 let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
-                (true, is_initial_connect, timeout, false)
+                (true, infinite, timeout)
             } else {
                 guard.status = MatchStatus::Running;
                 guard.epoch_deadline_ms = None;
-                (false, false, 0, false)
+                (false, false, 0)
             }
         };
 
-        if already_finished {
-            break;
-        }
-
         if has_agents {
             let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let mut switched_to_realtime = false;
             loop {
-                let all_submitted = {
+                let (all_submitted, mode_now) = {
                     let guard = inner.read().await;
-                    guard
+                    let all_sub = guard
                         .agent_seats
                         .iter()
-                        .all(|s| guard.pending_submissions.contains_key(s))
+                        .all(|s| guard.pending_submissions.contains_key(s));
+                    (all_sub, guard.execution_mode)
                 };
+                if mode_now != ExecutionMode::LockstepEpoch {
+                    switched_to_realtime = true;
+                    break;
+                }
                 if all_submitted {
                     break;
                 }
                 if wait_indefinitely {
                     tokio::select! {
                         _ = barrier_notify.notified() => {}
+                        _ = control_notify.notified() => {}
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
                                 return;
@@ -573,6 +902,7 @@ async fn run_match_loop(
                 } else {
                     tokio::select! {
                         _ = barrier_notify.notified() => {}
+                        _ = control_notify.notified() => {}
                         _ = tokio::time::sleep_until(deadline) => {
                             break;
                         }
@@ -584,142 +914,24 @@ async fn run_match_loop(
                     }
                 }
             }
+            if switched_to_realtime {
+                continue;
+            }
         }
 
         if *shutdown_rx.borrow() {
             break;
         }
 
-        // Phase B: Apply queued agent decisions & emit Spectator ArenaFeedEvents
-        let (ticks_per_epoch, frame_stride, tick_delay_ms) = {
+        // Phase B: Capture start-of-epoch snapshot & apply queued agent decisions
+        let ticks_per_epoch = {
             let mut guard = inner.write().await;
-            let submissions = std::mem::take(&mut guard.pending_submissions);
-            let mut new_feed_events = Vec::new();
-
-            // Capture start-of-epoch baseline snapshot for every empire so EpochDelta at epoch+1 is exact
             let num_empires = guard.sim.empires.len();
             for emp_i in 0..num_empires {
                 let snap = guard.capture_empire_snapshot(emp_i);
                 guard.prev_epoch_snapshots.insert(emp_i, snap);
             }
-
-            for (emp_idx, decision) in submissions {
-                if let Some(mem) = decision.strategy_memory {
-                    guard.latest_strategy.insert(emp_idx, mem.clone());
-                    let summary = if mem.phase.is_empty() {
-                        mem.rationale.clone()
-                    } else if mem.rationale.is_empty() {
-                        format!("[{}]", mem.phase)
-                    } else {
-                        format!("[{}] {}", mem.phase, mem.rationale)
-                    };
-                    let ev = guard.push_feed_event_with_strategy(
-                        Some(emp_idx),
-                        ArenaFeedKind::StrategyUpdate,
-                        summary,
-                        None,
-                        Some(mem),
-                    );
-                    new_feed_events.push(ev);
-                } else if let Some(note) = decision.reasoning_note {
-                    let trimmed = note.trim();
-                    if !trimmed.is_empty() {
-                        let ev = guard.push_feed_event(
-                            Some(emp_idx),
-                            ArenaFeedKind::Reasoning,
-                            trimmed.to_string(),
-                            None,
-                        );
-                        new_feed_events.push(ev);
-                    }
-                }
-
-                for cmd in &decision.commands {
-                    let ev = match cmd {
-                        StrategicCommand::SetPolicy(patch) => {
-                            let mut parts = Vec::new();
-                            if let Some(v) = patch.fac_share {
-                                parts.push(format!("fac {:.0}%", v * 100.0));
-                            }
-                            if let Some(v) = patch.ship_share {
-                                parts.push(format!("ship {:.0}%", v * 100.0));
-                            }
-                            if let Some(v) = patch.tech_share {
-                                parts.push(format!("tech {:.0}%", v * 100.0));
-                            }
-                            if let Some(v) = patch.mine_share {
-                                parts.push(format!("mine {:.0}%", v * 100.0));
-                            }
-                            if let Some(v) = patch.colonize_vs_attack_bias {
-                                parts.push(format!("colBias {:.2}", v));
-                            }
-                            if let Some(v) = patch.min_force_ratio {
-                                parts.push(format!("minForce {:.2}x", v));
-                            }
-                            if patch.tech_alloc.is_some() {
-                                parts.push("techAlloc".to_string());
-                            }
-                            if patch.mineral_weights.is_some() {
-                                parts.push("mineralWeights".to_string());
-                            }
-                            let desc = if parts.is_empty() {
-                                "Updated policy sliders".to_string()
-                            } else {
-                                format!("Updated policy ({})", parts.join(", "))
-                            };
-                            guard.push_feed_event(Some(emp_idx), ArenaFeedKind::PolicyUpdate, desc, None)
-                        }
-                        StrategicCommand::SetDiplomacy { target_emp, stance } => {
-                            let target_name = guard
-                                .sim
-                                .empires
-                                .get(*target_emp)
-                                .or_else(|| target_emp.checked_sub(1).and_then(|i| guard.sim.empires.get(i)))
-                                .map(|e| e.race.name.clone())
-                                .unwrap_or_else(|| format!("Empire #{target_emp}"));
-                            guard.push_feed_event(
-                                Some(emp_idx),
-                                ArenaFeedKind::DiplomacyChange,
-                                format!("Set diplomatic stance with {target_name} -> {stance:?}"),
-                                None,
-                            )
-                        }
-                        StrategicCommand::SetSectorDirective { sector_id, mode } => {
-                            guard.push_feed_event(
-                                Some(emp_idx),
-                                ArenaFeedKind::SectorDirective,
-                                format!("Sector #{sector_id} directive -> {mode:?}"),
-                                None,
-                            )
-                        }
-                        StrategicCommand::BuildHub { planet_idx, kind } => guard.push_feed_event(
-                            Some(emp_idx),
-                            ArenaFeedKind::BuildHub,
-                            format!("Ordered {kind:?} hub at Planet #{}", planet_idx + 1),
-                            None,
-                        ),
-                        StrategicCommand::SendDipMessage { to_emp, text } => {
-                            let target_name = guard
-                                .sim
-                                .empires
-                                .get(*to_emp)
-                                .or_else(|| to_emp.checked_sub(1).and_then(|i| guard.sim.empires.get(i)))
-                                .map(|e| e.race.name.clone())
-                                .unwrap_or_else(|| format!("Empire #{to_emp}"));
-                            guard.push_feed_event(
-                                Some(emp_idx),
-                                ArenaFeedKind::DipMessage,
-                                format!("Diplomatic cable to {target_name}: \"{text}\""),
-                                None,
-                            )
-                        }
-                    };
-                    new_feed_events.push(ev);
-                }
-
-                guard.sim.submit_commands(emp_idx, decision.commands);
-            }
-
+            let new_feed_events = apply_submissions_locked(&mut guard, false);
             guard.status = MatchStatus::Running;
             guard.epoch_deadline_ms = None;
             let summary = guard.public_summary();
@@ -728,31 +940,33 @@ async fn run_match_loop(
                 let _ = ws_tx.send(SpectatorWsMessage::Feed { event: ev });
             }
             let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
-
-            (
-                guard.ticks_per_epoch,
-                guard.frame_stride_ticks,
-                guard.tick_delay_ms,
-            )
+            guard.ticks_per_epoch
         };
 
-        // Phase C: Step simulation for `ticks_per_epoch` ticks (halting immediately on victory, honoring live pause/speed/step)
+        // Phase C: Execute EXACTLY `ticks_per_epoch` ticks (zero drift!)
         let epoch_start = Instant::now();
-        let mut last_ws_broadcast = Instant::now() - Duration::from_secs(1);
         let mut finished = false;
         let mut ticks_done = 0u32;
+        let mut switched_mode_mid_epoch = false;
 
         for step_i in 0..ticks_per_epoch {
             if *shutdown_rx.borrow() {
                 return;
             }
 
-            // Honor server-side pause & single-step controls cleanly
             loop {
-                let (is_paused, has_step) = {
+                let (is_paused, has_step, mode_now) = {
                     let guard = inner.read().await;
-                    (guard.paused, guard.pending_step_ticks > 0)
+                    (
+                        guard.paused,
+                        guard.pending_step_ticks > 0,
+                        guard.execution_mode,
+                    )
                 };
+                if mode_now != ExecutionMode::LockstepEpoch {
+                    switched_mode_mid_epoch = true;
+                    break;
+                }
                 if !is_paused || has_step {
                     break;
                 }
@@ -764,6 +978,9 @@ async fn run_match_loop(
                         }
                     }
                 }
+            }
+            if switched_mode_mid_epoch {
+                break;
             }
 
             let (frame_opt, cur_delay_ms) = {
@@ -784,10 +1001,13 @@ async fn run_match_loop(
                     250
                 } else if planet_count >= 5_000 {
                     80
+                } else if guard.speed_mult <= 1.5 {
+                    0
                 } else {
                     33
                 };
-                let ws_due = last_ws_broadcast.elapsed() >= Duration::from_millis(min_ws_interval_ms);
+                let ws_due = min_ws_interval_ms == 0
+                    || last_ws_broadcast.elapsed() >= Duration::from_millis(min_ws_interval_ms);
                 let is_victory = guard.sim.winner.is_some();
                 let is_last = step_i + 1 == ticks_per_epoch;
                 let should_broadcast = was_stepped
@@ -844,9 +1064,12 @@ async fn run_match_loop(
                 tokio::task::yield_now().await;
             }
         }
-        let _ = (frame_stride, tick_delay_ms);
 
-        // Phase D: Post-epoch LiveAuditor flush & epoch increment
+        if switched_mode_mid_epoch {
+            continue;
+        }
+
+        // Phase D: Post-epoch LiveAuditor flush & exact epoch increment
         {
             let mut guard = inner.write().await;
             guard.flush_live_auditor();
@@ -860,15 +1083,14 @@ async fn run_match_loop(
             guard.epoch += 1;
             if !guard.agent_seats.is_empty() {
                 guard.status = MatchStatus::WaitingForAgents;
-                guard.epoch_deadline_ms = Some(now_unix_ms() + guard.epoch_timeout_ms);
+                guard.epoch_deadline_ms = if guard.epoch_timeout_ms == 0 {
+                    None
+                } else {
+                    Some(now_unix_ms() + guard.epoch_timeout_ms)
+                };
             }
             let summary = guard.public_summary();
             let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
-        }
-
-        // For autonomous (no-agent) matches with 0 tick delay, yield briefly between epochs
-        if !has_agents && tick_delay_ms == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }

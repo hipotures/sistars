@@ -60,6 +60,7 @@
   <button class="hud-btn" id="btnArenaRefresh" title="Refresh match list">↻</button>
   <button class="hud-btn active" id="btnArenaConnect">Connect</button>
   <button class="hud-btn danger" id="btnArenaDelete" title="Delete selected match from server">🗑</button>
+  <button class="hud-btn" id="btnArenaExecToggle" title="Switch live between Realtime Async RTS and Lockstep Epoch barrier">⚡ Realtime</button>
   <button class="hud-btn" id="btnArenaNewMatch" title="Configure & launch a new Arena match on the server">+ New Match</button>
   <span class="arena-epoch-info" id="arenaEpochInfo">Epoch #0 • Idle</span>
 </div>
@@ -105,14 +106,21 @@
     <input type="number" id="arenaNewSeed" class="text-input" placeholder="e.g. 777001" />
   </div>
 
-  <h3>2. Epoch Barrier &amp; Pacing</h3>
+  <h3>2. Execution Mode &amp; Pacing</h3>
+  <div class="field">
+    <div class="field-header"><span>Execution clock mode</span></div>
+    <select id="arenaNewExecMode" class="select-input">
+      <option value="realtimeAsync" selected>⚡ Realtime Async (Smooth RTS — default)</option>
+      <option value="lockstepEpoch">🔒 Lockstep Epoch (Manual / Benchmark, no timeout)</option>
+    </select>
+  </div>
   <div class="field">
     <div class="field-header"><span>Ticks per epoch (20 = 1.0 yr)</span><span class="val" id="v_arenaTicksPerEpoch">20</span></div>
     <input type="range" id="arenaNewTicksPerEpoch" min="5" max="100" step="5" value="20" />
   </div>
   <div class="field">
-    <div class="field-header"><span>Agent decision timeout (sec)</span><span class="val" id="v_arenaTimeoutSec">20s</span></div>
-    <input type="range" id="arenaNewTimeoutSec" min="5" max="120" step="5" value="20" />
+    <div class="field-header"><span>Lockstep timeout (0 = infinite wait)</span><span class="val" id="v_arenaTimeoutSec">20s</span></div>
+    <input type="range" id="arenaNewTimeoutSec" min="0" max="120" step="5" value="20" />
   </div>
   <div class="field">
     <div class="field-header"><span>Initial server speed</span></div>

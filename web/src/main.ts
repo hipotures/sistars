@@ -152,6 +152,7 @@ async function bootstrap(): Promise<void> {
       : `http://${window.location.hostname || 'localhost'}:8080`;
   let arenaServerUrl = normalizeServerUrl(urlServer ?? defaultServer);
   let activeArenaMatchId: string | null = urlMatch;
+  let activeArenaExecMode: 'realtimeAsync' | 'lockstepEpoch' = 'realtimeAsync';
 
   let transport: SimTransport;
   let initResult;
@@ -445,7 +446,18 @@ async function bootstrap(): Promise<void> {
 
     const nextTransport = new RemoteArenaTransport(arenaServerUrl, matchId);
     nextTransport.onArenaFeed((ev) => ui.appendArenaFeedEvent(ev));
-    nextTransport.onArenaStatus((summary) => ui.updateArenaStatus(summary));
+    nextTransport.onArenaStatus((summary) => {
+      if (summary.executionMode) {
+        activeArenaExecMode = summary.executionMode;
+      }
+      if (summary.paused !== undefined) {
+        const srvSpeed = summary.paused ? 0 : (summary.speedMult ?? 1);
+        speed = srvSpeed;
+        if (srvSpeed > 0) lastNonZeroSpeed = srvSpeed;
+        ui.setActiveSpeedButton(srvSpeed);
+      }
+      ui.updateArenaStatus(summary);
+    });
     nextTransport.onConnectionState((state, msg) => ui.setArenaConnectionState(state, msg));
 
     try {
@@ -811,6 +823,12 @@ async function bootstrap(): Promise<void> {
           await refreshArenaMatches(arenaServerUrl);
         }
       });
+    },
+    onArenaToggleExecMode: () => {
+      if (transport.mode !== 'remote') return;
+      const nextMode = activeArenaExecMode === 'realtimeAsync' ? 'lockstepEpoch' : 'realtimeAsync';
+      activeArenaExecMode = nextMode;
+      transport.setExecutionMode?.(nextMode);
     },
     onArenaCreateMatch: async (serverUrl, opts, initialSpeed) => {
       arenaServerUrl = normalizeServerUrl(serverUrl);

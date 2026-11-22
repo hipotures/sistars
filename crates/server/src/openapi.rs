@@ -27,6 +27,11 @@ pub fn build_openapi_spec() -> Value {
                 }
             },
             "schemas": {
+                "ExecutionMode": {
+                    "type": "string",
+                    "enum": ["realtimeAsync", "lockstepEpoch"],
+                    "description": "realtimeAsync = smooth RTS with non-blocking async agents (default); lockstepEpoch = turn-based epoch barrier."
+                },
                 "MatchStatus": {
                     "type": "string",
                     "enum": ["WaitingForAgents", "Running", "Finished"]
@@ -220,7 +225,11 @@ pub fn build_openapi_spec() -> Value {
                                 "buildHub": {
                                     "type": "object",
                                     "properties": {
-                                        "planetIdx": { "type": "integer", "minimum": 0 },
+                                        "planetIdx": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "description": "Planet index (also accepts alias `planetId`)."
+                                        },
                                         "kind": { "$ref": "#/components/schemas/HubKind" }
                                     },
                                     "required": ["planetIdx", "kind"]
@@ -352,7 +361,24 @@ pub fn build_openapi_spec() -> Value {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/SectorSummary" }
                         },
-                        "ownHubs": { "type": "array", "items": { "type": "object" } },
+                        "ownHubs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "planetId": { "type": "integer" },
+                                    "sectorId": { "type": "integer" },
+                                    "pop": { "type": "number" },
+                                    "maxPop": { "type": "number" },
+                                    "factories": { "type": "number" },
+                                    "defense": { "type": "number" },
+                                    "starbaseTier": { "type": "integer" },
+                                    "hasGate": { "type": "boolean" },
+                                    "shipProdBuf": { "type": "number" },
+                                    "minerals": { "$ref": "#/components/schemas/NamedMinerals" }
+                                }
+                            }
+                        },
                         "enemyPlanets": { "type": "array", "items": { "type": "object" } },
                         "wormholes": { "type": "array", "items": { "type": "object" } },
                         "stargates": { "type": "array", "items": { "type": "object" } },
@@ -377,6 +403,10 @@ pub fn build_openapi_spec() -> Value {
                         "tick": { "type": "integer" },
                         "year": { "type": "number" },
                         "status": { "$ref": "#/components/schemas/MatchStatus" },
+                        "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
+                        "paused": { "type": "boolean" },
+                        "speedMult": { "type": "number" },
+                        "epochTimeoutMs": { "type": "integer" },
                         "deadlineMs": { "type": "integer", "nullable": true },
                         "alreadySubmitted": { "type": "boolean" },
                         "previousStrategy": {
@@ -411,21 +441,34 @@ pub fn build_openapi_spec() -> Value {
                     },
                     "required": ["commands"]
                 },
+                "MatchControlRequest": {
+                    "type": "object",
+                    "description": "Live clock & execution control patch for a running Arena match.",
+                    "properties": {
+                        "paused": { "type": "boolean", "nullable": true },
+                        "speedMult": { "type": "number", "minimum": 0.05, "maximum": 20.0, "nullable": true },
+                        "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
+                        "stepTicks": { "type": "integer", "minimum": 1, "maximum": 100, "nullable": true }
+                    }
+                },
                 "CreateMatchRequest": {
                     "type": "object",
                     "properties": {
                         "seed": { "type": "integer", "nullable": true },
                         "galaxySize": { "type": "string", "nullable": true },
                         "galaxyShape": { "type": "string", "nullable": true },
+                        "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
+                        "speedMult": { "type": "number", "default": 1.0, "minimum": 0.05, "maximum": 20.0 },
+                        "startPaused": { "type": "boolean", "default": false },
                         "ticksPerEpoch": { "type": "integer", "default": 20 },
-                        "epochTimeoutMs": { "type": "integer", "default": 20000 },
+                        "epochTimeoutMs": { "type": "integer", "default": 20000, "description": "0 = wait indefinitely (no timeout) in LockstepEpoch mode." },
                         "agentSeats": {
                             "type": "array",
                             "items": { "type": "integer" }
                         },
                         "debugAudit": { "type": "boolean", "default": false },
-                        "frameStrideTicks": { "type": "integer", "default": 2 },
-                        "tickDelayMs": { "type": "integer", "default": 0 }
+                        "frameStrideTicks": { "type": "integer", "default": 1 },
+                        "tickDelayMs": { "type": "integer", "nullable": true }
                     }
                 },
                 "MatchPublicSummary": {
@@ -436,6 +479,9 @@ pub fn build_openapi_spec() -> Value {
                         "tick": { "type": "integer" },
                         "epoch": { "type": "integer" },
                         "status": { "$ref": "#/components/schemas/MatchStatus" },
+                        "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
+                        "paused": { "type": "boolean" },
+                        "speedMult": { "type": "number" },
                         "winner": { "type": "integer", "nullable": true },
                         "planetCount": { "type": "integer" },
                         "empireCount": { "type": "integer" },
@@ -500,6 +546,39 @@ pub fn build_openapi_spec() -> Value {
                     "responses": {
                         "200": {
                             "description": "MatchPublicSummary",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/MatchPublicSummary" }
+                                }
+                            }
+                        },
+                        "404": { "description": "Match not found" }
+                    }
+                },
+                "delete": {
+                    "summary": "Shut down and delete a match from the server",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "204": { "description": "Match deleted" },
+                        "404": { "description": "Match not found" }
+                    }
+                }
+            },
+            "/api/v1/matches/{id}/control": {
+                "post": {
+                    "summary": "Live-control match pause, speedMult, executionMode, or single-step ticks",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/MatchControlRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Updated MatchPublicSummary",
                             "content": {
                                 "application/json": {
                                     "schema": { "$ref": "#/components/schemas/MatchPublicSummary" }

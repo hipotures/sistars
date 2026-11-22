@@ -476,13 +476,17 @@ export interface StarSystemView {
 export type TransportMode = 'local' | 'remote';
 export type ArenaMatchStatus = 'WaitingForAgents' | 'Running' | 'Finished';
 
+export type ExecutionMode = 'realtimeAsync' | 'lockstepEpoch';
+
 export interface ArenaMatchSummary {
   matchId: string;
   year: number;
   tick: number;
   epoch: number;
   status: ArenaMatchStatus;
+  executionMode?: ExecutionMode;
   paused?: boolean;
+  speedMult?: number;
   tickDelayMs?: number;
   winner: number | null;
   planetCount: number;
@@ -503,12 +507,14 @@ export interface CreateArenaMatchOptions {
   scenarioModifiers?: ScenarioModifiers;
   galaxySize: string;
   galaxyShape: string;
+  executionMode?: ExecutionMode;
+  speedMult?: number;
   ticksPerEpoch: number;
   epochTimeoutMs: number;
   agentSeats: number[];
   debugAudit: boolean;
-  frameStrideTicks: number;
-  tickDelayMs: number;
+  frameStrideTicks?: number;
+  tickDelayMs?: number;
   startPaused?: boolean;
 }
 
@@ -517,6 +523,9 @@ export interface CreateArenaMatchResponse {
   spectatorWsUrl: string;
   empireTokens: Record<string, string>;
   status: ArenaMatchStatus;
+  executionMode?: ExecutionMode;
+  paused?: boolean;
+  speedMult?: number;
   epoch: number;
   ticksPerEpoch: number;
   epochTimeoutMs: number;

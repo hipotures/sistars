@@ -14,11 +14,11 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
-use crate::match_runner::{MatchHandle, QueuedDecision};
+use crate::match_runner::{speed_to_frame_stride, speed_to_tick_delay_ms, MatchHandle, QueuedDecision};
 use crate::models::{
-    ApiErrorBody, CreateMatchRequest, CreateMatchResponse, MatchControlRequest, MatchPublicSummary,
-    MatchStatus, ObservationEnvelope, SpectatorWsMessage, SubmitCommandsRequest,
-    SubmitCommandsResponse,
+    ApiErrorBody, CreateMatchRequest, CreateMatchResponse, ExecutionMode, MatchControlRequest,
+    MatchPublicSummary, MatchStatus, ObservationEnvelope, SpectatorWsMessage,
+    SubmitCommandsRequest, SubmitCommandsResponse,
 };
 use crate::openapi::build_openapi_spec;
 
@@ -169,10 +169,13 @@ async fn create_match(
     let (handle, empire_tokens, agent_seats) =
         MatchHandle::spawn(match_id.clone(), req, state.logs_dir.clone());
 
-    let (status, epoch, ticks_per_epoch, epoch_timeout_ms, debug_audit) = {
+    let (status, execution_mode, paused, speed_mult, epoch, ticks_per_epoch, epoch_timeout_ms, debug_audit) = {
         let guard = handle.inner.read().await;
         (
             guard.status,
+            guard.execution_mode,
+            guard.paused,
+            guard.speed_mult,
             guard.epoch,
             guard.ticks_per_epoch,
             guard.epoch_timeout_ms,
@@ -199,6 +202,9 @@ async fn create_match(
             spectator_ws_url,
             empire_tokens,
             status,
+            execution_mode,
+            paused,
+            speed_mult,
             epoch,
             ticks_per_epoch,
             epoch_timeout_ms,
@@ -292,8 +298,22 @@ async fn control_match(
         if let Some(p) = req.paused {
             guard.paused = p;
         }
+        if let Some(sm) = req.speed_mult {
+            let clamped = sm.clamp(0.05, 20.0);
+            guard.speed_mult = clamped;
+            guard.tick_delay_ms = speed_to_tick_delay_ms(clamped);
+            guard.frame_stride_ticks = speed_to_frame_stride(clamped);
+        }
+        if let Some(mode) = req.execution_mode {
+            guard.execution_mode = mode;
+            if mode == ExecutionMode::RealtimeAsync && guard.status == MatchStatus::WaitingForAgents
+            {
+                guard.status = MatchStatus::Running;
+                guard.epoch_deadline_ms = None;
+            }
+        }
         if let Some(d) = req.tick_delay_ms {
-            guard.tick_delay_ms = d.min(1_000);
+            guard.tick_delay_ms = d.min(2_000);
         }
         if let Some(s) = req.frame_stride_ticks {
             guard.frame_stride_ticks = s.clamp(1, 50);
@@ -302,13 +322,19 @@ async fn control_match(
             guard.pending_step_ticks = guard.pending_step_ticks.saturating_add(steps.min(100));
         }
         let summary = guard.public_summary();
+        let _ = handle.ws_tx.send(SpectatorWsMessage::Control {
+            paused: guard.paused,
+            speed_mult: guard.speed_mult,
+            execution_mode: guard.execution_mode,
+        });
         let _ = handle.ws_tx.send(SpectatorWsMessage::Status {
             summary: summary.clone(),
         });
         summary
     };
 
-    handle.control_notify.notify_one();
+    handle.control_notify.notify_waiters();
+    handle.barrier_notify.notify_waiters();
     Ok(Json(summary))
 }
 
@@ -326,7 +352,8 @@ async fn get_observation(
 
     let guard = handle.inner.read().await;
     let observation = guard.sim.take_agent_observation(empire_idx);
-    let already_submitted = guard.pending_submissions.contains_key(&empire_idx);
+    let already_submitted = guard.execution_mode == ExecutionMode::LockstepEpoch
+        && guard.pending_submissions.contains_key(&empire_idx);
     let previous_strategy = guard.latest_strategy.get(&empire_idx).cloned();
     let delta = guard.compute_epoch_delta(empire_idx, &observation);
     Ok(Json(ObservationEnvelope {
@@ -335,6 +362,10 @@ async fn get_observation(
         tick: guard.sim.ticks,
         year: sistars_engine::types::round1(guard.sim.year),
         status: guard.status,
+        execution_mode: guard.execution_mode,
+        paused: guard.paused,
+        speed_mult: guard.speed_mult,
+        epoch_timeout_ms: guard.epoch_timeout_ms,
         deadline_ms: guard.epoch_deadline_ms,
         already_submitted,
         previous_strategy,
@@ -365,16 +396,18 @@ async fn submit_commands(
                 "Match has already finished",
             ));
         }
-        if let Some(req_epoch) = req.epoch {
-            if req_epoch != guard.epoch {
-                return Err(api_error(
-                    StatusCode::CONFLICT,
-                    "epoch_mismatch",
-                    format!(
-                        "Submitted epoch {req_epoch} does not match current epoch {}",
-                        guard.epoch
-                    ),
-                ));
+        if guard.execution_mode == ExecutionMode::LockstepEpoch {
+            if let Some(req_epoch) = req.epoch {
+                if req_epoch != guard.epoch {
+                    return Err(api_error(
+                        StatusCode::CONFLICT,
+                        "epoch_mismatch",
+                        format!(
+                            "Submitted epoch {req_epoch} does not match current epoch {}",
+                            guard.epoch
+                        ),
+                    ));
+                }
             }
         }
         let commands_queued = req.commands.len();

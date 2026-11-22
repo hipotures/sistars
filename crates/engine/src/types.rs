@@ -762,6 +762,7 @@ pub enum StrategicCommand {
     },
     #[serde(rename_all = "camelCase")]
     BuildHub {
+        #[serde(alias = "planetId")]
         planet_idx: usize,
         kind: HubKind,
     },
@@ -1637,10 +1638,12 @@ pub struct OwnHubBrief {
     pub planet_id: usize,
     pub sector_id: u16,
     pub pop: f32,
+    pub max_pop: f32,
     pub factories: f32,
     pub defense: f32,
     pub starbase_tier: u8,
     pub has_gate: bool,
+    pub ship_prod_buf: f32,
     pub minerals: NamedMinerals,
 }
 

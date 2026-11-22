@@ -90,6 +90,7 @@ export interface UiCallbacks {
   onArenaRefreshMatches?: (serverUrl: string) => void;
   onArenaConnect?: (serverUrl: string, matchId: string) => void;
   onArenaDeleteMatch?: (serverUrl: string, matchId: string) => void;
+  onArenaToggleExecMode?: () => void;
   onArenaCreateMatch?: (
     serverUrl: string,
     opts: CreateArenaMatchOptions,
@@ -3051,6 +3052,7 @@ export class UiController {
     const btnRefresh = document.getElementById('btnArenaRefresh');
     const btnConnect = document.getElementById('btnArenaConnect');
     const btnDelete = document.getElementById('btnArenaDelete');
+    const btnExecToggle = document.getElementById('btnArenaExecToggle');
     const btnNewMatch = document.getElementById('btnArenaNewMatch');
     const btnToggleFeed = document.getElementById('btnToggleArenaFeed');
     const feedPanel = document.getElementById('arenaFeedPanel');
@@ -3094,6 +3096,9 @@ export class UiController {
       if (mid) {
         this.callbacks.onArenaDeleteMatch?.(srv, mid);
       }
+    });
+    btnExecToggle?.addEventListener('click', () => {
+      this.callbacks.onArenaToggleExecMode?.();
     });
     btnNewMatch?.addEventListener('click', () => {
       this.openArenaCreateDrawer();
@@ -3141,10 +3146,20 @@ export class UiController {
       if (ticksVal) ticksVal.textContent = ticksSlider.value;
     });
 
+    const execModeSel = document.getElementById('arenaNewExecMode') as HTMLSelectElement | null;
     const timeoutSlider = document.getElementById('arenaNewTimeoutSec') as HTMLInputElement | null;
     const timeoutVal = document.getElementById('v_arenaTimeoutSec');
-    timeoutSlider?.addEventListener('input', () => {
-      if (timeoutVal) timeoutVal.textContent = `${timeoutSlider.value}s`;
+    const updateTimeoutLabel = () => {
+      if (!timeoutSlider || !timeoutVal) return;
+      const sec = Number(timeoutSlider.value);
+      timeoutVal.textContent = sec === 0 ? '∞ (No timeout)' : `${sec}s`;
+    };
+    timeoutSlider?.addEventListener('input', updateTimeoutLabel);
+    execModeSel?.addEventListener('change', () => {
+      if (execModeSel.value === 'lockstepEpoch' && timeoutSlider) {
+        timeoutSlider.value = '0';
+        updateTimeoutLabel();
+      }
     });
 
     const btnLaunch = document.getElementById('btnArenaLaunchMatch') as HTMLButtonElement | null;
@@ -3154,11 +3169,13 @@ export class UiController {
       const scen = getScenarioById(scenSel?.value ?? 'standard');
       const size = (document.getElementById('arenaNewSize') as HTMLSelectElement | null)?.value ?? 'small';
       const shape = (document.getElementById('arenaNewShape') as HTMLSelectElement | null)?.value ?? 'spiral';
+      const executionMode =
+        execModeSel?.value === 'lockstepEpoch' ? 'lockstepEpoch' : 'realtimeAsync';
       const seedRaw = (document.getElementById('arenaNewSeed') as HTMLInputElement | null)?.value.trim() ?? '';
       const seed = seedRaw !== '' ? Number(seedRaw) : undefined;
       const ticksPerEpoch = Number(ticksSlider?.value ?? 20);
       const epochTimeoutMs = Number(timeoutSlider?.value ?? 20) * 1000;
-      const speedSel = Number((document.getElementById('arenaNewSpeed') as HTMLSelectElement | null)?.value ?? 1);
+      const speedSel = Number((document.getElementById('arenaNewSpeed') as HTMLSelectElement | null)?.value ?? 0);
       const debugAudit = (document.getElementById('arenaNewDebugAudit') as HTMLInputElement | null)?.checked ?? true;
 
       const simConfig: SimConfig = {
@@ -3202,19 +3219,7 @@ export class UiController {
         });
 
       const startPaused = speedSel <= 0;
-      const tickDelayMs =
-        speedSel <= 0
-          ? 25
-          : speedSel <= 0.25
-            ? 120
-            : speedSel <= 0.5
-              ? 60
-              : speedSel <= 1
-                ? 25
-                : speedSel <= 5
-                  ? 5
-                  : 0;
-      const frameStrideTicks = speedSel <= 1 ? 1 : speedSel <= 5 ? 2 : 5;
+      const speedMult = speedSel > 0 ? speedSel : 1.0;
 
       const statusEl = document.getElementById('arenaNewStatus');
       if (statusEl) statusEl.textContent = 'Creating Arena match...';
@@ -3229,12 +3234,12 @@ export class UiController {
             scenarioModifiers: scen.modifiers,
             galaxySize: size,
             galaxyShape: shape,
+            executionMode,
+            speedMult,
             ticksPerEpoch,
             epochTimeoutMs,
             agentSeats,
             debugAudit,
-            frameStrideTicks,
-            tickDelayMs,
             startPaused,
           },
           speedSel,
@@ -3471,10 +3476,22 @@ export class UiController {
       } else if (summary.status === 'WaitingForAgents') {
         badge.textContent = 'BARRIER';
         badge.classList.add('waiting');
+      } else if (summary.paused) {
+        badge.textContent = 'PAUSED';
+        badge.classList.add('waiting');
       } else {
         badge.textContent = 'LIVE';
         badge.classList.add('live');
       }
+    }
+
+    const execToggle = document.getElementById('btnArenaExecToggle');
+    const modeLabel = summary.executionMode === 'lockstepEpoch' ? '🔒 Lockstep' : '⚡ Realtime';
+    const spd = summary.speedMult ?? 1.0;
+    const spdLabel = summary.paused ? '⏸ Paused' : `${spd}x`;
+    if (execToggle) {
+      execToggle.textContent = modeLabel;
+      execToggle.classList.toggle('active', summary.executionMode !== 'lockstepEpoch');
     }
 
     if (info) {
@@ -3483,8 +3500,8 @@ export class UiController {
           ? `Waiting seats [${summary.waitingForSeats.join(', ')}]`
           : summary.status === 'Finished'
             ? `Winner: Empire #${(summary.winner ?? 0) + 1}`
-            : `Running (${summary.planetCount}p)`;
-      info.textContent = `Match ${summary.matchId} • Epoch #${summary.epoch} • ${waitTxt}`;
+            : `${spdLabel} (${summary.planetCount}p)`;
+      info.textContent = `Match ${summary.matchId} • Ep#${summary.epoch} • ${waitTxt}`;
     }
 
     if (waitPill) {

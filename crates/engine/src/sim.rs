@@ -4477,6 +4477,27 @@ impl Simulation {
         let mut stargates: Vec<AgentStargateBrief> = Vec::new();
         let mut enemy_planets_raw: Vec<(u32, EnemyPlanetBrief)> = Vec::new();
 
+        let emp_ref = &self.empires[e];
+        let ignore_traits = self.cfg.ignore_racial_traits;
+        let prt_pop_mod = if ignore_traits {
+            1.0
+        } else if emp_ref.race.prt == "PRT_HE" {
+            0.5
+        } else if emp_ref.race.prt == "PRT_JOAT" {
+            1.2
+        } else {
+            1.0
+        };
+        let lrt_mask = if ignore_traits { 0 } else { emp_ref.race.lrt_mask };
+        let terra_bonus = (emp_ref.tech_cache.terraform_ability / 100.0)
+            * if lrt_mask & LRT_TT != 0 { 1.30 } else { 1.0 }
+            * if !ignore_traits && emp_ref.race.prt == "PRT_CA" {
+                1.25
+            } else {
+                1.0
+            };
+        let lv5_pop_mult = 170.0 * (1.0 + emp_ref.tech_lv[5] * 0.015) * prt_pop_mod;
+
         let intel_slice = &self.intel_planets[e * n..(e + 1) * n];
         for i in 0..n {
             let px = self.pos_x[i];
@@ -4501,14 +4522,18 @@ impl Simulation {
                 sectors[sec_id].own_planets += 1;
                 sectors[sec_id].own_res_per_year += p_res;
 
+                let eff_hab = (self.hab[i] + terra_bonus).min(1.15);
+                let max_pop_here = eff_hab * lv5_pop_mult;
                 own_hubs.push(OwnHubBrief {
                     planet_id: i,
                     sector_id: sec_id as u16,
                     pop: round1(self.pop[i]),
+                    max_pop: round1(max_pop_here),
                     factories: round1(self.factories[i]),
                     defense: round1(self.defense[i]),
                     starbase_tier: self.starbase_tier[i],
                     has_gate: self.has_gate[i] != 0,
+                    ship_prod_buf: round1(self.ship_prod_buf[i]),
                     minerals: NamedMinerals::from_array([
                         self.min_surf[b],
                         self.min_surf[b + 1],
