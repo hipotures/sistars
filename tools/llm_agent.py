@@ -179,16 +179,8 @@ def decide_mock(envelope: dict[str, Any], goal: str) -> tuple[str, list[dict[str
     return reasoning, commands
 
 
-def decide_llm(
-    envelope: dict[str, Any],
-    base_url: str,
-    api_key: str,
-    model: str,
-    goal: str,
-) -> tuple[str, list[dict[str, Any]]]:
+def build_prompts(envelope: dict[str, Any], goal: str) -> tuple[str, str]:
     obs = envelope.get("observation", {})
-    current_policy = obs.get("empire", {}).get("policy", {})
-
     system_prompt = (
         "You are the Grand Strategist AI of an interstellar empire in SI-Stars (4X strategy game).\n"
         f"Strategic Goal: {goal}\n"
@@ -207,7 +199,6 @@ def decide_llm(
         "Rules: Omit unchanged policy fields or omit setPolicy if current policy is good. "
         "Keep commands concise (0-5 commands per epoch). Never fabricate empire or sector IDs."
     )
-
     user_prompt = json.dumps(
         {
             "epoch": envelope.get("epoch"),
@@ -216,6 +207,72 @@ def decide_llm(
         },
         separators=(",", ":"),
     )
+    return system_prompt, user_prompt
+
+
+def decide_manual(envelope: dict[str, Any], goal: str) -> tuple[str, list[dict[str, Any]]]:
+    """Interactive copy-paste mode: prints the exact prompt/observation and reads JSON reply from stdin."""
+    obs = envelope.get("observation", {})
+    current_policy = obs.get("empire", {}).get("policy", {})
+    epoch = int(envelope.get("epoch", 0))
+    year = float(envelope.get("year", 2400.0))
+    emp_name = obs.get("empire", {}).get("name", "Empire")
+
+    system_prompt, user_prompt = build_prompts(envelope, goal)
+
+    print("\n" + "=" * 72, flush=True)
+    print(f"COPY BELOW TO YOUR LLM CHAT  |  {emp_name} | Epoch {epoch} (Year {year:.1f})", flush=True)
+    print("=" * 72, flush=True)
+    if epoch == 0:
+        print(system_prompt, flush=True)
+        print("\nOBSERVATION JSON:", flush=True)
+    else:
+        print(f"Next turn ({emp_name}, Epoch {epoch}, Year {year:.1f}). Respond ONLY with the JSON object.", flush=True)
+        print("OBSERVATION JSON:", flush=True)
+    print(user_prompt, flush=True)
+    print("=" * 72, flush=True)
+    print("END COPY", flush=True)
+    print("=" * 72, flush=True)
+
+    while True:
+        print(
+            "\nPaste LLM JSON response below, then press Enter on an empty line "
+            "(or just press Enter to pass / keep Governor autopilot):",
+            flush=True,
+        )
+        lines: list[str] = []
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                break
+            if line.strip() == "" and (len(lines) == 0 or lines[-1].strip() != ""):
+                break
+            lines.append(line)
+
+        raw = "\n".join(lines).strip()
+        if not raw:
+            return "Manual pass (Governor autopilot).", []
+
+        try:
+            parsed = extract_json_object(raw)
+            note = str(parsed.get("reasoning_note", parsed.get("reasoningNote", ""))).strip()[:400]
+            cmds = sanitize_commands(parsed.get("commands", []), current_policy)
+            return note or "Manual LLM chat decision applied.", cmds
+        except Exception as exc:
+            print(f"[llm_agent] Could not parse JSON ({exc}). Please paste valid JSON again.", flush=True)
+
+
+def decide_llm(
+    envelope: dict[str, Any],
+    base_url: str,
+    api_key: str,
+    model: str,
+    goal: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    obs = envelope.get("observation", {})
+    current_policy = obs.get("empire", {}).get("policy", {})
+    system_prompt, user_prompt = build_prompts(envelope, goal)
 
     endpoint = base_url.rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -267,6 +324,11 @@ def main() -> int:
         help="Run deterministic heuristic bot without calling an external LLM API",
     )
     parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="Interactive copy-paste mode: print prompt/observation JSON to terminal and paste LLM reply back",
+    )
+    parser.add_argument(
         "--max-epochs",
         type=int,
         default=0,
@@ -288,8 +350,9 @@ def main() -> int:
     epochs_handled = 0
     last_submitted_epoch: int | None = None
 
+    mode_label = "MANUAL (copy/paste)" if args.manual else ("MOCK" if args.mock else args.model)
     print(
-        f"[llm_agent] Connected to {server} | match={args.match} | mode={'MOCK' if args.mock else args.model}",
+        f"[llm_agent] Connected to {server} | match={args.match} | mode={mode_label}",
         flush=True,
     )
 
@@ -327,7 +390,9 @@ def main() -> int:
             continue
 
         try:
-            if args.mock:
+            if args.manual:
+                reasoning_note, commands = decide_manual(env, args.goal)
+            elif args.mock:
                 reasoning_note, commands = decide_mock(env, args.goal)
             else:
                 reasoning_note, commands = decide_llm(
