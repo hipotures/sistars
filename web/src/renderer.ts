@@ -895,16 +895,20 @@ export class GalaxyRenderer {
   }
 
   private drawScaleBar(ctx: CanvasRenderingContext2D, scale: number): void {
-    const candidates = [10, 20, 25, 50, 100, 150, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
-    let ly = 100;
+    const candidates = [
+      0.5, 1, 2, 5, 10, 20, 25, 50, 100, 150, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000,
+    ];
+    let ly = candidates[0];
+    let bestErr = Infinity;
     for (const c of candidates) {
       const px = c * scale;
-      if (px >= 75 && px <= 175) {
+      const err = Math.abs(px - 120);
+      if (err < bestErr) {
+        bestErr = err;
         ly = c;
-        break;
       }
     }
-    const barW = Math.round(ly * scale);
+    const barW = Math.max(48, Math.min(200, Math.round(ly * scale)));
     const x = this.cssW <= 768 ? 10 : 16;
     const y = Math.round(this.getHudTopHeight() + 10);
     const boxW = Math.max(barW + 24, 130);
@@ -931,11 +935,14 @@ export class GalaxyRenderer {
 
     ctx.font = '600 10px monospace';
     ctx.fillStyle = '#e2e8f0';
+    ctx.textAlign = 'left';
     ctx.fillText('0', bx - 2, y + 12);
-    ctx.fillText(`${ly} ly`, bx + barW - 26, y + 12);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${ly} ly`, bx + barW + 2, y + 12);
 
     ctx.fillStyle = '#7c8ea8';
-    ctx.fillText(`${this.zoom.toFixed(1)}x`, x + boxW - 30, y + 31);
+    ctx.fillText(`${this.zoom.toFixed(1)}x`, x + boxW - 8, y + 31);
+    ctx.textAlign = 'left';
     ctx.lineWidth = 1.0;
   }
 }
