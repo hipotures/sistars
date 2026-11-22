@@ -3095,6 +3095,37 @@ export class UiController {
       btnToggleFeed.textContent = collapsed ? '▸ Show' : '▾ Hide';
     });
 
+    const scenSel = document.getElementById('arenaNewScenario') as HTMLSelectElement | null;
+    const renderArenaScenario = (scenId: string) => {
+      const scen = getScenarioById(scenId);
+      const desc = document.getElementById('arenaScenarioDesc');
+      const badges = document.getElementById('arenaScenarioBadges');
+      if (desc) desc.textContent = scen.description;
+      if (badges) {
+        badges.innerHTML = scen.highlights
+          .map((h) => `<span class="scenario-chip">${h}</span>`)
+          .join('');
+      }
+      const sizeSel = document.getElementById('arenaNewSize') as HTMLSelectElement | null;
+      const shapeSel = document.getElementById('arenaNewShape') as HTMLSelectElement | null;
+      if (sizeSel) {
+        if (scen.locks.galaxySize) sizeSel.value = scen.locks.galaxySize;
+        else if (scen.defaults.galaxySize) sizeSel.value = scen.defaults.galaxySize;
+      }
+      if (shapeSel) {
+        if (scen.locks.galaxyShape) shapeSel.value = scen.locks.galaxyShape;
+        else if (scen.defaults.galaxyShape) shapeSel.value = scen.defaults.galaxyShape;
+      }
+    };
+    if (scenSel) {
+      scenSel.innerHTML = SCENARIOS.map(
+        (s) => `<option value="${s.id}">${s.name}</option>`,
+      ).join('');
+      scenSel.value = 'standard';
+      renderArenaScenario('standard');
+      scenSel.addEventListener('change', () => renderArenaScenario(scenSel.value));
+    }
+
     const ticksSlider = document.getElementById('arenaNewTicksPerEpoch') as HTMLInputElement | null;
     const ticksVal = document.getElementById('v_arenaTicksPerEpoch');
     ticksSlider?.addEventListener('input', () => {
@@ -3110,6 +3141,7 @@ export class UiController {
     const btnLaunch = document.getElementById('btnArenaLaunchMatch') as HTMLButtonElement | null;
     btnLaunch?.addEventListener('click', async () => {
       const srv = serverInput?.value ?? 'http://localhost:8080';
+      const scen = getScenarioById(scenSel?.value ?? 'standard');
       const size = (document.getElementById('arenaNewSize') as HTMLSelectElement | null)?.value ?? 'small';
       const shape = (document.getElementById('arenaNewShape') as HTMLSelectElement | null)?.value ?? 'spiral';
       const seedRaw = (document.getElementById('arenaNewSeed') as HTMLInputElement | null)?.value.trim() ?? '';
@@ -3118,6 +3150,38 @@ export class UiController {
       const epochTimeoutMs = Number(timeoutSlider?.value ?? 20) * 1000;
       const speedSel = Number((document.getElementById('arenaNewSpeed') as HTMLSelectElement | null)?.value ?? 1);
       const debugAudit = (document.getElementById('arenaNewDebugAudit') as HTMLInputElement | null)?.checked ?? true;
+
+      const simConfig: SimConfig = {
+        ...this.lastConfig,
+        galaxySize: size as SimConfig['galaxySize'],
+        galaxyShape: shape as SimConfig['galaxyShape'],
+        wormholePairs:
+          scen.locks.wormholePairs ?? scen.defaults.wormholePairs ?? this.lastConfig.wormholePairs,
+        crustRichness:
+          scen.locks.crustRichness ?? scen.defaults.crustRichness ?? this.lastConfig.crustRichness,
+        gateCost: scen.locks.gateCost ?? scen.defaults.gateCost ?? this.lastConfig.gateCost,
+        interceptRad:
+          scen.locks.interceptRad ?? scen.defaults.interceptRad ?? this.lastConfig.interceptRad,
+        salvageRate:
+          scen.locks.salvageRate !== undefined
+            ? scen.locks.salvageRate / 100
+            : scen.defaults.salvageRate !== undefined
+              ? scen.defaults.salvageRate / 100
+              : this.lastConfig.salvageRate,
+        aggroBias:
+          scen.locks.aggroBias !== undefined
+            ? scen.locks.aggroBias / 100
+            : scen.defaults.aggroBias !== undefined
+              ? scen.defaults.aggroBias / 100
+              : this.lastConfig.aggroBias,
+        sprawlPenalty:
+          scen.locks.sprawlPenalty !== undefined
+            ? scen.locks.sprawlPenalty / 100
+            : scen.defaults.sprawlPenalty !== undefined
+              ? scen.defaults.sprawlPenalty / 100
+              : this.lastConfig.sprawlPenalty,
+        scenarioModifiers: scen.modifiers,
+      };
 
       const agentSeats: number[] = [];
       document
@@ -3140,6 +3204,8 @@ export class UiController {
           srv,
           {
             seed,
+            simConfig,
+            scenarioModifiers: scen.modifiers,
             galaxySize: size,
             galaxyShape: shape,
             ticksPerEpoch,

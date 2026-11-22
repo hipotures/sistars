@@ -499,6 +499,8 @@ export interface ArenaMatchSummary {
 
 export interface CreateArenaMatchOptions {
   seed?: number;
+  simConfig?: SimConfig;
+  scenarioModifiers?: ScenarioModifiers;
   galaxySize: string;
   galaxyShape: string;
   ticksPerEpoch: number;

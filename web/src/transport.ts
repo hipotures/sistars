@@ -354,6 +354,8 @@ export async function createArenaMatch(
   serverUrl: string,
   options?: {
     seed?: number;
+    simConfig?: SimConfig;
+    scenarioModifiers?: ScenarioModifiers;
     galaxySize?: string;
     galaxyShape?: string;
     ticksPerEpoch?: number;
@@ -375,6 +377,12 @@ export async function createArenaMatch(
     frameStrideTicks: options?.frameStrideTicks ?? 1,
     tickDelayMs: options?.tickDelayMs ?? 25,
   };
+  if (options?.simConfig) {
+    body.simConfig = options.simConfig;
+  }
+  if (options?.scenarioModifiers) {
+    body.scenarioModifiers = options.scenarioModifiers;
+  }
   if (options?.seed !== undefined && Number.isFinite(options.seed)) {
     body.seed = Math.floor(options.seed);
   }
