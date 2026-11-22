@@ -1,11 +1,147 @@
 use std::time::Instant;
 
 use sistars_engine::ai;
-use sistars_engine::config::SimConfig;
+use sistars_engine::config::{FleetClass, SimConfig};
 use sistars_engine::galaxy::{GalaxyShape, GalaxySize};
 use sistars_engine::sim::Simulation;
-use sistars_engine::tech::{classic_races, tech_store};
-use sistars_engine::types::StepProfile;
+use sistars_engine::tech::{classic_races, tech_store, LRT_UR};
+use sistars_engine::types::{
+    DebrisField, DiplomaticStance, Fleet, SandboxPlanet, SimEvent, StepProfile,
+};
+
+fn run_trace_scenarios() {
+    println!("=== SI-Stars Diagnostic Sandbox & Event Trace (--trace-scenario) ===");
+    let mut races = classic_races();
+    races[0].lrt_mask |= LRT_UR; // Enable Ultimate Recycling on Empire 1
+
+    // 1. Salvage Cargo Cap & Conservation Trace
+    println!("\n--- Scenario 1: Salvage Cargo Cap (220 kT hold vs 500 kT debris, LRT_UR active) ---");
+    let planets = vec![SandboxPlanet {
+        x: 100.0,
+        y: 100.0,
+        owner: 1,
+        iron_surf: 50.0,
+        bora_surf: 50.0,
+        germ_surf: 50.0,
+        ..Default::default()
+    }];
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 100.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Freight,
+        power: 12.0,
+        max_power: 220.0,
+        steer_x: 125.0,
+        steer_y: 100.0,
+        salvage_mode: 1,
+        ..Default::default()
+    }];
+    let debris = vec![DebrisField {
+        x: 125.0,
+        y: 100.0,
+        iron: 200.0,
+        bora: 150.0,
+        germ: 150.0,
+        ttl: 50.0,
+        wrecks: Vec::new(),
+    }];
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races.clone(),
+        planets,
+        fleets,
+        debris,
+        false,
+    );
+    for t in 1..=30 {
+        sim.step_tick(true);
+        for ev in sim.drain_events() {
+            if !matches!(ev, SimEvent::EconomyTick { .. }) {
+                println!("  tick {t:02} (yr {:.2}): {ev}", sim.year);
+            }
+        }
+        if sim.fleets.first().map(|f| f.orbiting).unwrap_or(false) {
+            break;
+        }
+    }
+    println!(
+        "  Auditor Summary: audited={}, closed_tx={}, anomalies={}",
+        sim.auditor.audited_events_count,
+        sim.auditor.closed_transactions_count,
+        sim.anomalies.len()
+    );
+
+    // 2. Orbital Defense Sequence Trace (Garrison -> Starbase -> Ground Defense)
+    println!("\n--- Scenario 2: Orbital Defense Sequence (Garrison -> Starbase -> Planet) ---");
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 112.0,
+            y: 100.0,
+            owner: 2,
+            defense: 25.0,
+            pop: 20.0,
+            starbase_tier: 1,
+            starbase_hp: Some(100.0),
+            ..Default::default()
+        },
+    ];
+    let fleets = vec![
+        // defending orbital garrison at planet #1
+        Fleet {
+            id: 10,
+            x: 112.0,
+            y: 100.0,
+            from: 1,
+            target: 1,
+            emp: 2,
+            fleet_type: FleetClass::Cruiser,
+            power: 45.0,
+            max_power: 45.0,
+            orbiting: true,
+            ..Default::default()
+        },
+        // overwhelming attacking fleet from Empire 1
+        Fleet {
+            id: 11,
+            x: 111.0,
+            y: 100.0,
+            from: 0,
+            target: 1,
+            emp: 1,
+            fleet_type: FleetClass::Battleship,
+            power: 380.0,
+            max_power: 380.0,
+            ship_count: 6,
+            ..Default::default()
+        },
+    ];
+    let mut sim2 = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
+    sim2.set_relation(0, 1, DiplomaticStance::War);
+    sim2.step_tick(true);
+    for ev in sim2.drain_events() {
+        if !matches!(ev, SimEvent::EconomyTick { .. }) {
+            println!("  tick 01 (yr {:.2}): {ev}", sim2.year);
+        }
+    }
+    println!("  Anomalies JSON:\n{}", sim2.export_anomalies_json());
+}
 
 fn run_phase_bench(label: &str, size: GalaxySize, shape: GalaxyShape, seed: u32, total_ticks: usize, chunk_size: usize) {
     let races = classic_races();
@@ -77,6 +213,11 @@ fn run_phase_bench(label: &str, size: GalaxySize, shape: GalaxyShape, seed: u32,
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--trace-scenario") {
+        run_trace_scenarios();
+        return;
+    }
+
     let store = tech_store();
     let races = classic_races();
 

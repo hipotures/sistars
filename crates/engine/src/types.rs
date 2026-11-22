@@ -15,6 +15,90 @@ fn default_debris_ttl() -> f32 {
     12.0
 }
 
+fn default_ship_count() -> u16 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiplomaticStance {
+    War,
+    Neutral,
+    Ceasefire,
+    Alliance,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VictoryConfig {
+    pub enabled: bool,
+    pub planet_share_threshold: f32,
+    pub res_share_threshold: f32,
+    pub min_planets_for_share: u32,
+    pub elimination_victory: bool,
+    pub max_year: Option<f32>,
+}
+
+impl Default for VictoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            planet_share_threshold: 0.60,
+            res_share_threshold: 0.65,
+            min_planets_for_share: 2,
+            elimination_victory: true,
+            max_year: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxPlanet {
+    pub x: f32,
+    pub y: f32,
+    pub owner: u8,
+    pub hab: f32,
+    pub pop: f32,
+    pub mines: f32,
+    pub factories: f32,
+    pub defense: f32,
+    pub iron_surf: f32,
+    pub bora_surf: f32,
+    pub germ_surf: f32,
+    pub iron_crust: f32,
+    pub bora_crust: f32,
+    pub germ_crust: f32,
+    pub ship_prod_buf: f32,
+    pub has_gate: bool,
+    pub starbase_tier: u8,
+    pub starbase_hp: Option<f32>,
+}
+
+impl Default for SandboxPlanet {
+    fn default() -> Self {
+        Self {
+            x: 100.0,
+            y: 100.0,
+            owner: 0,
+            hab: 1.0,
+            pop: 40.0,
+            mines: 15.0,
+            factories: 15.0,
+            defense: 10.0,
+            iron_surf: 100.0,
+            bora_surf: 100.0,
+            germ_surf: 100.0,
+            iron_crust: 600.0,
+            bora_crust: 600.0,
+            germ_crust: 600.0,
+            ship_prod_buf: 0.0,
+            has_gate: false,
+            starbase_tier: 0,
+            starbase_hp: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioModifiers {
@@ -195,6 +279,37 @@ pub struct Fleet {
     pub orbiting: bool,
     #[serde(default)]
     pub upkeep: f32,
+    #[serde(default = "default_ship_count")]
+    pub ship_count: u16,
+}
+
+impl Default for Fleet {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            x: 0.0,
+            y: 0.0,
+            from: 0,
+            target: 0,
+            emp: 1,
+            fleet_type: FleetClass::Cruiser,
+            min_type: 0,
+            power: 40.0,
+            max_power: 40.0,
+            hunting: false,
+            used_wh: false,
+            steer_x: 0.0,
+            steer_y: 0.0,
+            wh_route: -1,
+            salvage_mode: 0,
+            cargo_iron: 0.0,
+            cargo_bora: 0.0,
+            cargo_germ: 0.0,
+            orbiting: false,
+            upkeep: FleetClass::Cruiser.upkeep(),
+            ship_count: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -249,10 +364,354 @@ pub struct JumpFx {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimEvent {
+pub struct HudEvent {
     pub year: f32,
     pub text: String,
     pub color: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SimEvent {
+    SalvageLoaded {
+        fleet_id: u32,
+        debris_before: f32,
+        loaded: f32,
+        debris_after: f32,
+        cargo_cap: f32,
+    },
+    CargoUnloaded {
+        fleet_id: u32,
+        planet_idx: usize,
+        unloaded: f32,
+        planet_surf_before: f32,
+        planet_surf_after: f32,
+    },
+    SpaceBattle {
+        winner_emp: u8,
+        loser_emp: u8,
+        orbital_defense: bool,
+        planet_idx: Option<usize>,
+    },
+    StarbaseAssault {
+        planet_idx: usize,
+        sb_hp_before: f32,
+        sb_hp_after: f32,
+        attacker_survived: bool,
+    },
+    PlanetAssault {
+        planet_idx: usize,
+        captured: bool,
+        def_before: f32,
+        def_after: f32,
+    },
+    EconomyTick {
+        planet_idx: usize,
+        res_gen: f32,
+        spent_tech: f32,
+        spent_mines: f32,
+        spent_fac: f32,
+        spent_def: f32,
+        spent_ship: f32,
+        spent_alchemy: f32,
+    },
+    VictoryTriggered {
+        winner_emp: u8,
+        reason: String,
+        year: f32,
+    },
+}
+
+impl std::fmt::Display for SimEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimEvent::SalvageLoaded {
+                fleet_id,
+                debris_before,
+                loaded,
+                debris_after,
+                cargo_cap,
+            } => write!(
+                f,
+                "[SalvageLoaded] fleet=#{fleet_id} cap={cargo_cap:.1}kT | debris {debris_before:.1}kT -> loaded {loaded:.1}kT -> remaining {debris_after:.1}kT"
+            ),
+            SimEvent::CargoUnloaded {
+                fleet_id,
+                planet_idx,
+                unloaded,
+                planet_surf_before,
+                planet_surf_after,
+            } => write!(
+                f,
+                "[CargoUnloaded] fleet=#{fleet_id} planet=#{planet_idx} | unloaded={unloaded:.1}kT (surf {planet_surf_before:.1}kT -> {planet_surf_after:.1}kT)"
+            ),
+            SimEvent::SpaceBattle {
+                winner_emp,
+                loser_emp,
+                orbital_defense,
+                planet_idx,
+            } => write!(
+                f,
+                "[SpaceBattle] winner=Emp{winner_emp} loser=Emp{loser_emp} orbital_defense={orbital_defense} planet={planet_idx:?}"
+            ),
+            SimEvent::StarbaseAssault {
+                planet_idx,
+                sb_hp_before,
+                sb_hp_after,
+                attacker_survived,
+            } => write!(
+                f,
+                "[StarbaseAssault] planet=#{planet_idx} sb_hp={sb_hp_before:.1}->{sb_hp_after:.1} attacker_survived={attacker_survived}"
+            ),
+            SimEvent::PlanetAssault {
+                planet_idx,
+                captured,
+                def_before,
+                def_after,
+            } => write!(
+                f,
+                "[PlanetAssault] planet=#{planet_idx} captured={captured} def={def_before:.1}->{def_after:.1}"
+            ),
+            SimEvent::EconomyTick {
+                planet_idx,
+                res_gen,
+                spent_tech,
+                spent_mines,
+                spent_fac,
+                spent_def,
+                spent_ship,
+                spent_alchemy,
+            } => write!(
+                f,
+                "[EconomyTick] planet=#{planet_idx} res_gen={res_gen:.3} | tech={spent_tech:.3} mines={spent_mines:.3} fac={spent_fac:.3} def={spent_def:.3} ship={spent_ship:.3} alch={spent_alchemy:.3}"
+            ),
+            SimEvent::VictoryTriggered {
+                winner_emp,
+                reason,
+                year,
+            } => write!(
+                f,
+                "[VictoryTriggered] winner=Emp{winner_emp} reason={reason} year={year:.2}"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimAnomaly {
+    pub tick: u64,
+    pub year: f32,
+    pub kind: String,
+    pub message: String,
+    pub event: Option<SimEvent>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveAuditor {
+    pub audited_events_count: u64,
+    pub closed_transactions_count: u64,
+    pub pending_salvage_loads: std::collections::HashMap<u32, (f32, f32)>,
+    pub prune_valid_events: bool,
+}
+
+impl LiveAuditor {
+    pub fn observe_event(
+        &mut self,
+        tick: u64,
+        year: f32,
+        ev: &SimEvent,
+        anomalies: &mut Vec<SimAnomaly>,
+    ) -> bool {
+        self.audited_events_count += 1;
+        let mut valid = true;
+        let mut push_anom = |kind: &str, message: String| {
+            valid = false;
+            if anomalies.len() < 1024 {
+                anomalies.push(SimAnomaly {
+                    tick,
+                    year,
+                    kind: kind.to_string(),
+                    message,
+                    event: Some(ev.clone()),
+                });
+            }
+        };
+
+        match ev {
+            SimEvent::SalvageLoaded {
+                fleet_id,
+                debris_before,
+                loaded,
+                debris_after,
+                cargo_cap,
+            } => {
+                if !debris_before.is_finite()
+                    || !loaded.is_finite()
+                    || !debris_after.is_finite()
+                    || !cargo_cap.is_finite()
+                    || *loaded < -1e-4
+                    || *debris_after < -1e-4
+                {
+                    push_anom(
+                        "SalvageInvalidValues",
+                        format!("Non-finite or negative values on fleet #{fleet_id}"),
+                    );
+                }
+                if *loaded > *cargo_cap + 1e-3 {
+                    push_anom(
+                        "SalvageCargoCapExceeded",
+                        format!(
+                            "Fleet #{fleet_id} loaded {loaded:.3} kT exceeding cargo_cap {cargo_cap:.3} kT"
+                        ),
+                    );
+                }
+                if (*debris_before - *loaded - *debris_after).abs() > 1e-2 {
+                    push_anom(
+                        "SalvageMassConservationViolation",
+                        format!(
+                            "Fleet #{fleet_id} debris_before ({debris_before:.3}) - loaded ({loaded:.3}) != debris_after ({debris_after:.3})"
+                        ),
+                    );
+                }
+                let entry = self
+                    .pending_salvage_loads
+                    .entry(*fleet_id)
+                    .or_insert((0.0, *cargo_cap));
+                entry.0 += *loaded;
+                entry.1 = *cargo_cap;
+                if entry.0 > *cargo_cap + 1e-3 {
+                    let acc = entry.0;
+                    push_anom(
+                        "SalvageCumulativeCargoCapExceeded",
+                        format!(
+                            "Fleet #{fleet_id} cumulative salvage {acc:.3} kT exceeds cargo_cap {cargo_cap:.3} kT"
+                        ),
+                    );
+                }
+            }
+            SimEvent::CargoUnloaded {
+                fleet_id,
+                planet_idx,
+                unloaded,
+                planet_surf_before,
+                planet_surf_after,
+            } => {
+                self.closed_transactions_count += 1;
+                if (*planet_surf_after - *planet_surf_before - *unloaded).abs() > 1e-2 {
+                    push_anom(
+                        "CargoUnloadMassMismatch",
+                        format!(
+                            "Fleet #{fleet_id} at planet #{planet_idx}: surf_after ({planet_surf_after:.3}) - surf_before ({planet_surf_before:.3}) != unloaded ({unloaded:.3})"
+                        ),
+                    );
+                }
+                if let Some((expected_loaded, cap)) = self.pending_salvage_loads.remove(fleet_id) {
+                    if (*unloaded - expected_loaded).abs() > 1e-2 {
+                        push_anom(
+                            "SalvageUnloadMismatch",
+                            format!(
+                                "Fleet #{fleet_id} unloaded {unloaded:.3} kT at planet #{planet_idx} but loaded {expected_loaded:.3} kT from debris"
+                            ),
+                        );
+                    }
+                    if *unloaded > cap + 1e-3 {
+                        push_anom(
+                            "SalvageUnloadExceedsCap",
+                            format!(
+                                "Fleet #{fleet_id} unloaded {unloaded:.3} kT > cargo_cap {cap:.3} kT"
+                            ),
+                        );
+                    }
+                }
+            }
+            SimEvent::EconomyTick {
+                planet_idx,
+                res_gen,
+                spent_tech,
+                spent_mines,
+                spent_fac,
+                spent_def,
+                spent_ship,
+                spent_alchemy,
+            } => {
+                self.closed_transactions_count += 1;
+                let total_spent = spent_tech
+                    + spent_mines
+                    + spent_fac
+                    + spent_def
+                    + spent_ship
+                    + spent_alchemy;
+                if !res_gen.is_finite()
+                    || !total_spent.is_finite()
+                    || *res_gen < -1e-4
+                    || *spent_tech < -1e-4
+                    || *spent_mines < -1e-4
+                    || *spent_fac < -1e-4
+                    || *spent_def < -1e-4
+                    || *spent_ship < -1e-4
+                    || *spent_alchemy < -1e-4
+                {
+                    push_anom(
+                        "EconomyInvalidSpend",
+                        format!("Negative or NaN expenditure on planet #{planet_idx}"),
+                    );
+                }
+                if total_spent > *res_gen + 1e-3 {
+                    push_anom(
+                        "EconomyBudgetOverSpend",
+                        format!(
+                            "Planet #{planet_idx} spent {total_spent:.4} > res_gen {res_gen:.4}"
+                        ),
+                    );
+                }
+            }
+            SimEvent::StarbaseAssault {
+                planet_idx,
+                sb_hp_before,
+                sb_hp_after,
+                attacker_survived,
+            } => {
+                self.closed_transactions_count += 1;
+                if *sb_hp_after > *sb_hp_before + 1e-3 || *sb_hp_after < -1e-4 {
+                    push_anom(
+                        "StarbaseInvalidHpDelta",
+                        format!(
+                            "Planet #{planet_idx} starbase HP went from {sb_hp_before:.2} to {sb_hp_after:.2}"
+                        ),
+                    );
+                }
+                if *sb_hp_after > 0.0 && *attacker_survived {
+                    push_anom(
+                        "StarbaseBypassedWhileAlive",
+                        format!(
+                            "Attacker survived at planet #{planet_idx} while Starbase still had {sb_hp_after:.2} HP"
+                        ),
+                    );
+                }
+            }
+            SimEvent::PlanetAssault {
+                planet_idx,
+                def_before,
+                def_after,
+                ..
+            } => {
+                self.closed_transactions_count += 1;
+                if *def_after > *def_before + 1e-3 || *def_after < -1e-4 {
+                    push_anom(
+                        "PlanetAssaultInvalidDefDelta",
+                        format!(
+                            "Planet #{planet_idx} defense went from {def_before:.2} to {def_after:.2}"
+                        ),
+                    );
+                }
+            }
+            SimEvent::SpaceBattle { .. } | SimEvent::VictoryTriggered { .. } => {
+                self.closed_transactions_count += 1;
+            }
+        }
+        valid
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -330,7 +789,7 @@ pub struct HudSnapshot {
     pub wormholes: Vec<Wormhole>,
     pub new_combat_fx: Vec<CombatFx>,
     pub new_jump_fx: Vec<JumpFx>,
-    pub events: Vec<SimEvent>,
+    pub events: Vec<HudEvent>,
     pub planet_count: usize,
     pub fleet_count: usize,
     pub space_battles_count: u32,
@@ -366,7 +825,7 @@ pub struct SimSnapshot {
     pub new_combat_fx: Vec<CombatFx>,
     pub new_jump_fx: Vec<JumpFx>,
     pub power_history: Vec<Vec<f32>>,
-    pub events: Vec<SimEvent>,
+    pub events: Vec<HudEvent>,
     pub space_battles_count: u32,
     pub invasions_count: u32,
     pub total_salvaged: u32,

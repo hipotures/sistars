@@ -10,8 +10,9 @@ use crate::tech::{
     LRT_GR, LRT_IFE, LRT_ISB, LRT_LSP, LRT_MA, LRT_OBRM, LRT_RS, LRT_TT, LRT_UR,
 };
 use crate::types::{
-    CombatFx, DebrisField, EmpireStats, EmpireSummaryView, Fleet, HudSnapshot, JumpFx, PlanetView,
-    RaceDef, ReportsSnapshot, SimEvent, SimSnapshot, StarSystemView, StepProfile, Wormhole,
+    CombatFx, DebrisField, DiplomaticStance, EmpireStats, EmpireSummaryView, Fleet, HudEvent,
+    HudSnapshot, JumpFx, LiveAuditor, PlanetView, RaceDef, ReportsSnapshot, SandboxPlanet,
+    SimAnomaly, SimEvent, SimSnapshot, StarSystemView, StepProfile, VictoryConfig, Wormhole,
     WreckEntry,
 };
 
@@ -39,6 +40,7 @@ fn perf_now_ms() -> f64 {
 
 const MAX_PLANET_NEIGHBORS: usize = 96;
 const AI_DECISION_STRIDE: usize = 6;
+pub const MAX_TRACE_EVENTS: usize = 2_048;
 pub const PLANET_RENDER_STRIDE: usize = 7;
 pub const FLEET_RENDER_STRIDE: usize = 7;
 pub const DEBRIS_RENDER_STRIDE: usize = 3;
@@ -254,6 +256,7 @@ struct EmpireTickCache {
     min_fac_for_gate: f32,
     gate_iron: f32,
     gate_germ: f32,
+    gate_res: f32,
     min_hub_sq: f32,
     effective_ship_cost: f32,
     bio_growth_mult: f32,
@@ -424,7 +427,19 @@ pub struct Simulation {
     pub pending_combat_fx: Vec<CombatFx>,
     pub pending_jump_fx: Vec<JumpFx>,
     pub power_history: Vec<Vec<f32>>,
+    pub log_events: Vec<HudEvent>,
+
+    // Diagnostic Sandbox, Event Trace & Live Auditor
+    pub ai_enabled: bool,
+    pub trace_enabled: bool,
     pub events: Vec<SimEvent>,
+    pub anomalies: Vec<SimAnomaly>,
+    pub auditor: LiveAuditor,
+
+    // Diplomacy & Victory Conditions
+    pub relations: [[DiplomaticStance; MAX_EMPIRES]; MAX_EMPIRES],
+    pub victory_cfg: VictoryConfig,
+    pub winner: Option<usize>,
 
     // Telemetry
     pub space_battles_count: u32,
@@ -514,7 +529,15 @@ impl Simulation {
             pending_combat_fx: Vec::new(),
             pending_jump_fx: Vec::new(),
             power_history: Vec::new(),
+            log_events: Vec::new(),
+            ai_enabled: true,
+            trace_enabled: false,
             events: Vec::new(),
+            anomalies: Vec::new(),
+            auditor: LiveAuditor::default(),
+            relations: Self::default_relations(),
+            victory_cfg: VictoryConfig::default(),
+            winner: None,
             space_battles_count: 0,
             invasions_count: 0,
             total_salvaged: 0,
@@ -567,14 +590,232 @@ impl Simulation {
     }
 
     pub fn push_event(&mut self, text: String, color: &str) {
-        self.events.push(SimEvent {
+        self.log_events.push(HudEvent {
             year: self.year,
             text,
             color: color.to_string(),
         });
-        while self.events.len() > MAX_EVENT_LOG {
-            self.events.remove(0);
+        while self.log_events.len() > MAX_EVENT_LOG {
+            self.log_events.remove(0);
         }
+    }
+
+    pub fn default_relations() -> [[DiplomaticStance; MAX_EMPIRES]; MAX_EMPIRES] {
+        let mut rel = [[DiplomaticStance::War; MAX_EMPIRES]; MAX_EMPIRES];
+        for i in 0..MAX_EMPIRES {
+            rel[i][i] = DiplomaticStance::Alliance;
+        }
+        rel
+    }
+
+    pub fn set_relation(&mut self, emp_a: usize, emp_b: usize, stance: DiplomaticStance) {
+        if emp_a < MAX_EMPIRES && emp_b < MAX_EMPIRES {
+            self.relations[emp_a][emp_b] = stance;
+            self.relations[emp_b][emp_a] = stance;
+        }
+    }
+
+    #[inline]
+    pub fn get_relation(&self, emp_a: usize, emp_b: usize) -> DiplomaticStance {
+        if emp_a < MAX_EMPIRES && emp_b < MAX_EMPIRES {
+            self.relations[emp_a][emp_b]
+        } else {
+            DiplomaticStance::War
+        }
+    }
+
+    #[inline]
+    pub fn are_hostile(&self, emp_a_u8: u8, emp_b_u8: u8) -> bool {
+        if emp_a_u8 == 0 || emp_b_u8 == 0 || emp_a_u8 == emp_b_u8 {
+            return false;
+        }
+        let a = (emp_a_u8 - 1) as usize;
+        let b = (emp_b_u8 - 1) as usize;
+        if a >= MAX_EMPIRES || b >= MAX_EMPIRES {
+            return false;
+        }
+        self.relations[a][b] == DiplomaticStance::War
+    }
+
+    /// Records a structured `SimEvent` when `trace_enabled` is true, immediately runs `LiveAuditor`,
+    /// and maintains `self.events` as a bounded ring buffer (`MAX_TRACE_EVENTS`) so RAM never grows unboundedly.
+    #[inline]
+    pub fn record_trace_event(&mut self, ev: SimEvent) {
+        if !self.trace_enabled {
+            return;
+        }
+        let valid = self
+            .auditor
+            .observe_event(self.ticks, self.year, &ev, &mut self.anomalies);
+        if self.auditor.prune_valid_events && valid {
+            return;
+        }
+        if self.events.len() >= MAX_TRACE_EVENTS {
+            let drop_n = self.events.len() + 1 - MAX_TRACE_EVENTS;
+            self.events.drain(0..drop_n);
+        }
+        self.events.push(ev);
+    }
+
+    /// Drains all buffered trace events from `self.events`, freeing memory on the fly.
+    pub fn drain_events(&mut self) -> Vec<SimEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Serializes any anomalies captured by `LiveAuditor` along with audit counters to JSON.
+    pub fn export_anomalies_json(&self) -> String {
+        let payload = serde_json::json!({
+            "year": self.year,
+            "ticks": self.ticks,
+            "auditedEventsCount": self.auditor.audited_events_count,
+            "closedTransactionsCount": self.auditor.closed_transactions_count,
+            "openSalvageTransactions": self.auditor.pending_salvage_loads.len(),
+            "anomaliesCount": self.anomalies.len(),
+            "anomalies": self.anomalies,
+        });
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Creates a deterministic, minimal sandbox universe with custom planets, fleets, and debris fields.
+    /// Enables `trace_enabled` by default so tests and diagnostic runners immediately capture `SimEvent`s and `LiveAuditor` checks.
+    pub fn new_sandbox(
+        mut cfg: SimConfig,
+        races: Vec<RaceDef>,
+        planets: Vec<SandboxPlanet>,
+        mut fleets: Vec<Fleet>,
+        debris_fields: Vec<DebrisField>,
+        ai_enabled: bool,
+    ) -> Self {
+        let valid_races = if races.is_empty() {
+            classic_races().into_iter().take(2).collect()
+        } else {
+            races.into_iter().take(MAX_EMPIRES).collect()
+        };
+        cfg.planets = planets.len();
+        let mut sim = Self::new(cfg, valid_races);
+        let n = planets.len();
+        let num_emp = sim.empires.len();
+
+        sim.ai_enabled = ai_enabled;
+        sim.trace_enabled = true;
+        sim.events.clear();
+        sim.anomalies.clear();
+        sim.auditor = LiveAuditor::default();
+        sim.relations = Self::default_relations();
+        sim.winner = None;
+
+        sim.pos_x.resize(n, 0.0);
+        sim.pos_y.resize(n, 0.0);
+        sim.pop.resize(n, 0.0);
+        sim.hab.resize(n, 1.0);
+        sim.mines.resize(n, 0.0);
+        sim.factories.resize(n, 0.0);
+        sim.min_surf.resize(n * 3, 0.0);
+        sim.min_crust.resize(n * 3, 0.0);
+        sim.ship_prod_buf.resize(n, 0.0);
+        sim.defense.resize(n, 0.0);
+        sim.last_res.resize(n, 0.0);
+        sim.act_fac.resize(n, 0.0);
+        sim.owner.resize(n, 0);
+        sim.has_gate.resize(n, 0);
+        sim.starbase_tier.resize(n, 0);
+        sim.starbase_hp.resize(n, 0.0);
+        sim.starbase_max_hp.resize(n, 0.0);
+        sim.claim_mask.resize(n, 0);
+        sim.explored_mask.resize(n, 0xFFFF);
+
+        for (i, p) in planets.iter().enumerate() {
+            sim.pos_x[i] = p.x;
+            sim.pos_y[i] = p.y;
+            sim.owner[i] = p.owner;
+            sim.hab[i] = p.hab.clamp(0.05, 1.15);
+            sim.pop[i] = p.pop.max(0.0);
+            sim.mines[i] = p.mines.max(0.0);
+            sim.factories[i] = p.factories.max(0.0);
+            sim.defense[i] = p.defense.max(0.0);
+            sim.min_surf[i * 3] = p.iron_surf.max(0.0);
+            sim.min_surf[i * 3 + 1] = p.bora_surf.max(0.0);
+            sim.min_surf[i * 3 + 2] = p.germ_surf.max(0.0);
+            sim.min_crust[i * 3] = p.iron_crust.max(0.0);
+            sim.min_crust[i * 3 + 1] = p.bora_crust.max(0.0);
+            sim.min_crust[i * 3 + 2] = p.germ_crust.max(0.0);
+            sim.ship_prod_buf[i] = p.ship_prod_buf.max(0.0);
+            sim.has_gate[i] = if p.has_gate { 1 } else { 0 };
+            sim.starbase_tier[i] = p.starbase_tier;
+            let sb_hp = p
+                .starbase_hp
+                .unwrap_or_else(|| starbase_base_hp(p.starbase_tier));
+            sim.starbase_hp[i] = sb_hp;
+            sim.starbase_max_hp[i] = sb_hp.max(starbase_base_hp(p.starbase_tier));
+        }
+
+        if n > 0 {
+            sim.build_planet_neighbors();
+        }
+
+        let mut max_id = 0u32;
+        for (idx, fl) in fleets.iter_mut().enumerate() {
+            if fl.id == 0 {
+                fl.id = (idx as u32) + 1;
+            }
+            max_id = max_id.max(fl.id);
+            if fl.ship_count == 0 {
+                fl.ship_count = 1;
+            }
+            if fl.upkeep <= 0.0 {
+                fl.upkeep = fl.fleet_type.upkeep() * (fl.ship_count as f32);
+            }
+            if fl.fleet_type == FleetClass::Freight {
+                if fl.max_power <= 0.0 {
+                    let e = ((fl.emp.max(1) - 1) as usize).min(num_emp.saturating_sub(1));
+                    fl.max_power = (sim.empires[e].tech_cache.hull_freight.cargo * 0.75)
+                        .clamp(45.0, 220.0);
+                }
+                if fl.power <= 0.0 {
+                    fl.power = 12.0;
+                }
+            } else {
+                if fl.power <= 0.0 {
+                    fl.power = fl.max_power.max(40.0);
+                }
+                if fl.max_power < fl.power {
+                    fl.max_power = fl.power;
+                }
+            }
+            if fl.orbiting && fl.target < n {
+                fl.x = sim.pos_x[fl.target];
+                fl.y = sim.pos_y[fl.target];
+                fl.steer_x = fl.x;
+                fl.steer_y = fl.y;
+            } else if fl.steer_x == 0.0 && fl.steer_y == 0.0 && fl.target < n {
+                fl.steer_x = sim.pos_x[fl.target];
+                fl.steer_y = sim.pos_y[fl.target];
+            }
+        }
+        sim.next_fleet_id = max_id + 1;
+        sim.fleets = fleets;
+        sim.debris_fields = debris_fields;
+        sim.orbit_warship.resize(n, -1);
+        sim.orbit_freight.resize(n, -1);
+        sim.orbit_count.resize(n, 0);
+
+        for e in 0..num_emp {
+            let emp_u8 = (e + 1) as u8;
+            let mut p_cnt = 0u32;
+            let mut f_sum = 0.0f32;
+            for i in 0..n {
+                if sim.owner[i] == emp_u8 {
+                    p_cnt += 1;
+                    f_sum += sim.factories[i];
+                }
+            }
+            sim.empires[e].last_stats.planets = p_cnt;
+            sim.empires[e].last_stats.factories = f_sum;
+            sim.empires[e].res_total = (f_sum + 25.0).max(25.0);
+            sim.empires[e].last_stats.res = sim.empires[e].res_total;
+        }
+
+        sim
     }
 
     pub fn set_galaxy_options(&mut self, size: &str, shape: &str) -> bool {
@@ -963,9 +1204,14 @@ impl Simulation {
         self.total_salvaged = 0;
         self.gate_jumps_count = 0;
         self.next_fleet_id = 1;
+        self.winner = None;
+        self.relations = Self::default_relations();
+        self.events.clear();
+        self.anomalies.clear();
+        self.auditor = LiveAuditor::default();
 
         if !silent {
-            self.events.clear();
+            self.log_events.clear();
             self.push_event(
                 format!(
                     "New {:?} {:?} galaxy #{} ({} systems, {:.0}×{:.0}ly, {} empires).",
@@ -1109,6 +1355,17 @@ impl Simulation {
             let warp_mult = (tc.engine_warp / 6.0).clamp(0.75, 2.0);
             let ife_mult = if lrt & LRT_IFE != 0 { 1.10 } else { 1.0 };
 
+            let raw_f = doc.fac_share.max(0.0);
+            let raw_s = doc.ship_share.max(0.0);
+            let raw_t = doc.tech_share.max(0.0);
+            let sum_fst = raw_f + raw_s + raw_t;
+            let (fac_share, ship_share, tech_share, mine_share) = if sum_fst > 0.95 {
+                let sc = 0.95 / sum_fst;
+                (raw_f * sc, raw_s * sc, raw_t * sc, 0.05)
+            } else {
+                (raw_f, raw_s, raw_t, 1.0 - sum_fst)
+            };
+
             emp_cache[e] = EmpireTickCache {
                 terra_bonus,
                 lv5_pop_mult: 170.0 * (1.0 + lv[5] * 0.015) * prt_pop_mod,
@@ -1132,6 +1389,11 @@ impl Simulation {
                 min_fac_for_gate: if prt_it { 40.0 } else { 58.0 },
                 gate_iron: tc.stargate_cost_iron.min(gate_cap_cost),
                 gate_germ: tc.stargate_cost_germ.min(gate_cap_cost),
+                gate_res: if prt_it {
+                    self.cfg.gate_cost * 1.2
+                } else {
+                    self.cfg.gate_cost * 1.8
+                },
                 min_hub_sq: min_hub_dist * min_hub_dist,
                 effective_ship_cost: self.cfg.col_ship_cost * con_discount * trait_ship_discount,
                 bio_growth_mult: self.cfg.growth
@@ -1139,10 +1401,10 @@ impl Simulation {
                     * (1.0 + lv[5] * 0.025)
                     * if prt_he { 1.80 } else { 1.0 }
                     * DT,
-                mine_share: (1.0 - doc.fac_share - doc.ship_share - doc.tech_share).max(0.05),
-                fac_share: doc.fac_share,
-                ship_share: doc.ship_share,
-                tech_share: doc.tech_share,
+                mine_share,
+                fac_share,
+                ship_share,
+                tech_share,
                 col_pop_req: doc.col_pop_req,
                 dist_exp: doc.dist_exp,
                 qual_exp: doc.qual_exp,
@@ -1227,7 +1489,7 @@ impl Simulation {
 
         // Over-budget automatic decommissioning: every 5 ticks, empires spending >55% of GDP on upkeep
         // scrap their most damaged or surplus orbiting ship at a friendly planet, recovering 50% of hull minerals.
-        if self.ticks % 5 == 0 {
+        if self.ai_enabled && self.ticks % 5 == 0 {
             for e in 0..num_emp {
                 if emp_upkeep_ratio[e] <= 0.55 || emp_orbiting_count[e] == 0 {
                     continue;
@@ -1259,10 +1521,11 @@ impl Simulation {
                     let scrapped = self.fleets.swap_remove(s_idx);
                     let p = scrapped.target;
                     let (ci, cb, cg) = self.empires[e].ship_mineral_cost(scrapped.fleet_type);
+                    let mult = (scrapped.ship_count.max(1) as f32) * 0.5;
                     let b = p * 3;
-                    self.min_surf[b] += ci * 0.5;
-                    self.min_surf[b + 1] += cb * 0.5;
-                    self.min_surf[b + 2] += cg * 0.5;
+                    self.min_surf[b] += ci * mult;
+                    self.min_surf[b + 1] += cb * mult;
+                    self.min_surf[b + 2] += cg * mult;
                     emp_upkeep[e] = (emp_upkeep[e] - scrapped.upkeep).max(0.0);
                     emp_fleet_count[e] = emp_fleet_count[e].saturating_sub(1);
                     emp_orbiting_count[e] = emp_orbiting_count[e].saturating_sub(1);
@@ -1354,12 +1617,27 @@ impl Simulation {
             self.tick_stats[e].factories += self.factories[i];
             self.tick_stats[e].res += res_rate;
 
-            let research_gen = res_gen * ec.tech_share * ec.research_mult;
+            // 1a. Research allocation
+            let spent_tech = res_gen * ec.tech_share;
+            let research_gen = spent_tech * ec.research_mult;
             let tech_pts = &mut self.empires[e].tech_pts;
             for f in 0..NUM_TECH_FIELDS {
                 tech_pts[f] += research_gen * ec.tech_alloc[f];
             }
 
+            // 1b. Mine construction (5.0 Res per mine; unspent mine budget flows into surplus_res)
+            let mine_budget = res_gen * ec.mine_share;
+            let room_for_mines = if total_crust_here > 1.0 {
+                (max_buildings - self.mines[i]).max(0.0)
+            } else {
+                0.0
+            };
+            let built_mines = room_for_mines.min(mine_budget * 0.2);
+            self.mines[i] += built_mines;
+            let spent_mines = (built_mines * 5.0).min(mine_budget);
+            let mine_surplus = (mine_budget - spent_mines).max(0.0);
+
+            // 1c. Factory construction (unspent factory budget flows into surplus_res)
             let room_for_fac = (max_buildings - self.factories[i]).max(0.0);
             let fac_budget = res_gen * ec.fac_share;
             let built_fac = room_for_fac
@@ -1367,11 +1645,45 @@ impl Simulation {
                 .min(self.min_surf[base_idx + 2] * inv_fac_cost_germ);
             self.factories[i] += built_fac;
             self.min_surf[base_idx + 2] -= built_fac * self.cfg.fac_cost_germ;
+            let spent_fac = (built_fac * self.cfg.fac_cost_res).min(fac_budget);
 
-            let surplus_res = (fac_budget - built_fac * self.cfg.fac_cost_res).max(0.0);
+            let base_ship_budget = res_gen * ec.ship_share;
+            let can_build_ships = self.pop[i] > max_pop * ec.col_pop_req;
+            let mut surplus_res = (fac_budget - spent_fac).max(0.0)
+                + mine_surplus
+                + if can_build_ships { 0.0 } else { base_ship_budget };
 
+            // 1d. Sequential surplus_res spending (no double/triple spending!):
+            // Step 1: Planetary defense from surplus_res
+            let mut spent_def = 0.0f32;
+            if self.defense[i] < ec.def_cap && self.min_surf[base_idx + 1] > 2.0 && surplus_res > 0.0
+            {
+                let d_add = (ec.def_cap - self.defense[i])
+                    .min(surplus_res * ec.def_surplus_rate)
+                    .min(self.min_surf[base_idx + 1] * 0.5);
+                self.defense[i] += d_add;
+                self.min_surf[base_idx + 1] -= d_add * 0.15;
+                spent_def = d_add;
+                surplus_res = (surplus_res - spent_def).max(0.0);
+            }
+
+            // Step 2: Shipyard production buffer (base ship share + up to 50% of remaining surplus_res)
+            let spent_ship = if can_build_ships {
+                let ship_from_surplus = surplus_res * 0.5;
+                surplus_res = (surplus_res - ship_from_surplus).max(0.0);
+                let total_ship_res = base_ship_budget + ship_from_surplus;
+                let dock_mult = starbase_dock_mult(self.starbase_tier[i]);
+                self.ship_prod_buf[i] += total_ship_res * dock_mult;
+                total_ship_res
+            } else {
+                0.0
+            };
+
+            // Step 3: Mineral Alchemy consumes remaining surplus_res
+            let mut spent_alchemy = 0.0f32;
             if surplus_res > 0.0 && ec.alch_mult > 0.0 {
-                let transmuted = surplus_res * ec.alch_mult;
+                spent_alchemy = surplus_res;
+                let transmuted = spent_alchemy * ec.alch_mult;
                 let mut min_m = 0usize;
                 if self.min_surf[base_idx + 1] < self.min_surf[base_idx + min_m] {
                     min_m = 1;
@@ -1382,13 +1694,28 @@ impl Simulation {
                 self.min_surf[base_idx + min_m] += transmuted;
             }
 
-            // Strategic Stargate hubs (capped per empire + minimum hub spacing; PRT_IT builds denser networks)
-            if ec.has_stargate_tech
+            if self.trace_enabled {
+                self.record_trace_event(SimEvent::EconomyTick {
+                    planet_idx: i,
+                    res_gen,
+                    spent_tech,
+                    spent_mines,
+                    spent_fac,
+                    spent_def,
+                    spent_ship,
+                    spent_alchemy,
+                });
+            }
+
+            // Strategic Stargate hubs (capped per empire + minimum hub spacing + real Resource cost)
+            if self.ai_enabled
+                && ec.has_stargate_tech
                 && self.has_gate[i] == 0
                 && self.gate_lists[e].len() < ec.max_gates
                 && self.factories[i] >= ec.min_fac_for_gate
             {
-                if self.min_surf[base_idx] >= ec.gate_iron
+                if self.ship_prod_buf[i] >= ec.gate_res
+                    && self.min_surf[base_idx] >= ec.gate_iron
                     && self.min_surf[base_idx + 2] >= ec.gate_germ
                     && self.next_rand() < 0.06
                 {
@@ -1401,6 +1728,7 @@ impl Simulation {
                         dx * dx + dy * dy < min_hub_sq
                     });
                     if !too_close {
+                        self.ship_prod_buf[i] -= ec.gate_res;
                         self.min_surf[base_idx] -= ec.gate_iron;
                         self.min_surf[base_idx + 2] -= ec.gate_germ;
                         self.has_gate[i] = 1;
@@ -1424,21 +1752,6 @@ impl Simulation {
                 }
             }
 
-            // Planetary defense
-            if self.defense[i] < ec.def_cap && self.min_surf[base_idx + 1] > 2.0 {
-                let d_add = (ec.def_cap - self.defense[i])
-                    .min(surplus_res * ec.def_surplus_rate)
-                    .min(self.min_surf[base_idx + 1] * 0.5);
-                self.defense[i] += d_add;
-                self.min_surf[base_idx + 1] -= d_add * 0.15;
-            }
-
-            // Accumulate shipyard buffer every tick (boosted by orbital Starbase dock tier)
-            if self.pop[i] > max_pop * ec.col_pop_req {
-                let dock_mult = starbase_dock_mult(self.starbase_tier[i]);
-                self.ship_prod_buf[i] += (res_gen * ec.ship_share + surplus_res * 0.5) * dock_mult;
-            }
-
             // Starbase self-repair & autonomous construction/upgrade
             let cur_sb = self.starbase_tier[i];
             if cur_sb > 0 && self.starbase_hp[i] < self.starbase_max_hp[i] {
@@ -1446,7 +1759,8 @@ impl Simulation {
                     .min(self.starbase_max_hp[i]);
             }
             let best_sb = self.empires[e].tech_cache.best_starbase_tier;
-            if cur_sb < best_sb
+            if self.ai_enabled
+                && cur_sb < best_sb
                 && self.pop[i] > 28.0
                 && self.factories[i] >= 14.0
                 && emp_upkeep_ratio[e] < 0.40
@@ -1492,7 +1806,7 @@ impl Simulation {
             }
 
             // Time-sliced AI target search (freighters, colonizers, warships) using precomputed CSR neighbor lists
-            let ai_turn = (i + tick_usize) % AI_DECISION_STRIDE == 0;
+            let ai_turn = self.ai_enabled && (i + tick_usize) % AI_DECISION_STRIDE == 0;
             if ai_turn {
                 let t_scan = if prof { perf_now_ms() } else { 0.0 };
                 // Planetary scanner sweep (Fog of War discovery)
@@ -1574,6 +1888,7 @@ impl Simulation {
                                             emp_u8,
                                             FleetClass::Freight,
                                             actual_cargo,
+                                            1,
                                             m as u8,
                                             -1,
                                             silent,
@@ -1686,6 +2001,7 @@ impl Simulation {
                                     cargo_germ: 0.0,
                                     orbiting: false,
                                     upkeep: FleetClass::Freight.upkeep(),
+                                    ship_count: 1,
                                 });
                             }
                         }
@@ -1886,8 +2202,24 @@ impl Simulation {
                         }
 
                         if let Some(c_class) = chosen_class {
+                            let (ci_u, cb_u, cg_u) = self.empires[e].ship_mineral_cost(c_class);
+                            let max_by_res =
+                                (self.ship_prod_buf[i] / effective_ship_cost.max(1.0)).floor() as u16;
+                            let max_by_i = (self.min_surf[base_idx] / ci_u.max(0.1)).floor() as u16;
+                            let max_by_b =
+                                (self.min_surf[base_idx + 1] / cb_u.max(0.1)).floor() as u16;
+                            let max_by_g =
+                                (self.min_surf[base_idx + 2] / cg_u.max(0.1)).floor() as u16;
+                            let max_buildable =
+                                max_by_res.min(max_by_i).min(max_by_b).min(max_by_g).clamp(1, 12);
+                            let unit_power = self.compute_unit_power(e, c_class);
+                            let docked_power = if self.orbit_warship[i] >= 0 {
+                                self.fleets[self.orbit_warship[i] as usize].power
+                            } else {
+                                0.0
+                            };
                             let my_attack_est =
-                                self.compute_fleet_power(e, c_class, self.factories[i]);
+                                docked_power.max(unit_power * (max_buildable as f32));
                             let ship_range = self.empires[e].ship_range(c_class);
                             let bomb_pen = if c_class == FleetClass::Bomber {
                                 (self.cfg.bomber_pen
@@ -1903,15 +2235,17 @@ impl Simulation {
                                 }
                                 let j = j_u32 as usize;
                                 let target_owner = self.owner[j];
-                                if target_owner != 0
-                                    && target_owner != emp_u8
+                                if self.are_hostile(emp_u8, target_owner)
                                     && (self.explored_mask[j] & my_bit) != 0
                                     && (self.claim_mask[j] & my_bit) == 0
                                 {
                                     let target_e = (target_owner - 1) as usize;
                                     let d = dist.max(30.0);
                                     let eff_def = self.defense[j] * (1.0 - bomb_pen);
-                                    let enemy_def = 20.0 + eff_def + self.pop[j] * 0.35;
+                                    let enemy_def = 20.0
+                                        + eff_def
+                                        + self.pop[j] * 0.35
+                                        + self.starbase_hp[j] * 0.18;
                                     let target_share =
                                         self.empires[target_e].res_total / total_galactic_res;
                                     let leader_aggro_bonus =
@@ -1966,15 +2300,17 @@ impl Simulation {
                                         }
                                         let j = j_u32 as usize;
                                         let target_owner = self.owner[j];
-                                        if target_owner != 0
-                                            && target_owner != emp_u8
+                                        if self.are_hostile(emp_u8, target_owner)
                                             && (self.explored_mask[j] & my_bit) != 0
                                             && (self.claim_mask[j] & my_bit) == 0
                                         {
                                             let target_e = (target_owner - 1) as usize;
                                             let d = dist.max(30.0);
                                             let eff_def = self.defense[j] * (1.0 - bomb_pen);
-                                            let enemy_def = 20.0 + eff_def + self.pop[j] * 0.35;
+                                            let enemy_def = 20.0
+                                                + eff_def
+                                                + self.pop[j] * 0.35
+                                                + self.starbase_hp[j] * 0.18;
                                             let target_share = self.empires[target_e].res_total
                                                 / total_galactic_res;
                                             let leader_aggro_bonus =
@@ -2017,7 +2353,9 @@ impl Simulation {
                                 let defense_ref = &self.defense;
                                 let pop_ref = &self.pop;
                                 let factories_ref = &self.factories;
+                                let starbase_hp_ref = &self.starbase_hp;
                                 let empires_ref = &self.empires;
+                                let relations_ref = &self.relations;
                                 let aggro_bias = self.cfg.aggro_bias;
                                 let mut checked_wh = 0u32;
                                 self.wh_grid.for_each_in_radius(xi, yi, max_entry, |entry| {
@@ -2048,13 +2386,18 @@ impl Simulation {
                                         let target_owner = owner_ref[j];
                                         if target_owner != 0
                                             && target_owner != emp_u8
+                                            && relations_ref[e][(target_owner - 1) as usize]
+                                                == DiplomaticStance::War
                                             && (explored_ref[j] & my_bit) != 0
                                             && (claim_ref[j] & my_bit) == 0
                                         {
                                             let target_e = (target_owner - 1) as usize;
                                             let d = (d_entry + d_exit).max(30.0);
                                             let eff_def = defense_ref[j] * (1.0 - bomb_pen);
-                                            let enemy_def = 20.0 + eff_def + pop_ref[j] * 0.35;
+                                            let enemy_def = 20.0
+                                                + eff_def
+                                                + pop_ref[j] * 0.35
+                                                + starbase_hp_ref[j] * 0.18;
                                             let target_share =
                                                 empires_ref[target_e].res_total / total_galactic_res;
                                             let leader_aggro_bonus = if target_e == leader_e
@@ -2089,7 +2432,7 @@ impl Simulation {
                     if let Some(target_idx) = best_target {
                         let docked_war = self.orbit_warship[i];
                         if mission.is_combat() && docked_war >= 0 {
-                            // Dispatch stationed garrison warship from orbit at zero build cost
+                            // Dispatch stationed garrison warship from orbit (optionally reinforcing it if same class & affordable)
                             let fi = docked_war as usize;
                             self.orbit_warship[i] = -1;
                             self.claim_mask[target_idx] |= my_bit;
@@ -2124,8 +2467,25 @@ impl Simulation {
                                 1.0
                             };
                             let (ci_raw, cb_raw, cg_raw) = self.empires[e].ship_mineral_cost(mission);
-                            let (ci, cb, cg) = (ci_raw * cost_mult, cb_raw * cost_mult, cg_raw * cost_mult);
-                            let res_cost = effective_ship_cost * cost_mult;
+                            let (ci_u, cb_u, cg_u) =
+                                (ci_raw * cost_mult, cb_raw * cost_mult, cg_raw * cost_mult);
+                            let unit_res_cost = effective_ship_cost * cost_mult;
+                            let ship_count = if mission == FleetClass::Col {
+                                1u16
+                            } else {
+                                let max_r =
+                                    (self.ship_prod_buf[i] / unit_res_cost.max(1.0)).floor() as u16;
+                                let max_i =
+                                    (self.min_surf[base_idx] / ci_u.max(0.1)).floor() as u16;
+                                let max_b =
+                                    (self.min_surf[base_idx + 1] / cb_u.max(0.1)).floor() as u16;
+                                let max_g =
+                                    (self.min_surf[base_idx + 2] / cg_u.max(0.1)).floor() as u16;
+                                max_r.min(max_i).min(max_b).min(max_g).clamp(1, 12)
+                            };
+                            let count_f = ship_count as f32;
+                            let res_cost = unit_res_cost * count_f;
+                            let (ci, cb, cg) = (ci_u * count_f, cb_u * count_f, cg_u * count_f);
                             if self.ship_prod_buf[i] >= res_cost
                                 && self.min_surf[base_idx] >= ci
                                 && self.min_surf[base_idx + 1] >= cb
@@ -2136,15 +2496,17 @@ impl Simulation {
                                 self.min_surf[base_idx + 1] -= cb;
                                 self.min_surf[base_idx + 2] -= cg;
                                 self.claim_mask[target_idx] |= my_bit;
-                                self.pop[i] = (self.pop[i] - 6.0).max(2.0);
-                                let power =
-                                    self.compute_fleet_power(e, mission, self.factories[i]);
+                                if mission == FleetClass::Col {
+                                    self.pop[i] = (self.pop[i] - 6.0).max(2.0);
+                                }
+                                let power = self.compute_fleet_power(e, mission, ship_count);
                                 self.spawn_fleet(
                                     i,
                                     target_idx,
                                     emp_u8,
                                     mission,
                                     power,
+                                    ship_count,
                                     0,
                                     best_wh_route,
                                     silent,
@@ -2156,7 +2518,7 @@ impl Simulation {
                         && self.orbit_count[i] < 2
                         && self.fleets.len() < 4000
                     {
-                        // Build a standing orbital garrison warship when budget & minerals allow
+                        // Build or reinforce a standing orbital garrison warship when budget & minerals allow
                         let r = self.next_rand();
                         let g_class = if r < ec.cruiser_share {
                             FleetClass::Cruiser
@@ -2174,35 +2536,47 @@ impl Simulation {
                             self.min_surf[base_idx] -= ci;
                             self.min_surf[base_idx + 1] -= cb;
                             self.min_surf[base_idx + 2] -= cg;
-                            let power = self.compute_fleet_power(e, g_class, self.factories[i]);
-                            let id = self.next_fleet_id;
-                            self.next_fleet_id += 1;
-                            let ox = self.pos_x[i];
-                            let oy = self.pos_y[i];
-                            self.fleets.push(Fleet {
-                                id,
-                                x: ox,
-                                y: oy,
-                                from: i,
-                                target: i,
-                                emp: emp_u8,
-                                fleet_type: g_class,
-                                min_type: 0,
-                                power,
-                                max_power: power,
-                                hunting: false,
-                                used_wh: false,
-                                steer_x: ox,
-                                steer_y: oy,
-                                wh_route: -1,
-                                salvage_mode: 0,
-                                cargo_iron: 0.0,
-                                cargo_bora: 0.0,
-                                cargo_germ: 0.0,
-                                orbiting: true,
-                                upkeep: g_class.upkeep(),
-                            });
-                            self.orbit_count[i] = self.orbit_count[i].saturating_add(1);
+                            let unit_power = self.compute_unit_power(e, g_class);
+                            let docked_war = self.orbit_warship[i];
+                            if docked_war >= 0
+                                && self.fleets[docked_war as usize].fleet_type == g_class
+                            {
+                                let fl = &mut self.fleets[docked_war as usize];
+                                fl.ship_count = fl.ship_count.saturating_add(1);
+                                fl.power += unit_power;
+                                fl.max_power += unit_power;
+                                fl.upkeep += g_class.upkeep();
+                            } else {
+                                let id = self.next_fleet_id;
+                                self.next_fleet_id += 1;
+                                let ox = self.pos_x[i];
+                                let oy = self.pos_y[i];
+                                self.fleets.push(Fleet {
+                                    id,
+                                    x: ox,
+                                    y: oy,
+                                    from: i,
+                                    target: i,
+                                    emp: emp_u8,
+                                    fleet_type: g_class,
+                                    min_type: 0,
+                                    power: unit_power,
+                                    max_power: unit_power,
+                                    hunting: false,
+                                    used_wh: false,
+                                    steer_x: ox,
+                                    steer_y: oy,
+                                    wh_route: -1,
+                                    salvage_mode: 0,
+                                    cargo_iron: 0.0,
+                                    cargo_bora: 0.0,
+                                    cargo_germ: 0.0,
+                                    orbiting: true,
+                                    upkeep: g_class.upkeep(),
+                                    ship_count: 1,
+                                });
+                                self.orbit_count[i] = self.orbit_count[i].saturating_add(1);
+                            }
                         }
                     }
                 }
@@ -2210,13 +2584,6 @@ impl Simulation {
                     prof_ai_ms += perf_now_ms() - t_ai;
                 }
             }
-
-            let room_for_mines = if total_crust_here > 1.0 {
-                (max_buildings - self.mines[i]).max(0.0)
-            } else {
-                0.0
-            };
-            self.mines[i] += room_for_mines.min((res_gen * ec.mine_share) * 0.2);
 
             let startup_factor = if self.pop[i] < 15.0 {
                 0.4 + 0.6 * (self.pop[i] / 15.0)
@@ -2324,6 +2691,9 @@ impl Simulation {
         let mut f_idx = self.fleets.len();
         while f_idx > 0 {
             f_idx -= 1;
+            if self.fleets[f_idx].power <= 0.0 {
+                continue;
+            }
             let emp_u8 = self.fleets[f_idx].emp;
             let e = (emp_u8 - 1) as usize;
             let ec = &emp_cache[e];
@@ -2370,55 +2740,86 @@ impl Simulation {
 
                 if dist_sq <= scoop_r * scoop_r {
                     // Scoop up to remaining cargo capacity proportionally from debris fields at this site
-                    let cap = self.fleets[f_idx].max_power.max(45.0);
+                    let cap = if self.fleets[f_idx].max_power > 0.0 {
+                        self.fleets[f_idx].max_power
+                    } else {
+                        ec.cargo_cap
+                    };
+                    let fleet_id = self.fleets[f_idx].id;
                     let mut carried = self.fleets[f_idx].cargo_iron
                         + self.fleets[f_idx].cargo_bora
                         + self.fleets[f_idx].cargo_germ;
-                    let debris_slice = &mut self.debris_fields;
                     let mut add_i = 0.0f32;
                     let mut add_b = 0.0f32;
                     let mut add_g = 0.0f32;
+                    let mut trace_loads: Vec<(f32, f32, f32)> = Vec::new();
+                    let trace_on = self.trace_enabled;
 
-                    self.debris_grid
-                        .for_each_in_radius(sx, sy, 14.0, |entry| {
-                            let rem = (cap - carried).max(0.0);
-                            if rem <= 0.5 {
-                                return;
-                            }
-                            let d_idx = entry.idx as usize;
-                            if d_idx >= debris_slice.len() {
-                                return;
-                            }
-                            let deb = &mut debris_slice[d_idx];
-                            if deb.ttl <= 0.0 {
-                                return;
-                            }
-                            let ddx = deb.x - sx;
-                            let ddy = deb.y - sy;
-                            if ddx * ddx + ddy * ddy > 196.0 {
-                                return;
-                            }
-                            let avail = deb.iron + deb.bora + deb.germ;
-                            if avail <= 0.1 {
-                                deb.ttl = 0.0;
-                                return;
-                            }
-                            let take = avail.min(rem);
-                            let frac = (take / avail).clamp(0.0, 1.0);
-                            let ti = deb.iron * frac;
-                            let tb = deb.bora * frac;
-                            let tg = deb.germ * frac;
-                            deb.iron -= ti;
-                            deb.bora -= tb;
-                            deb.germ -= tg;
-                            if deb.iron + deb.bora + deb.germ <= 0.5 {
-                                deb.ttl = 0.0;
-                            }
-                            add_i += ti;
-                            add_b += tb;
-                            add_g += tg;
-                            carried += take;
+                    {
+                        let debris_slice = &mut self.debris_fields;
+                        self.debris_grid
+                            .for_each_in_radius(sx, sy, 14.0, |entry| {
+                                let rem = (cap - carried).max(0.0);
+                                if rem <= 1e-4 {
+                                    return;
+                                }
+                                let d_idx = entry.idx as usize;
+                                if d_idx >= debris_slice.len() {
+                                    return;
+                                }
+                                let deb = &mut debris_slice[d_idx];
+                                if deb.ttl <= 0.0 {
+                                    return;
+                                }
+                                let ddx = deb.x - sx;
+                                let ddy = deb.y - sy;
+                                if ddx * ddx + ddy * ddy > 196.0 {
+                                    return;
+                                }
+                                let avail = deb.iron + deb.bora + deb.germ;
+                                if avail <= 1e-4 {
+                                    deb.iron = 0.0;
+                                    deb.bora = 0.0;
+                                    deb.germ = 0.0;
+                                    deb.ttl = 0.0;
+                                    return;
+                                }
+                                let take = avail.min(rem);
+                                let frac = (take / avail).clamp(0.0, 1.0);
+                                let ti = deb.iron * frac;
+                                let tb = deb.bora * frac;
+                                let tg = deb.germ * frac;
+                                deb.iron = (deb.iron - ti).max(0.0);
+                                deb.bora = (deb.bora - tb).max(0.0);
+                                deb.germ = (deb.germ - tg).max(0.0);
+                                let loaded_here = ti + tb + tg;
+                                let mut rem_debris = deb.iron + deb.bora + deb.germ;
+                                if rem_debris <= 1e-4 {
+                                    deb.iron = 0.0;
+                                    deb.bora = 0.0;
+                                    deb.germ = 0.0;
+                                    deb.ttl = 0.0;
+                                    rem_debris = 0.0;
+                                }
+                                if trace_on {
+                                    trace_loads.push((avail, loaded_here, rem_debris));
+                                }
+                                add_i += ti;
+                                add_b += tb;
+                                add_g += tg;
+                                carried += loaded_here;
+                            });
+                    }
+
+                    for (debris_before, loaded, debris_after) in trace_loads {
+                        self.record_trace_event(SimEvent::SalvageLoaded {
+                            fleet_id,
+                            debris_before,
+                            loaded,
+                            debris_after,
+                            cargo_cap: cap,
                         });
+                    }
 
                     self.fleets[f_idx].cargo_iron += add_i;
                     self.fleets[f_idx].cargo_bora += add_b;
@@ -2610,7 +3011,8 @@ impl Simulation {
             let ec = &emp_cache[e];
             let intercept_roll =
                 ((self.fleets[f_idx].id.wrapping_mul(2654435761)) >> 24) as f32 / 256.0;
-            if !heading_to_wh
+            if self.ai_enabled
+                && !heading_to_wh
                 && self.fleets[f_idx].fleet_type == FleetClass::Cruiser
                 && intercept_roll < ec.intercept_bias
             {
@@ -2629,9 +3031,13 @@ impl Simulation {
                 let defense_ref = &self.defense;
                 let pos_x_ref = &self.pos_x;
                 let pos_y_ref = &self.pos_y;
+                let relations_ref = &self.relations;
 
                 self.fleet_grid.for_each_in_radius(fx, fy, scan_max, |entry| {
-                    if entry.tag == emp_u8 {
+                    if entry.tag == 0
+                        || entry.tag == emp_u8
+                        || relations_ref[e][(entry.tag - 1) as usize] != DiplomaticStance::War
+                    {
                         return;
                     }
                     let k = entry.idx as usize;
@@ -2702,44 +3108,9 @@ impl Simulation {
             self.fleets[f_idx].steer_x = tx;
             self.fleets[f_idx].steer_y = ty;
 
-            // Debris salvage using UniformGrid (only when auto_salvage is enabled)
             let fx = self.fleets[f_idx].x;
             let fy = self.fleets[f_idx].y;
-            if has_auto_salvage && !self.debris_fields.is_empty() {
-                let from_idx = self.fleets[f_idx].from;
-                let salvage_mult = ec.salvage_mult;
-                let home_idx = if self.owner[from_idx] == emp_u8 {
-                    from_idx
-                } else {
-                    e
-                };
-                let debris_slice = &mut self.debris_fields;
-                let min_surf = &mut self.min_surf;
-                let total_salvaged = &mut self.total_salvaged;
-
-                self.debris_grid
-                    .for_each_in_radius(fx, fy, salvage_rad, |entry| {
-                        let dx = entry.x - fx;
-                        let dy = entry.y - fy;
-                        if dx * dx + dy * dy > salvage_rad_sq {
-                            return;
-                        }
-                        let d_idx = entry.idx as usize;
-                        if d_idx >= debris_slice.len() {
-                            return;
-                        }
-                        let deb = &mut debris_slice[d_idx];
-                        if deb.ttl <= 0.0 {
-                            return;
-                        }
-                        min_surf[home_idx * 3] += deb.iron * salvage_mult;
-                        min_surf[home_idx * 3 + 1] += deb.bora * salvage_mult;
-                        min_surf[home_idx * 3 + 2] += deb.germ * salvage_mult;
-                        *total_salvaged +=
-                            ((deb.iron + deb.bora + deb.germ) * salvage_mult).round() as u32;
-                        deb.ttl = 0.0;
-                    });
-            }
+            let _ = (has_auto_salvage, salvage_rad, salvage_rad_sq);
 
             let step_dist = ec.base_step_dist * self.fleets[f_idx].fleet_type.speed_mod();
 
@@ -2753,21 +3124,39 @@ impl Simulation {
 
                 let fl_type = self.fleets[f_idx].fleet_type;
                 let fl_emp = self.fleets[f_idx].emp;
+                let fl_id = self.fleets[f_idx].id;
                 if fl_type == FleetClass::Freight {
                     if self.owner[target_idx] == fl_emp {
-                        if self.fleets[f_idx].salvage_mode == 2 {
-                            let b = target_idx * 3;
-                            let mult = ec.salvage_mult;
-                            let di = self.fleets[f_idx].cargo_iron * mult;
-                            let db = self.fleets[f_idx].cargo_bora * mult;
-                            let dg = self.fleets[f_idx].cargo_germ * mult;
+                        let b = target_idx * 3;
+                        let planet_surf_before =
+                            self.min_surf[b] + self.min_surf[b + 1] + self.min_surf[b + 2];
+                        let unloaded = if self.fleets[f_idx].salvage_mode == 2 {
+                            // Unload exact physical cargo carried in hold (never multiply by salvage_mult on unload!)
+                            let di = self.fleets[f_idx].cargo_iron;
+                            let db = self.fleets[f_idx].cargo_bora;
+                            let dg = self.fleets[f_idx].cargo_germ;
                             self.min_surf[b] += di;
                             self.min_surf[b + 1] += db;
                             self.min_surf[b + 2] += dg;
-                            self.total_salvaged += (di + db + dg).round() as u32;
+                            let tot = di + db + dg;
+                            self.total_salvaged += tot.round() as u32;
+                            tot
                         } else {
                             let mt = self.fleets[f_idx].min_type as usize;
-                            self.min_surf[target_idx * 3 + mt] += self.fleets[f_idx].power;
+                            let cargo = self.fleets[f_idx].power;
+                            self.min_surf[b + mt] += cargo;
+                            cargo
+                        };
+                        let planet_surf_after =
+                            self.min_surf[b] + self.min_surf[b + 1] + self.min_surf[b + 2];
+                        if self.trace_enabled {
+                            self.record_trace_event(SimEvent::CargoUnloaded {
+                                fleet_id: fl_id,
+                                planet_idx: target_idx,
+                                unloaded,
+                                planet_surf_before,
+                                planet_surf_after,
+                            });
                         }
                         // Dock freighter in orbit at friendly destination for reuse
                         let ox = self.pos_x[target_idx];
@@ -2785,7 +3174,7 @@ impl Simulation {
                         fl.cargo_bora = 0.0;
                         fl.cargo_germ = 0.0;
                         fl.power = 12.0;
-                        fl.max_power = ec.cargo_cap;
+                        fl.max_power = fl.max_power.max(ec.cargo_cap);
                         fl.wh_route = -1;
                         fl.used_wh = false;
                     } else {
@@ -2816,8 +3205,10 @@ impl Simulation {
                         self.pop[target_idx] =
                             (self.hab[target_idx] * 170.0).min(self.pop[target_idx] + 7.0);
                     }
-                } else if self.owner[target_idx] == fl_emp || self.owner[target_idx] == 0 {
-                    // Warship arrives at friendly (or now-empty) world: dock in orbit if friendly
+                } else if self.owner[target_idx] == fl_emp
+                    || !self.are_hostile(fl_emp, self.owner[target_idx])
+                {
+                    // Warship arrives at friendly, neutral, or non-hostile (Neutral/Ceasefire/Alliance) world
                     if self.owner[target_idx] == fl_emp {
                         let ox = self.pos_x[target_idx];
                         let oy = self.pos_y[target_idx];
@@ -2833,39 +3224,87 @@ impl Simulation {
                         fl.wh_route = -1;
                     } else {
                         let home = self.fleets[f_idx].from;
-                        if home < n && self.owner[home] == fl_emp {
+                        if home != target_idx && home < n && self.owner[home] == fl_emp {
                             self.fleets[f_idx].target = home;
                             self.fleets[f_idx].steer_x = self.pos_x[home];
                             self.fleets[f_idx].steer_y = self.pos_y[home];
                             self.fleets[f_idx].wh_route = -1;
                         } else {
-                            self.fleets.swap_remove(f_idx);
+                            let ox = self.pos_x[target_idx];
+                            let oy = self.pos_y[target_idx];
+                            let fl = &mut self.fleets[f_idx];
+                            fl.x = ox;
+                            fl.y = oy;
+                            fl.steer_x = ox;
+                            fl.steer_y = oy;
                         }
                     }
                 } else {
-                    // Warship planetary assault (must first defeat any orbital Starbase)
+                    // Warship planetary assault sequence:
+                    // Step 1: Must first defeat any hostile combat fleets stationed in orbit (Orbital Garrison)
+                    // Step 2: Must then defeat any orbital Starbase
+                    // Step 3: Finally assaults planetary ground defenses
                     let def_e = (self.owner[target_idx] - 1) as usize;
+                    let sx = self.pos_x[target_idx];
+                    let sy = self.pos_y[target_idx];
+
+                    // Step 1: Orbital Garrison interception
+                    let mut garrison_indices: Vec<usize> = Vec::new();
+                    for (g_idx, g_fl) in self.fleets.iter().enumerate() {
+                        if g_idx != f_idx
+                            && g_fl.orbiting
+                            && g_fl.target == target_idx
+                            && g_fl.power > 0.0
+                            && g_fl.fleet_type.is_combat()
+                            && self.are_hostile(fl_emp, g_fl.emp)
+                        {
+                            garrison_indices.push(g_idx);
+                        }
+                    }
+
+                    for g_idx in garrison_indices {
+                        if self.fleets[f_idx].power <= 0.0 {
+                            break;
+                        }
+                        if self.fleets[g_idx].power <= 0.0 {
+                            continue;
+                        }
+                        self.resolve_fleet_pair_combat(
+                            f_idx,
+                            g_idx,
+                            &emp_cache,
+                            ew_mult,
+                            true,
+                            Some(target_idx),
+                            silent,
+                        );
+                    }
+
+                    if self.fleets[f_idx].power <= 0.0 {
+                        // Attacker was destroyed by the orbiting garrison before reaching the Starbase or planet!
+                        continue;
+                    }
+
                     let mut fl_power = self.fleets[f_idx].power;
 
-                    // Orbital Starbase engagement
+                    // Step 2: Orbital Starbase engagement
                     let sb_tier = self.starbase_tier[target_idx];
                     if sb_tier > 0 && self.starbase_hp[target_idx] > 0.0 {
-                        let sb_hp = self.starbase_hp[target_idx];
-                        let sb_combat_power = sb_hp * 0.22;
+                        let sb_hp_before = self.starbase_hp[target_idx];
+                        let sb_combat_power = sb_hp_before * 0.22;
                         let dmg_to_sb = fl_power * 1.15;
-                        self.starbase_hp[target_idx] = (sb_hp - dmg_to_sb).max(0.0);
+                        let sb_hp_after = (sb_hp_before - dmg_to_sb).max(0.0);
+                        self.starbase_hp[target_idx] = sb_hp_after;
                         let dmg_to_fl = sb_combat_power * 0.65;
                         fl_power -= dmg_to_fl;
                         self.fleets[f_idx].power = fl_power;
 
-                        if self.starbase_hp[target_idx] <= 0.0 {
+                        if sb_hp_after <= 0.0 {
                             // Starbase destroyed! Drop wreckage into debris field
                             let (si, sb, sg, _) = starbase_build_cost(sb_tier);
                             let rate = self.cfg.salvage_rate;
                             if rate > 0.0 && (si + sb + sg) * rate > 0.5 {
                                 let ttl = self.cfg.scenario_modifiers.debris_ttl.max(1.0);
-                                let sx = self.pos_x[target_idx];
-                                let sy = self.pos_y[target_idx];
                                 self.debris_fields.push(DebrisField {
                                     x: sx,
                                     y: sy,
@@ -2895,33 +3334,31 @@ impl Simulation {
                             }
                         }
 
-                        if fl_power <= 0.0 {
-                            let dead = self.fleets.swap_remove(f_idx);
-                            self.spawn_salvage_debris(
-                                self.pos_x[target_idx],
-                                self.pos_y[target_idx],
-                                &dead,
-                            );
-                            continue;
+                        let attacker_survived = sb_hp_after <= 0.0 && fl_power > 0.0;
+                        if self.trace_enabled {
+                            self.record_trace_event(SimEvent::StarbaseAssault {
+                                planet_idx: target_idx,
+                                sb_hp_before,
+                                sb_hp_after,
+                                attacker_survived,
+                            });
                         }
-                        if self.starbase_tier[target_idx] > 0 {
-                            // Starbase held the orbit — repelled attacker is destroyed
+
+                        if !attacker_survived {
                             let dead = self.fleets.swap_remove(f_idx);
-                            self.spawn_salvage_debris(
-                                self.pos_x[target_idx],
-                                self.pos_y[target_idx],
-                                &dead,
-                            );
+                            self.spawn_salvage_debris(sx, sy, &dead);
                             continue;
                         }
                     }
 
+                    // Step 3: Planetary Ground Defense assault
+                    let def_before = self.defense[target_idx];
                     let mut bunker_bonus: f32 = if emp_cache[def_e].prt_is {
                         1.30
                     } else {
                         1.0
                     };
-                    let mut effective_def = self.defense[target_idx];
+                    let mut effective_def = def_before;
                     if fl_type == FleetClass::Bomber {
                         let pen = (self.cfg.bomber_pen
                             + (self.empires[e].tech_cache.bomb_power * 0.02).min(0.22))
@@ -2931,7 +3368,8 @@ impl Simulation {
                     }
                     let def_threshold =
                         (20.0 + effective_def + self.pop[target_idx] * 0.35) * bunker_bonus;
-                    if fl_power > def_threshold {
+                    let captured = fl_power > def_threshold;
+                    if captured {
                         self.owner[target_idx] = fl_emp;
                         self.pop[target_idx] = (self.pop[target_idx] * 0.65).max(10.0);
                         let struct_surv = if fl_type == FleetClass::Bomber {
@@ -2944,7 +3382,8 @@ impl Simulation {
                             0.82
                         };
                         self.factories[target_idx] *= struct_surv;
-                        self.defense[target_idx] = 20.0;
+                        self.defense[target_idx] = (def_before * 0.5).min(20.0);
+                        let def_after = self.defense[target_idx];
                         self.invasions_count += 1;
                         if !silent && self.has_gate[target_idx] != 0 {
                             let msg = format!(
@@ -2955,19 +3394,25 @@ impl Simulation {
                             let col = self.empires[e].race.color.clone();
                             self.push_event(msg, &col);
                         }
+                        if self.trace_enabled {
+                            self.record_trace_event(SimEvent::PlanetAssault {
+                                planet_idx: target_idx,
+                                captured: true,
+                                def_before,
+                                def_after,
+                            });
+                        }
                         // Victorious warship takes assault damage and stations in orbit around captured planet
                         let assault_dmg = (def_threshold * 0.35).min(fl_power * 0.72);
-                        let ox = self.pos_x[target_idx];
-                        let oy = self.pos_y[target_idx];
                         let fl = &mut self.fleets[f_idx];
                         fl.power = (fl.power - assault_dmg).max(fl.max_power * 0.15);
                         fl.orbiting = true;
                         fl.from = target_idx;
                         fl.target = target_idx;
-                        fl.x = ox;
-                        fl.y = oy;
-                        fl.steer_x = ox;
-                        fl.steer_y = oy;
+                        fl.x = sx;
+                        fl.y = sy;
+                        fl.steer_x = sx;
+                        fl.steer_y = sy;
                         fl.hunting = false;
                         fl.wh_route = -1;
                     } else {
@@ -2976,18 +3421,24 @@ impl Simulation {
                         } else {
                             (fl_power / bunker_bonus) * 0.45
                         };
-                        self.defense[target_idx] = (self.defense[target_idx] - dmg).max(4.0);
+                        self.defense[target_idx] =
+                            (def_before - dmg).max(4.0).min(def_before * 0.9);
+                        let def_after = self.defense[target_idx];
                         if fl_type == FleetClass::Bomber {
                             self.factories[target_idx] =
                                 (self.factories[target_idx] * 0.92).max(2.0);
                         }
+                        if self.trace_enabled {
+                            self.record_trace_event(SimEvent::PlanetAssault {
+                                planet_idx: target_idx,
+                                captured: false,
+                                def_before,
+                                def_after,
+                            });
+                        }
                         // Repelled attacker is destroyed in planetary fire and leaves battle wreckage
                         let dead = self.fleets.swap_remove(f_idx);
-                        self.spawn_salvage_debris(
-                            self.pos_x[target_idx],
-                            self.pos_y[target_idx],
-                            &dead,
-                        );
+                        self.spawn_salvage_debris(sx, sy, &dead);
                     }
                 }
             } else {
@@ -3038,8 +3489,14 @@ impl Simulation {
                 {
                     let candidates = &mut self.combat_candidates;
                     let i_u32 = i as u32;
+                    let relations_ref = &self.relations;
+                    let ea = (emp_a - 1) as usize;
                     self.fleet_grid.for_each_in_radius(ax, ay, hit_rad, |entry| {
-                        if entry.idx <= i_u32 || entry.tag == emp_a {
+                        if entry.idx <= i_u32
+                            || entry.tag == 0
+                            || entry.tag == emp_a
+                            || relations_ref[ea][(entry.tag - 1) as usize] != DiplomaticStance::War
+                        {
                             return;
                         }
                         if !a_c && (entry.flags & 1) == 0 {
@@ -3061,84 +3518,24 @@ impl Simulation {
                     if self.fleets[j].power <= 0.0 {
                         continue;
                     }
-                    let type_b = self.fleets[j].fleet_type;
-                    let b_c = type_b.is_combat();
-                    let bx = self.fleets[j].x;
-                    let by = self.fleets[j].y;
-
-                    self.space_battles_count += 1;
-
-                    let mut mod_a = if !b_c { 3.5 } else { 1.0 };
-                    let mut mod_b = if !a_c { 3.5 } else { 1.0 };
-                    if type_a == FleetClass::Cruiser && type_b == FleetClass::Bomber {
-                        mod_a = 1.9;
-                        mod_b = 0.55;
-                    }
-                    if type_b == FleetClass::Cruiser && type_a == FleetClass::Bomber {
-                        mod_b = 1.9;
-                        mod_a = 0.55;
-                    }
-                    if type_a == FleetClass::Battleship && type_b == FleetClass::Cruiser {
-                        mod_a = 1.45;
-                        mod_b = 0.72;
-                    }
-                    if type_b == FleetClass::Battleship && type_a == FleetClass::Cruiser {
-                        mod_b = 1.45;
-                        mod_a = 0.72;
-                    }
-
-                    let ea = (emp_a - 1) as usize;
-                    let eb = (self.fleets[j].emp - 1) as usize;
-                    if emp_cache[ea].prt_ss {
-                        mod_a *= 1.12;
-                    }
-                    if emp_cache[eb].prt_ss {
-                        mod_b *= 1.12;
-                    }
-
-                    // Electronic Warfare: defender Torpedo Jamming reduces enemy torpedo effectiveness
-                    mod_a = apply_torpedo_jamming(
-                        mod_a,
-                        self.empires[ea].tech_cache.weapon_is_torpedo,
-                        self.empires[eb].tech_cache.torpedo_jamming * ew_mult,
-                    );
-                    mod_b = apply_torpedo_jamming(
-                        mod_b,
-                        self.empires[eb].tech_cache.weapon_is_torpedo,
-                        self.empires[ea].tech_cache.torpedo_jamming * ew_mult,
-                    );
-
-                    let eff_a = (if a_c { self.fleets[i].power } else { 8.0 }) * mod_a;
-                    let eff_b = (if b_c { self.fleets[j].power } else { 8.0 }) * mod_b;
-                    let mx = (ax + bx) * 0.5;
-                    let my = (ay + by) * 0.5;
-
-                    if !silent && self.pending_combat_fx.len() < 35 {
-                        let winner_e = if eff_a >= eff_b { ea } else { eb };
-                        self.pending_combat_fx.push(CombatFx {
-                            x1: ax,
-                            y1: ay,
-                            x2: bx,
-                            y2: by,
-                            mx,
-                            my,
-                            ttl: 10,
-                            col: self.empires[winner_e].race.color.clone(),
-                        });
-                    }
-
-                    if eff_a >= eff_b {
-                        self.fleets[i].power *= 1.0 - ((eff_b / eff_a) * 0.65).min(0.85);
-                        self.fleets[j].power = 0.0;
-                        self.empires[ea].race.doctrine.kills += 1;
-                        let dead = self.fleets[j].clone();
-                        self.spawn_salvage_debris(mx, my, &dead);
+                    let is_orbital = self.fleets[i].orbiting || self.fleets[j].orbiting;
+                    let orb_planet = if self.fleets[i].orbiting {
+                        Some(self.fleets[i].target)
+                    } else if self.fleets[j].orbiting {
+                        Some(self.fleets[j].target)
                     } else {
-                        self.fleets[j].power *= 1.0 - ((eff_a / eff_b) * 0.65).min(0.85);
-                        self.fleets[i].power = 0.0;
-                        self.empires[eb].race.doctrine.kills += 1;
-                        let dead = self.fleets[i].clone();
-                        self.spawn_salvage_debris(mx, my, &dead);
+                        None
+                    };
+                    let i_survived = self.resolve_fleet_pair_combat(
+                        i,
+                        j,
+                        &emp_cache,
+                        ew_mult,
+                        is_orbital,
+                        orb_planet,
+                        silent,
+                    );
+                    if !i_survived {
                         break;
                     }
                 }
@@ -3152,7 +3549,9 @@ impl Simulation {
             if self.fleets[i].power <= 0.0 {
                 let target = self.fleets[i].target;
                 let e = (self.fleets[i].emp - 1) as usize;
-                self.claim_mask[target] &= !(1u16 << e);
+                if target < self.claim_mask.len() {
+                    self.claim_mask[target] &= !(1u16 << e);
+                }
                 self.fleets.swap_remove(i);
             }
         }
@@ -3164,13 +3563,18 @@ impl Simulation {
             let total = self.debris_fields[i].iron
                 + self.debris_fields[i].bora
                 + self.debris_fields[i].germ;
-            if self.debris_fields[i].ttl <= 0.0 || total <= 0.5 {
+            if self.debris_fields[i].ttl <= 0.0 || total <= 1e-4 {
                 self.debris_fields.swap_remove(i);
             }
         }
 
         self.year += DT;
         self.ticks += 1;
+
+        self.check_victory_conditions();
+        if self.trace_enabled {
+            self.audit_tick_invariants();
+        }
 
         if !silent && self.ticks % 5 == 0 {
             self.power_history
@@ -3240,7 +3644,308 @@ impl Simulation {
         }
     }
 
-    fn compute_fleet_power(&self, e: usize, class: FleetClass, factories_here: f32) -> f32 {
+    /// Resolves a battle between `fleets[i]` and `fleets[j]`. Returns `true` if `fleets[i]` won/survived.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_fleet_pair_combat(
+        &mut self,
+        i: usize,
+        j: usize,
+        emp_cache: &[EmpireTickCache; MAX_EMPIRES],
+        ew_mult: f32,
+        orbital_defense: bool,
+        planet_idx: Option<usize>,
+        silent: bool,
+    ) -> bool {
+        let ax = self.fleets[i].x;
+        let ay = self.fleets[i].y;
+        let bx = self.fleets[j].x;
+        let by = self.fleets[j].y;
+        let emp_a = self.fleets[i].emp;
+        let emp_b = self.fleets[j].emp;
+        let type_a = self.fleets[i].fleet_type;
+        let type_b = self.fleets[j].fleet_type;
+        let a_c = type_a.is_combat();
+        let b_c = type_b.is_combat();
+
+        self.space_battles_count += 1;
+
+        let mut mod_a = if !b_c { 3.5 } else { 1.0 };
+        let mut mod_b = if !a_c { 3.5 } else { 1.0 };
+        if type_a == FleetClass::Cruiser && type_b == FleetClass::Bomber {
+            mod_a = 1.9;
+            mod_b = 0.55;
+        }
+        if type_b == FleetClass::Cruiser && type_a == FleetClass::Bomber {
+            mod_b = 1.9;
+            mod_a = 0.55;
+        }
+        if type_a == FleetClass::Battleship && type_b == FleetClass::Cruiser {
+            mod_a = 1.45;
+            mod_b = 0.72;
+        }
+        if type_b == FleetClass::Battleship && type_a == FleetClass::Cruiser {
+            mod_b = 1.45;
+            mod_a = 0.72;
+        }
+
+        let ea = (emp_a - 1) as usize;
+        let eb = (emp_b - 1) as usize;
+        if emp_cache[ea].prt_ss {
+            mod_a *= 1.12;
+        }
+        if emp_cache[eb].prt_ss {
+            mod_b *= 1.12;
+        }
+
+        mod_a = apply_torpedo_jamming(
+            mod_a,
+            self.empires[ea].tech_cache.weapon_is_torpedo,
+            self.empires[eb].tech_cache.torpedo_jamming * ew_mult,
+        );
+        mod_b = apply_torpedo_jamming(
+            mod_b,
+            self.empires[eb].tech_cache.weapon_is_torpedo,
+            self.empires[ea].tech_cache.torpedo_jamming * ew_mult,
+        );
+
+        let eff_a = (if a_c { self.fleets[i].power } else { 8.0 }) * mod_a;
+        let eff_b = (if b_c { self.fleets[j].power } else { 8.0 }) * mod_b;
+        let mx = (ax + bx) * 0.5;
+        let my = (ay + by) * 0.5;
+
+        if !silent && self.pending_combat_fx.len() < 35 {
+            let winner_e = if eff_a >= eff_b { ea } else { eb };
+            self.pending_combat_fx.push(CombatFx {
+                x1: ax,
+                y1: ay,
+                x2: bx,
+                y2: by,
+                mx,
+                my,
+                ttl: 10,
+                col: self.empires[winner_e].race.color.clone(),
+            });
+        }
+
+        if eff_a >= eff_b {
+            self.fleets[i].power *= 1.0 - ((eff_b / eff_a) * 0.65).min(0.85);
+            self.fleets[j].power = 0.0;
+            self.empires[ea].race.doctrine.kills += 1;
+            let dead = self.fleets[j].clone();
+            self.spawn_salvage_debris(mx, my, &dead);
+            if self.trace_enabled {
+                self.record_trace_event(SimEvent::SpaceBattle {
+                    winner_emp: emp_a,
+                    loser_emp: emp_b,
+                    orbital_defense,
+                    planet_idx,
+                });
+            }
+            true
+        } else {
+            self.fleets[j].power *= 1.0 - ((eff_a / eff_b) * 0.65).min(0.85);
+            self.fleets[i].power = 0.0;
+            self.empires[eb].race.doctrine.kills += 1;
+            let dead = self.fleets[i].clone();
+            self.spawn_salvage_debris(mx, my, &dead);
+            if self.trace_enabled {
+                self.record_trace_event(SimEvent::SpaceBattle {
+                    winner_emp: emp_b,
+                    loser_emp: emp_a,
+                    orbital_defense,
+                    planet_idx,
+                });
+            }
+            false
+        }
+    }
+
+    fn check_victory_conditions(&mut self) {
+        if !self.victory_cfg.enabled || self.winner.is_some() {
+            return;
+        }
+        let num_emp = self.empires.len();
+        if num_emp == 0 {
+            return;
+        }
+        let total_planets = self.owner.len();
+        if total_planets == 0 {
+            return;
+        }
+
+        let mut emp_planets = [0u32; MAX_EMPIRES];
+        let mut inhabited = 0u32;
+        for &o in &self.owner {
+            if o > 0 {
+                let e = (o - 1) as usize;
+                if e < num_emp {
+                    emp_planets[e] += 1;
+                    inhabited += 1;
+                }
+            }
+        }
+
+        // 1. Elimination Victory: only one empire has any planets and no other empire has active fleets
+        if self.victory_cfg.elimination_victory && num_emp >= 2 && inhabited > 0 {
+            let mut alive_count = 0usize;
+            let mut last_alive = 0usize;
+            for e in 0..num_emp {
+                let emp_u8 = (e + 1) as u8;
+                let has_fleets = self.fleets.iter().any(|fl| fl.emp == emp_u8 && fl.power > 0.0);
+                if emp_planets[e] > 0 || has_fleets {
+                    alive_count += 1;
+                    last_alive = e;
+                }
+            }
+            if alive_count == 1 {
+                self.winner = Some(last_alive);
+                self.record_trace_event(SimEvent::VictoryTriggered {
+                    winner_emp: (last_alive + 1) as u8,
+                    reason: "EliminationVictory".to_string(),
+                    year: self.year,
+                });
+                return;
+            }
+        }
+
+        // 2. Planet / Resource Dominance Victory
+        // Evaluated against total_planets on small sandbox maps, or against inhabited planets once >= 50% of galaxy is colonized
+        let min_req = self.victory_cfg.min_planets_for_share.max(1);
+        let p_thresh = self.victory_cfg.planet_share_threshold.clamp(0.50, 1.0);
+        let r_thresh = self.victory_cfg.res_share_threshold.clamp(0.50, 1.0);
+        let total_res: f32 = self.tick_stats.iter().map(|s| s.res).sum();
+        let galaxy_settled = (inhabited as usize) * 2 >= total_planets || total_planets <= 12;
+
+        if galaxy_settled && inhabited >= min_req {
+            let denom_planets = if total_planets <= 12 {
+                (total_planets as f32).max(1.0)
+            } else {
+                (inhabited as f32).max(1.0)
+            };
+            for e in 0..num_emp {
+                if emp_planets[e] < min_req {
+                    continue;
+                }
+                let p_share = emp_planets[e] as f32 / denom_planets;
+                if p_share >= p_thresh {
+                    self.winner = Some(e);
+                    self.record_trace_event(SimEvent::VictoryTriggered {
+                        winner_emp: (e + 1) as u8,
+                        reason: format!("PlanetDominance({:.0}%)", p_share * 100.0),
+                        year: self.year,
+                    });
+                    return;
+                }
+                if total_res > 1.0 {
+                    let r_share = self.tick_stats[e].res / total_res;
+                    if r_share >= r_thresh && emp_planets[e] * 2 >= inhabited {
+                        self.winner = Some(e);
+                        self.record_trace_event(SimEvent::VictoryTriggered {
+                            winner_emp: (e + 1) as u8,
+                            reason: format!("ResourceDominance({:.0}%)", r_share * 100.0),
+                            year: self.year,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 3. Optional Max Year Time Limit Victory
+        if let Some(max_yr) = self.victory_cfg.max_year {
+            if self.year >= max_yr {
+                let mut best_e = 0usize;
+                for e in 1..num_emp {
+                    if self.tick_stats[e].res > self.tick_stats[best_e].res
+                        || (self.tick_stats[e].res == self.tick_stats[best_e].res
+                            && emp_planets[e] > emp_planets[best_e])
+                    {
+                        best_e = e;
+                    }
+                }
+                self.winner = Some(best_e);
+                self.record_trace_event(SimEvent::VictoryTriggered {
+                    winner_emp: (best_e + 1) as u8,
+                    reason: format!("MaxYearReached({max_yr:.0})"),
+                    year: self.year,
+                });
+            }
+        }
+    }
+
+    fn audit_tick_invariants(&mut self) {
+        let n = self.owner.len();
+        for i in 0..n {
+            let b = i * 3;
+            let vals = [
+                self.pop[i],
+                self.mines[i],
+                self.factories[i],
+                self.defense[i],
+                self.min_surf[b],
+                self.min_surf[b + 1],
+                self.min_surf[b + 2],
+                self.min_crust[b],
+                self.min_crust[b + 1],
+                self.min_crust[b + 2],
+                self.starbase_hp[i],
+            ];
+            if vals.iter().any(|&v| !v.is_finite() || v < -1e-4) && self.anomalies.len() < 1024 {
+                self.anomalies.push(SimAnomaly {
+                    tick: self.ticks,
+                    year: self.year,
+                    kind: "PlanetStateInvariantViolation".to_string(),
+                    message: format!("Planet #{i} has NaN or negative state values: {vals:?}"),
+                    event: None,
+                });
+            }
+        }
+
+        for fl in &self.fleets {
+            if !fl.x.is_finite() || !fl.y.is_finite() || !fl.power.is_finite() || fl.power < -1e-4 {
+                if self.anomalies.len() < 1024 {
+                    self.anomalies.push(SimAnomaly {
+                        tick: self.ticks,
+                        year: self.year,
+                        kind: "FleetStateInvariantViolation".to_string(),
+                        message: format!(
+                            "Fleet #{} has invalid pos/power: ({}, {}, pow={})",
+                            fl.id, fl.x, fl.y, fl.power
+                        ),
+                        event: None,
+                    });
+                }
+            }
+            if fl.fleet_type == FleetClass::Freight {
+                let cargo = fl.cargo_iron + fl.cargo_bora + fl.cargo_germ;
+                let cap = fl.max_power.max(45.0);
+                if cargo > cap + 1e-3 && self.anomalies.len() < 1024 {
+                    self.anomalies.push(SimAnomaly {
+                        tick: self.ticks,
+                        year: self.year,
+                        kind: "FreighterOverCapInFlight".to_string(),
+                        message: format!(
+                            "Freighter #{} carries {cargo:.2} kT > cap {cap:.2} kT",
+                            fl.id
+                        ),
+                        event: None,
+                    });
+                }
+            }
+        }
+
+        // Prune any destroyed salvage freighters from pending_salvage_loads so open transactions never leak
+        if !self.auditor.pending_salvage_loads.is_empty() {
+            let fleets_ref = &self.fleets;
+            self.auditor
+                .pending_salvage_loads
+                .retain(|&fid, _| fleets_ref.iter().any(|f| f.id == fid));
+        }
+    }
+
+    /// Computes unit combat power for a single ship (`ship_count == 1`) of `class` for empire `e`,
+    /// strictly determined by unlocked hull, weapons, armor, shields, and racial traits (no free scaling from planetary factory count).
+    pub fn compute_unit_power(&self, e: usize, class: FleetClass) -> f32 {
         let emp = &self.empires[e];
         let tc = &emp.tech_cache;
         let hull = emp.hull_for_class(class);
@@ -3260,7 +3965,12 @@ impl Simulation {
             FleetClass::Cruiser => 1.05,
             _ => 0.8,
         };
-        (32.0 + factories_here * 0.45) * wep_scale * dur_scale * class_mod
+        40.0 * wep_scale * dur_scale * class_mod
+    }
+
+    /// Computes total combat power for a fleet of `ship_count` ships, paid for proportionally in resources and minerals.
+    pub fn compute_fleet_power(&self, e: usize, class: FleetClass, ship_count: u16) -> f32 {
+        self.compute_unit_power(e, class) * (ship_count.max(1) as f32)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3271,6 +3981,7 @@ impl Simulation {
         emp_u8: u8,
         fleet_type: FleetClass,
         power: f32,
+        ship_count: u16,
         min_type: u8,
         wh_route: i16,
         silent: bool,
@@ -3359,7 +4070,8 @@ impl Simulation {
             cargo_bora: 0.0,
             cargo_germ: 0.0,
             orbiting: false,
-            upkeep: fleet_type.upkeep(),
+            upkeep: fleet_type.upkeep() * (ship_count.max(1) as f32),
+            ship_count: ship_count.max(1),
         });
     }
 
@@ -3368,19 +4080,21 @@ impl Simulation {
             return;
         }
         let ttl = self.cfg.scenario_modifiers.debris_ttl.max(1.0);
+        let count_u32 = dead_fleet.ship_count.max(1) as u32;
+        let count_f = count_u32 as f32;
         let wreck = WreckEntry {
             emp: dead_fleet.emp,
             ship_type: dead_fleet.fleet_type,
-            count: 1,
+            count: count_u32,
         };
         let (iron, bora, germ) = if dead_fleet.fleet_type == FleetClass::Freight {
             let e = (dead_fleet.emp - 1) as usize;
             let (hi, hb, hg) = self.empires[e].ship_mineral_cost(FleetClass::Freight);
             if dead_fleet.salvage_mode != 0 {
                 (
-                    (dead_fleet.cargo_iron + hi * 0.5) * self.cfg.salvage_rate,
-                    (dead_fleet.cargo_bora + hb * 0.5) * self.cfg.salvage_rate,
-                    (dead_fleet.cargo_germ + hg * 0.5) * self.cfg.salvage_rate,
+                    (dead_fleet.cargo_iron + hi * 0.5 * count_f) * self.cfg.salvage_rate,
+                    (dead_fleet.cargo_bora + hb * 0.5 * count_f) * self.cfg.salvage_rate,
+                    (dead_fleet.cargo_germ + hg * 0.5 * count_f) * self.cfg.salvage_rate,
                 )
             } else {
                 let mut m = [0.0f32; 3];
@@ -3391,9 +4105,9 @@ impl Simulation {
             let e = (dead_fleet.emp - 1) as usize;
             let (ci, cb, cg) = self.empires[e].ship_mineral_cost(dead_fleet.fleet_type);
             (
-                ci * self.cfg.salvage_rate,
-                cb * self.cfg.salvage_rate,
-                cg * self.cfg.salvage_rate,
+                ci * count_f * self.cfg.salvage_rate,
+                cb * count_f * self.cfg.salvage_rate,
+                cg * count_f * self.cfg.salvage_rate,
             )
         };
         if iron + bora + germ <= 0.5 {
@@ -3677,7 +4391,7 @@ impl Simulation {
             wormholes: self.wormholes.clone(),
             new_combat_fx,
             new_jump_fx,
-            events: self.events.clone(),
+            events: self.log_events.clone(),
             planet_count: self.owner.len(),
             fleet_count: self.fleets.len(),
             space_battles_count: self.space_battles_count,

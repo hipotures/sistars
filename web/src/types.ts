@@ -240,6 +240,7 @@ export interface FleetView {
   cargoGerm?: number;
   orbiting?: boolean;
   upkeep?: number;
+  shipCount?: number;
 }
 
 export interface WormholeView {

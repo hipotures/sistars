@@ -225,4 +225,18 @@ impl WasmEngine {
     pub fn export_state_json(&self) -> String {
         self.sim.export_state_json()
     }
+
+    pub fn set_trace_enabled(&mut self, enabled: bool, prune_valid: bool) {
+        self.sim.trace_enabled = enabled;
+        self.sim.auditor.prune_valid_events = prune_valid;
+    }
+
+    pub fn drain_trace_events(&mut self) -> JsValue {
+        let drained = self.sim.drain_events();
+        serde_wasm_bindgen::to_value(&drained).unwrap_or(JsValue::NULL)
+    }
+
+    pub fn export_anomalies_json(&self) -> String {
+        self.sim.export_anomalies_json()
+    }
 }
