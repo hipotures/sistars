@@ -1297,8 +1297,11 @@ export class UiController {
       }
       if (badgeEl) badgeEl.textContent = this.formatTechBadges(emp.perks);
       if (pillEl) {
+        const isExtinct = emp.stats.planets === 0;
+        pillEl.classList.toggle('extinct', isExtinct);
         const ewTxt = `Cloak ${Math.round(emp.loadout.cloakArmedPct * 100)}% · Tachyon ${Math.round(emp.loadout.tachyonReductionPct * 100)}% · Jammer ${Math.round(emp.loadout.torpedoJammingPct * 100)}%`;
-        pillEl.title = `${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates | EW: ${ewTxt}`;
+        const prefix = isExtinct ? '[EXTINCT] ' : '';
+        pillEl.title = `${prefix}${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates | EW: ${ewTxt}`;
       }
     }
   }

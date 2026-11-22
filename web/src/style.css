@@ -181,6 +181,22 @@ header.hud-top {
   opacity: 0.78;
 }
 
+.emp-pill.extinct {
+  filter: grayscale(1);
+  opacity: 0.42;
+  border-top-color: #475569 !important;
+  background: rgba(12, 17, 28, 0.72);
+}
+
+.emp-pill.extinct:hover {
+  opacity: 0.68;
+}
+
+.emp-pill.extinct .emp-row1 > span:first-child {
+  color: #94a3b8 !important;
+  text-decoration: line-through;
+}
+
 .emp-row1 {
   display: flex;
   justify-content: space-between;
