@@ -637,8 +637,20 @@ export class UiController {
     getEl('btnCloseSystemModal').addEventListener('click', () => this.closeSystemView());
     getEl('systemModal').addEventListener('click', (e) => {
       if (e.target === getEl('systemModal')) {
-        this.closeSystemView();
+        if (getEl('sysPreviewBox').classList.contains('expanded')) {
+          this.setSysPreviewExpanded(false);
+        } else {
+          this.closeSystemView();
+        }
       }
+    });
+    getEl('btnToggleSysExpand').addEventListener('click', () => {
+      const isExp = getEl('sysPreviewBox').classList.contains('expanded');
+      this.setSysPreviewExpanded(!isExp);
+    });
+    getEl('sysPreviewCanvas').addEventListener('dblclick', () => {
+      const isExp = getEl('sysPreviewBox').classList.contains('expanded');
+      this.setSysPreviewExpanded(!isExp);
     });
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
@@ -646,6 +658,8 @@ export class UiController {
           this.setFleetPreviewExpanded(false);
         } else if (getEl('fleetModal').style.display !== 'none') {
           this.closeFleetView();
+        } else if (getEl('sysPreviewBox').classList.contains('expanded')) {
+          this.setSysPreviewExpanded(false);
         } else if (getEl('systemModal').style.display !== 'none') {
           this.closeSystemView();
         }
@@ -1064,8 +1078,10 @@ export class UiController {
     starCard.dataset.sysItem = 'star';
     starCard.innerHTML = `
       <canvas class="sys-body-thumb" width="96" height="96"></canvas>
-      <div class="sys-body-name">${starLabel}</div>
-      <div class="sys-body-sub">${sys.star.starKind === 'BlackHole' ? `${sys.star.massSolar.toFixed(1)} M☉` : `${Math.round(sys.star.tempK)} K`}</div>
+      <div class="sys-body-meta">
+        <div class="sys-body-name">${starLabel}</div>
+        <div class="sys-body-sub">${sys.star.starKind === 'BlackHole' ? `${sys.star.massSolar.toFixed(1)} M☉` : `${Math.round(sys.star.tempK)} K`}</div>
+      </div>
     `;
     const starCanvas = starCard.querySelector<HTMLCanvasElement>('canvas');
     if (starCanvas) {
@@ -1082,8 +1098,10 @@ export class UiController {
       st2Card.dataset.sysItem = 'star2';
       st2Card.innerHTML = `
         <canvas class="sys-body-thumb" width="96" height="96"></canvas>
-        <div class="sys-body-name">${st2.spectralClass} B</div>
-        <div class="sys-body-sub">${Math.round(st2.tempK)} K</div>
+        <div class="sys-body-meta">
+          <div class="sys-body-name">${st2.spectralClass} B</div>
+          <div class="sys-body-sub">${Math.round(st2.tempK)} K</div>
+        </div>
       `;
       const st2Canvas = st2Card.querySelector<HTMLCanvasElement>('canvas');
       if (st2Canvas) {
@@ -1107,8 +1125,10 @@ export class UiController {
       const moonTag = body.moonsCount > 0 ? ` · ${body.moonsCount}m` : '';
       card.innerHTML = `
         <canvas class="sys-body-thumb" width="96" height="96"></canvas>
-        <div class="sys-body-name" title="${body.name}">${isPrimary ? '★ ' : ''}${body.name.replace(/^System #\d+\s*/, '')}</div>
-        <div class="sys-body-sub">${body.orbitAu.toFixed(2)} AU${moonTag} ${icons}</div>
+        <div class="sys-body-meta">
+          <div class="sys-body-name" title="${body.name}">${isPrimary ? '★ ' : ''}${body.name.replace(/^System #\d+\s*/, '')}</div>
+          <div class="sys-body-sub">${body.orbitAu.toFixed(2)} AU${moonTag} ${icons}</div>
+        </div>
       `;
       const c = card.querySelector<HTMLCanvasElement>('canvas');
       if (c) {
@@ -1127,7 +1147,16 @@ export class UiController {
     this.selectModalItem({ bodyIdx: sys.primaryIndex, moonIdx: null });
   }
 
+  private setSysPreviewExpanded(expanded: boolean): void {
+    const box = getEl('sysPreviewBox');
+    box.classList.toggle('expanded', expanded);
+    getEl('btnToggleSysExpand').textContent = expanded ? '↙ Collapse' : '⛶ Expand';
+  }
+
   private setSystemModalTab(tab: 'bodies' | 'orrery'): void {
+    if (tab === 'orrery') {
+      this.setSysPreviewExpanded(false);
+    }
     getEl('sysTabBodies').classList.toggle('active', tab === 'bodies');
     getEl('sysTabOrrery').classList.toggle('active', tab === 'orrery');
     getEl('sysBodiesPane').style.display = tab === 'bodies' ? 'flex' : 'none';
@@ -1144,6 +1173,7 @@ export class UiController {
   }
 
   public closeSystemView(): void {
+    this.setSysPreviewExpanded(false);
     getEl('systemModal').style.display = 'none';
     this.sysPreviewRenderer.stop();
     this.sysOrreryRenderer.stop();

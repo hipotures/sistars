@@ -397,7 +397,7 @@
 
 <!-- STAR SYSTEM VIEW MODAL -->
 <div id="systemModal" class="sys-modal" style="display:none;">
-  <div class="sys-modal-card">
+  <div class="sys-modal-card sys-modal-card-wide">
     <div class="drawer-head">
       <div>
         <div class="drawer-title" id="sysModalTitle">🌌 System #1</div>
@@ -410,15 +410,18 @@
       </div>
     </div>
 
-    <div id="sysBodiesPane" style="display:flex; flex-direction:column; gap:12px;">
+    <div id="sysBodiesPane" class="sys-bodies-pane">
       <div class="sys-orbit-strip" id="sysOrbitStrip"></div>
 
-      <div class="sys-detail-split">
-        <div class="sys-preview-box">
+      <div class="sys-detail-split sys-detail-split-wide">
+        <div class="sys-preview-box sys-preview-box-tall" id="sysPreviewBox">
           <canvas id="sysPreviewCanvas" class="sys-preview-canvas"></canvas>
           <div class="sys-preview-bar">
             <span id="sysSelectedLabel" style="font-size:0.74rem; font-weight:700;">System #1 III</span>
-            <button class="hud-btn" id="btnExportPlanetPng" title="Export equirectangular surface texture">⬇ Export 2048×1024 PNG</button>
+            <div style="display:flex; gap:5px; align-items:center;">
+              <button class="hud-btn" id="btnExportPlanetPng" title="Export equirectangular surface texture">⬇ Export PNG</button>
+              <button class="hud-btn" id="btnToggleSysExpand" style="padding:3px 7px;font-size:0.65rem;" title="Expand / collapse full 3D planet view">⛶ Expand</button>
+            </div>
           </div>
         </div>
         <div class="sys-stats-pane">
@@ -434,7 +437,7 @@
       </div>
     </div>
 
-    <div id="sysOrreryPane" style="display:none; flex-direction:column; gap:8px;">
+    <div id="sysOrreryPane" class="sys-orrery-pane" style="display:none;">
       <canvas id="sysOrreryCanvas" class="sys-orrery-canvas"></canvas>
       <div style="display:flex; justify-content:space-between; font-size:0.67rem; color:var(--muted); font-family:monospace;">
         <span>Click any star, planet, belt or comet to inspect in 3D</span>
