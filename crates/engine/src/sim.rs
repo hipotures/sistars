@@ -12,6 +12,7 @@ use crate::tech::{
 use crate::types::{
     CombatFx, DebrisField, EmpireStats, EmpireSummaryView, Fleet, HudSnapshot, JumpFx, PlanetView,
     RaceDef, ReportsSnapshot, SimEvent, SimSnapshot, StarSystemView, StepProfile, Wormhole,
+    WreckEntry,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2716,39 +2717,31 @@ impl Simulation {
             return;
         }
         let ttl = self.cfg.scenario_modifiers.debris_ttl.max(1.0);
-        let field = if dead_fleet.fleet_type == FleetClass::Freight {
+        let wreck = WreckEntry {
+            emp: dead_fleet.emp,
+            ship_type: dead_fleet.fleet_type,
+            count: 1,
+        };
+        let (iron, bora, germ) = if dead_fleet.fleet_type == FleetClass::Freight {
             if dead_fleet.salvage_mode != 0 {
-                DebrisField {
-                    x,
-                    y,
-                    iron: dead_fleet.cargo_iron * self.cfg.salvage_rate,
-                    bora: dead_fleet.cargo_bora * self.cfg.salvage_rate,
-                    germ: dead_fleet.cargo_germ * self.cfg.salvage_rate,
-                    ttl,
-                }
+                (
+                    dead_fleet.cargo_iron * self.cfg.salvage_rate,
+                    dead_fleet.cargo_bora * self.cfg.salvage_rate,
+                    dead_fleet.cargo_germ * self.cfg.salvage_rate,
+                )
             } else {
                 let mut m = [0.0f32; 3];
                 m[dead_fleet.min_type as usize] = dead_fleet.max_power * self.cfg.salvage_rate;
-                DebrisField {
-                    x,
-                    y,
-                    iron: m[0],
-                    bora: m[1],
-                    germ: m[2],
-                    ttl,
-                }
+                (m[0], m[1], m[2])
             }
         } else {
             let e = (dead_fleet.emp - 1) as usize;
             let (ci, cb, cg) = self.empires[e].ship_mineral_cost(dead_fleet.fleet_type);
-            DebrisField {
-                x,
-                y,
-                iron: ci * self.cfg.salvage_rate,
-                bora: cb * self.cfg.salvage_rate,
-                germ: cg * self.cfg.salvage_rate,
-                ttl,
-            }
+            (
+                ci * self.cfg.salvage_rate,
+                cb * self.cfg.salvage_rate,
+                cg * self.cfg.salvage_rate,
+            )
         };
 
         // Merge nearby battle wreckage within 10 ly into a single debris field
@@ -2759,10 +2752,19 @@ impl Simulation {
                 let dx = existing.x - x;
                 let dy = existing.y - y;
                 if dx * dx + dy * dy <= MERGE_RAD_SQ {
-                    existing.iron += field.iron;
-                    existing.bora += field.bora;
-                    existing.germ += field.germ;
+                    existing.iron += iron;
+                    existing.bora += bora;
+                    existing.germ += germ;
                     existing.ttl = existing.ttl.max(ttl);
+                    if let Some(entry) = existing
+                        .wrecks
+                        .iter_mut()
+                        .find(|w| w.emp == wreck.emp && w.ship_type == wreck.ship_type)
+                    {
+                        entry.count = entry.count.saturating_add(1);
+                    } else {
+                        existing.wrecks.push(wreck);
+                    }
                     return;
                 }
             }
@@ -2772,7 +2774,15 @@ impl Simulation {
         if self.debris_fields.len() >= max_fields {
             self.debris_fields.swap_remove(0);
         }
-        self.debris_fields.push(field);
+        self.debris_fields.push(DebrisField {
+            x,
+            y,
+            iron,
+            bora,
+            germ,
+            ttl,
+            wrecks: vec![wreck],
+        });
     }
 
     pub fn update_param(&mut self, key: &str, value: f32) -> bool {

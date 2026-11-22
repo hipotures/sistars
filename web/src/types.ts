@@ -237,6 +237,12 @@ export interface WormholeView {
   y2: number;
 }
 
+export interface WreckEntryView {
+  emp: number;
+  shipType: FleetClass;
+  count: number;
+}
+
 export interface DebrisFieldView {
   x: number;
   y: number;
@@ -244,6 +250,7 @@ export interface DebrisFieldView {
   bora: number;
   germ: number;
   ttl: number;
+  wrecks?: WreckEntryView[];
 }
 
 export interface CombatFxView {

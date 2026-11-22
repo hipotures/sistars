@@ -1139,6 +1139,74 @@ tr:hover {
 .c-bora { color: var(--bora); }
 .c-germ { color: var(--germ); }
 
+/* Debris Inspector expandable wreckage manifest */
+.insp-wreck-wrap {
+  margin-top: 6px;
+  border-top: 1px solid #1b2840;
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.insp-wreck-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(192, 132, 252, 0.08);
+  border: 1px solid rgba(192, 132, 252, 0.28);
+  color: #e9d5ff;
+  font-family: monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.insp-wreck-toggle:hover {
+  background: rgba(192, 132, 252, 0.16);
+  border-color: rgba(192, 132, 252, 0.52);
+}
+
+.insp-wreck-hint {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 400;
+}
+
+.insp-wreck-body {
+  max-height: 190px;
+  overflow-y: auto;
+  border: 1px solid #1a263b;
+  background: #070b13;
+  scrollbar-width: thin;
+}
+
+.insp-wreck-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.65rem;
+  font-family: monospace;
+}
+
+.insp-wreck-table th,
+.insp-wreck-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid #141d2e;
+}
+
+.insp-wreck-table th:nth-child(3),
+.insp-wreck-table td:nth-child(3) {
+  text-align: right;
+}
+
+.insp-wreck-table tr:hover {
+  background: rgba(192, 132, 252, 0.08);
+  cursor: default;
+}
+
 /* Tech Cards & Loadouts */
 .tech-grid {
   display: grid;

@@ -199,6 +199,15 @@ pub struct Wormhole {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WreckEntry {
+    pub emp: u8,
+    pub ship_type: FleetClass,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DebrisField {
     pub x: f32,
     pub y: f32,
@@ -206,6 +215,8 @@ pub struct DebrisField {
     pub bora: f32,
     pub germ: f32,
     pub ttl: f32,
+    #[serde(default)]
+    pub wrecks: Vec<WreckEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

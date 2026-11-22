@@ -102,6 +102,20 @@
     <div class="min-bar-row"><span class="c-bora" style="width:58px;">Boranium</span><div class="min-bar-track"><div id="barBora" class="min-bar-fill" style="background:var(--bora);width:50%"></div></div><span id="valBora" style="width:85px;text-align:right;">160 (800)</span></div>
     <div class="min-bar-row"><span class="c-germ" style="width:58px;">Germanium</span><div class="min-bar-track"><div id="barGerm" class="min-bar-fill" style="background:var(--germ);width:50%"></div></div><span id="valGerm" style="width:85px;text-align:right;">160 (800)</span></div>
   </div>
+  <div id="inspDebrisHistoryWrap" class="insp-wreck-wrap" style="display:none;">
+    <button type="button" class="insp-wreck-toggle" id="btnToggleDebrisWrecks">
+      <span id="inspWreckToggleLabel">▸ Wreckage Manifest (0 ships)</span>
+      <span class="insp-wreck-hint">Show</span>
+    </button>
+    <div id="inspDebrisWrecksBody" class="insp-wreck-body" style="display:none;">
+      <table class="insp-wreck-table">
+        <thead>
+          <tr><th>Race</th><th>Ship Class</th><th>Qty</th></tr>
+        </thead>
+        <tbody id="inspDebrisWrecksTbody"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class="map-legend">

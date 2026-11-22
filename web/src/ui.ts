@@ -177,6 +177,7 @@ export class UiController {
     debris: { key: 'total', asc: false },
   };
   private selection: MapSelection = null;
+  private debrisWrecksExpanded = false;
   private lastHud: HudSnapshot | null = null;
   private lastReports: ReportsSnapshot | null = null;
   private lastConfig: SimConfig;
@@ -404,11 +405,19 @@ export class UiController {
   }
 
   public setSelection(sel: MapSelection): void {
+    const sameDebris =
+      sel?.kind === 'debris' &&
+      this.selection?.kind === 'debris' &&
+      sel.index === this.selection.index;
+    if (!sameDebris) {
+      this.debrisWrecksExpanded = false;
+    }
     this.selection = sel;
     if (!sel) {
       getEl('planetInspector').style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
+      getEl('inspDebrisHistoryWrap').style.display = 'none';
       this.inspGlobeRenderer.stop();
       this.inspShipRenderer.stop();
     } else if (this.lastHud) {
@@ -757,6 +766,17 @@ export class UiController {
 
     getEl('btnReset').addEventListener('click', () => this.callbacks.onReset());
     getEl('btnCloseInspector').addEventListener('click', () => this.callbacks.onSelectObject(null));
+    getEl('btnToggleDebrisWrecks').addEventListener('click', () => {
+      this.debrisWrecksExpanded = !this.debrisWrecksExpanded;
+      const body = getEl('inspDebrisWrecksBody');
+      body.style.display = this.debrisWrecksExpanded ? 'block' : 'none';
+      const hint = getEl('btnToggleDebrisWrecks').querySelector('.insp-wreck-hint');
+      if (hint) hint.textContent = this.debrisWrecksExpanded ? 'Hide' : 'Show';
+      const lbl = getEl('inspWreckToggleLabel');
+      if (lbl.textContent) {
+        lbl.textContent = lbl.textContent.replace(/^[▸▾]/, this.debrisWrecksExpanded ? '▾' : '▸');
+      }
+    });
 
     // Procedural Planet Inspector -> System View modal events
     getEl('btnOpenSystemView').addEventListener('click', () => {
@@ -1760,13 +1780,19 @@ export class UiController {
     const reqSeq = ++this.inspectorReqSeq;
     const insp = getEl('planetInspector');
     const minWrap = getEl('inspMineralsWrap');
+    const debrisHistWrap = getEl('inspDebrisHistoryWrap');
     if (!sel) {
       insp.style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
+      debrisHistWrap.style.display = 'none';
       this.inspGlobeRenderer.stop();
       this.inspShipRenderer.stop();
       return;
+    }
+
+    if (sel.kind !== 'debris') {
+      debrisHistWrap.style.display = 'none';
     }
 
     if (sel.kind === 'planet') {
@@ -1968,7 +1994,8 @@ export class UiController {
       this.setInspCell(1, 'Total Salvage', `${total} kT`, 'var(--accent)');
       this.setInspCell(2, 'Position', `(${Math.round(deb.x)}, ${Math.round(deb.y)})`);
       this.setInspCell(3, 'Decay TTL', `${deb.ttl.toFixed(1)} yr`);
-      this.setInspCell(4, 'Collection', 'Any passing fleet');
+      const autoSalvage = this.lastConfig.scenarioModifiers?.autoSalvage !== false;
+      this.setInspCell(4, 'Collection', autoSalvage ? 'Passing fleets & Freighters' : 'Salvage Freighters');
       this.setInspCell(5, 'Salvage Rate', `${Math.round(this.lastConfig.salvageRate * 100)}%`);
 
       const barMax = Math.max(25, total);
@@ -1978,6 +2005,45 @@ export class UiController {
       getEl('valBora').textContent = `${bora} kT`;
       getEl('barGerm').style.width = `${Math.min(100, (germ / barMax) * 100)}%`;
       getEl('valGerm').textContent = `${germ} kT`;
+
+      const wrecks = deb.wrecks ?? [];
+      const totalShips = wrecks.reduce((acc, w) => acc + w.count, 0);
+      debrisHistWrap.style.display = 'flex';
+      const arrow = this.debrisWrecksExpanded ? '▾' : '▸';
+      getEl('inspWreckToggleLabel').textContent = `${arrow} Wreckage Manifest (${totalShips} ${totalShips === 1 ? 'ship' : 'ships'})`;
+      const hint = getEl('btnToggleDebrisWrecks').querySelector('.insp-wreck-hint');
+      if (hint) hint.textContent = this.debrisWrecksExpanded ? 'Hide' : 'Show';
+      getEl('inspDebrisWrecksBody').style.display = this.debrisWrecksExpanded ? 'block' : 'none';
+
+      if (wrecks.length === 0) {
+        getEl('inspDebrisWrecksTbody').innerHTML =
+          '<tr><td colspan="3" style="color:var(--muted);text-align:center;">No ship manifest recorded</td></tr>';
+      } else {
+        const sorted = [...wrecks].sort(
+          (a, b) => b.count - a.count || a.emp - b.emp || a.shipType.localeCompare(b.shipType),
+        );
+        const classColors: Record<FleetClass, string> = {
+          battleship: '#f87171',
+          cruiser: '#93c5fd',
+          bomber: '#34d399',
+          freight: '#c084fc',
+          col: '#fbbf24',
+        };
+        getEl('inspDebrisWrecksTbody').innerHTML = sorted
+          .map((w) => {
+            const emp = w.emp > 0 ? hud.empires[w.emp - 1] : null;
+            const empName = emp ? `${emp.name}` : `Empire #${w.emp}`;
+            const empCol = emp?.color ?? '#94a3b8';
+            const clsLabel = FLEET_LABELS[w.shipType] ?? w.shipType;
+            const clsCol = classColors[w.shipType] ?? '#cbd5e1';
+            return `<tr>
+              <td style="color:${empCol};"><span class="dot" style="background:${empCol}"></span>${empName}</td>
+              <td style="color:${clsCol};font-weight:bold;">${clsLabel}</td>
+              <td style="font-weight:bold;color:var(--text);">×${w.count}</td>
+            </tr>`;
+          })
+          .join('');
+      }
     }
   }
 
