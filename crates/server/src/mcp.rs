@@ -10,6 +10,7 @@
 //! - Exposes 6 self-service tools: `list_matches`, `join_match`, `leave_match`, `get_briefing`,
 //!   `get_observation`, and `submit_orders` (with structured `commandFeedback`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -198,7 +199,7 @@ fn build_tools_list() -> Value {
         "tools": [
             {
                 "name": "list_matches",
-                "description": "Lists available SI-Stars Arena matches with public metadata (scenarioName, galaxySize, totalPlanets, numEmpires, executionMode, year, victoryGoal) and empire seats with availability ('free' | 'occupied' | 'yours'). Zero Fog-of-War leaks.",
+                "description": "Lists available SI-Stars Arena matches with public metadata (scenarioName, galaxySize, totalPlanets, numEmpires, executionMode, year, victoryGoal) and empire seats with availability ('open_agent_seat' = reserved by host for an external AI agent and waiting for you to join | 'free' = currently Governor-run, also joinable | 'occupied' = already controlled by another connected agent | 'yours'). Zero Fog-of-War leaks.",
                 "inputSchema": {
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
@@ -660,6 +661,13 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
     };
 
     let bound_pair = identity.bound_target().map(|(m, e)| (m.to_string(), e));
+    let all_bindings: HashMap<(String, usize), String> = {
+        let bindings = state.persistent_seat_bindings.read().await;
+        bindings
+            .iter()
+            .map(|(sname, (mid, eidx))| ((mid.clone(), *eidx), sname.clone()))
+            .collect()
+    };
     let mut out_matches = Vec::new();
     for h in handles {
         let summary = {
@@ -676,10 +684,16 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
                 let is_yours = bound_pair
                     .as_ref()
                     .is_some_and(|(bm, be)| bm == &summary.match_id && *be == s.empire_idx);
+                let bound_seat = all_bindings.get(&(summary.match_id.clone(), s.empire_idx));
+                let occupied_by_other = bound_seat
+                    .filter(|other| seat_name.as_deref() != Some(other.as_str()));
+                let reserved_for_agent = summary.agent_seats.contains(&s.empire_idx);
                 let availability = if is_yours {
                     "yours"
-                } else if s.occupied {
+                } else if occupied_by_other.is_some() {
                     "occupied"
+                } else if reserved_for_agent {
+                    "open_agent_seat"
                 } else {
                     "free"
                 };
@@ -691,7 +705,9 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
                     "prtSummary": s.prt_summary,
                     "alive": s.alive,
                     "status": availability,
-                    "controlledBy": s.controlled_by,
+                    "reservedForAgent": reserved_for_agent,
+                    "occupiedBy": bound_seat,
+                    "controlledBy": if bound_seat.is_some() { "agent" } else { "governor" },
                 })
             })
             .collect();
@@ -819,22 +835,7 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
                 true,
             );
         }
-        // Check if already claimed in agent_seats by someone else (e.g. a dedicated empire token seat)
-        let already_in_agents = guard.agent_seats.contains(&parsed.empire_idx);
-        let previously_ours = {
-            let history = state.seat_match_history.read().await;
-            history.get(&(seat_name.clone(), parsed.match_id.clone())) == Some(&parsed.empire_idx)
-        };
-        if already_in_agents && !previously_ours {
-            return tool_text_result(
-                format!(
-                    "Seat occupied: empireIdx {} in match '{}' is already assigned to another agent.",
-                    parsed.empire_idx, parsed.match_id
-                ),
-                true,
-            );
-        }
-        if !already_in_agents {
+        if !guard.agent_seats.contains(&parsed.empire_idx) {
             guard.agent_seats.push(parsed.empire_idx);
             guard.agent_seats.sort_unstable();
         }

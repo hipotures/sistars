@@ -1458,13 +1458,14 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
         .unwrap();
     assert_eq!(tools_body["result"]["tools"].as_array().unwrap().len(), 6);
 
-    // 3. Create 2 matches with scenarioName
+    // 3. Create 2 matches with scenarioName (m1 explicitly reserves seats [0, 2] for external agents!)
     let m1: Value = client
         .post(format!("{base_url}/api/v1/matches"))
         .json(&json!({
             "seed": 888001,
             "scenarioName": "Wormhole Chaos",
             "galaxySize": "small",
+            "agentSeats": [0, 2],
             "startPaused": true
         }))
         .send()
@@ -1519,7 +1520,13 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
         .unwrap();
     assert_eq!(m1_entry["scenarioName"].as_str(), Some("Wormhole Chaos"));
     assert_eq!(m1_entry["totalPlanets"].as_u64(), Some(120));
-    assert_eq!(m1_entry["seats"].as_array().unwrap().len(), 6);
+    let m1_seats = m1_entry["seats"].as_array().unwrap();
+    assert_eq!(m1_seats.len(), 6);
+    // Seats reserved in agentSeats ([0, 2]) must show as `open_agent_seat` (NOT occupied!)
+    assert_eq!(m1_seats[0]["status"].as_str(), Some("open_agent_seat"));
+    assert_eq!(m1_seats[0]["reservedForAgent"].as_bool(), Some(true));
+    assert_eq!(m1_seats[1]["status"].as_str(), Some("free"));
+    assert_eq!(m1_seats[2]["status"].as_str(), Some("open_agent_seat"));
 
     // 5. claude-1 joins m1 as empireIdx 0
     let join1: Value = client
