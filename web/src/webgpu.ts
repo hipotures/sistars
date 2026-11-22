@@ -613,7 +613,7 @@ fn vs_main(
   @location(0) worldPos: vec2<f32>,
 ) -> DebrisOut {
   let corner = QUAD[vid];
-  let localPx = corner * 6.5;
+  let localPx = corner * 9.0;
   let center = worldToScreen(worldPos);
   var out: DebrisOut;
   out.pos = screenToClip(center + localPx);
@@ -623,17 +623,21 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: DebrisOut) -> @location(0) vec4<f32> {
-  let d = length(in.localPx);
-  let ring = 1.0 - smoothstep(0.5, 1.25, abs(d - 5.0));
-  if (ring < 0.02) {
+  // Crisp 4-point ✦ sparkle + soft purple halo matching the HUD legend
+  let p = abs(in.localPx);
+  let d = length(p);
+  let starDist = pow(max(p.x, 0.0001), 0.58) + pow(max(p.y, 0.0001), 0.58);
+  let star = 1.0 - smoothstep(2.45, 3.05, starDist);
+  let core = 1.0 - smoothstep(0.6, 2.2, d);
+  let halo = exp(-d * 0.34) * 0.42;
+  let alpha = clamp(max(star * 0.96, halo), 0.0, 1.0);
+  if (alpha < 0.02) {
     discard;
   }
-  let ang = atan2(in.localPx.y, in.localPx.x);
-  let dash = step(0.0, sin(ang * 8.0));
-  if (dash < 0.5) {
-    discard;
-  }
-  return vec4<f32>(0.753, 0.518, 0.988, ring * 0.78);
+  let violet = vec3<f32>(0.753, 0.518, 0.988);
+  let coreWhite = vec3<f32>(0.965, 0.910, 1.0);
+  let rgb = mix(violet, coreWhite, clamp(core * 0.85, 0.0, 1.0));
+  return vec4<f32>(rgb, alpha);
 }
 `;
 

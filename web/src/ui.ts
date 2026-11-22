@@ -1928,22 +1928,25 @@ export class UiController {
       insp.style.display = 'flex';
       minWrap.style.display = 'flex';
       insp.style.borderLeftColor = '#c084fc';
-      const total = deb.iron + deb.bora + deb.germ;
+      const iron = Math.round(deb.iron);
+      const bora = Math.round(deb.bora);
+      const germ = Math.round(deb.germ);
+      const total = iron + bora + germ;
       getEl('inspTitle').textContent = `✦ Salvage Debris #${sel.index + 1}`;
       this.setInspCell(0, 'Type', 'Battle Wreckage', '#c084fc');
-      this.setInspCell(1, 'Total Salvage', `${Math.round(total)} kT`, 'var(--accent)');
+      this.setInspCell(1, 'Total Salvage', `${total} kT`, 'var(--accent)');
       this.setInspCell(2, 'Position', `(${Math.round(deb.x)}, ${Math.round(deb.y)})`);
       this.setInspCell(3, 'Decay TTL', `${deb.ttl.toFixed(1)} yr`);
       this.setInspCell(4, 'Collection', 'Any passing fleet');
       this.setInspCell(5, 'Salvage Rate', `${Math.round(this.lastConfig.salvageRate * 100)}%`);
 
       const barMax = Math.max(25, total);
-      getEl('barIron').style.width = `${Math.min(100, (deb.iron / barMax) * 100)}%`;
-      getEl('valIron').textContent = `${Math.round(deb.iron)} kT`;
-      getEl('barBora').style.width = `${Math.min(100, (deb.bora / barMax) * 100)}%`;
-      getEl('valBora').textContent = `${Math.round(deb.bora)} kT`;
-      getEl('barGerm').style.width = `${Math.min(100, (deb.germ / barMax) * 100)}%`;
-      getEl('valGerm').textContent = `${Math.round(deb.germ)} kT`;
+      getEl('barIron').style.width = `${Math.min(100, (iron / barMax) * 100)}%`;
+      getEl('valIron').textContent = `${iron} kT`;
+      getEl('barBora').style.width = `${Math.min(100, (bora / barMax) * 100)}%`;
+      getEl('valBora').textContent = `${bora} kT`;
+      getEl('barGerm').style.width = `${Math.min(100, (germ / barMax) * 100)}%`;
+      getEl('valGerm').textContent = `${germ} kT`;
     }
   }
 
@@ -2222,16 +2225,21 @@ export class UiController {
 
   private renderDebrisTable(rep: ReportsSnapshot): void {
     const rows = rep.debrisFields
-      .map((deb, idx) => ({ idx, deb, total: deb.iron + deb.bora + deb.germ }))
+      .map((deb, idx) => {
+        const iron = Math.round(deb.iron);
+        const bora = Math.round(deb.bora);
+        const germ = Math.round(deb.germ);
+        return { idx, deb, iron, bora, germ, total: iron + bora + germ };
+      })
       .sort((a, b) => b.total - a.total);
     getEl('debrisTableBody').innerHTML = rows
-      .map(({ idx, deb, total }) => {
+      .map(({ idx, deb, iron, bora, germ, total }) => {
         return `<tr data-debris-idx="${idx}" data-x="${deb.x}" data-y="${deb.y}">
           <td class="fleet-route-cell" title="Focus Debris field on map">✦ D#${idx + 1}</td>
-          <td style="color:#c084fc;font-weight:bold;">${Math.round(total)} kT</td>
-          <td class="c-iron">${Math.round(deb.iron)}</td>
-          <td class="c-bora">${Math.round(deb.bora)}</td>
-          <td class="c-germ">${Math.round(deb.germ)}</td>
+          <td style="color:#c084fc;font-weight:bold;">${total} kT</td>
+          <td class="c-iron">${iron}</td>
+          <td class="c-bora">${bora}</td>
+          <td class="c-germ">${germ}</td>
           <td>${deb.ttl.toFixed(1)} yr</td>
           <td style="color:var(--muted);">(${Math.round(deb.x)}, ${Math.round(deb.y)})</td>
         </tr>`;

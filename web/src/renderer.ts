@@ -527,19 +527,36 @@ export class GalaxyRenderer {
       ctx.setLineDash([]);
     }
 
-    // Debris fields
+    // Debris fields (4-point ✦ sparkle matching legend)
     const debrisCount = Math.floor(debrisBuf.length / DEBRIS_STRIDE);
     if (debrisCount > 0) {
-      ctx.setLineDash([2, 2]);
-      ctx.strokeStyle = 'rgba(192, 132, 252, 0.75)';
-      ctx.lineWidth = 1.0;
       for (let i = 0; i < debrisCount; i++) {
         const off = i * DEBRIS_STRIDE;
+        const dx = sx(debrisBuf[off]);
+        const dy = sy(debrisBuf[off + 1]);
+        const r = 6.5;
+        const inner = 1.8;
+        ctx.fillStyle = 'rgba(192, 132, 252, 0.28)';
         ctx.beginPath();
-        ctx.arc(sx(debrisBuf[off]), sy(debrisBuf[off + 1]), 5, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.arc(dx, dy, 7.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#c084fc';
+        ctx.beginPath();
+        ctx.moveTo(dx, dy - r);
+        ctx.lineTo(dx + inner, dy - inner);
+        ctx.lineTo(dx + r, dy);
+        ctx.lineTo(dx + inner, dy + inner);
+        ctx.lineTo(dx, dy + r);
+        ctx.lineTo(dx - inner, dy + inner);
+        ctx.lineTo(dx - r, dy);
+        ctx.lineTo(dx - inner, dy - inner);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#f5e8ff';
+        ctx.beginPath();
+        ctx.arc(dx, dy, 1.4, 0, Math.PI * 2);
+        ctx.fill();
       }
-      ctx.setLineDash([]);
     }
 
     // Planets
