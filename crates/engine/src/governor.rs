@@ -7,8 +7,8 @@
 
 use crate::config::{FleetClass, SimConfig, MAX_EMPIRES};
 use crate::types::{
-    DetectedEnemyFleet, DiplomaticStance, EmpirePolicy, HubKind, PlanetIntel, SectorMode,
-    VisibleDebrisBrief, Wormhole,
+    DetectedEnemyFleet, DiplomaticStance, EmpirePolicy, ExplorationOrder, HubKind, PlanetIntel,
+    SectorMode, VisibleDebrisBrief, Wormhole,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +36,8 @@ pub struct OwnPlanetState {
 pub struct VisibleWormhole {
     pub wormhole_id: usize,
     pub wh: Wormhole,
+    pub has_a: bool,
+    pub has_b: bool,
 }
 
 /// Narrow, Fog-of-War-isolated view passed to `run_empire_governor`.
@@ -97,6 +99,7 @@ pub struct EmpireView<'a> {
     pub visible_enemy_fleets: &'a [DetectedEnemyFleet],
     pub visible_debris: &'a [VisibleDebrisBrief],
     pub pending_hub_orders: &'a [(usize, HubKind)],
+    pub active_exploration_orders: &'a [ExplorationOrder],
 }
 
 #[derive(Debug, Clone)]
@@ -259,7 +262,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
     });
     let mut est_emp_res = [0.0f32; MAX_EMPIRES];
     let mut total_known_res = 1.0f32;
-    let mut known_neutral_count = 0usize;
+    let mut _known_neutral_count = 0usize;
     let mut est_leader_e = view.emp_idx;
     if any_shipyard_turn {
         for op in view.own_planets {
@@ -269,7 +272,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
         }
         for intel in view.intel_planets {
             if !intel.is_explored() || intel.owner == 0 {
-                known_neutral_count += 1;
+                _known_neutral_count += 1;
             } else if intel.owner != view.emp_u8 {
                 let te = (intel.owner - 1) as usize;
                 if te < MAX_EMPIRES {
@@ -566,7 +569,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
             .sector_directives
             .get(my_sector as usize)
             .copied()
-            .unwrap_or(SectorMode::Expand);
+            .unwrap_or(SectorMode::Balanced);
 
         let has_forced_attack_directive = view
             .sector_directives
@@ -593,8 +596,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
             let col_res_cost =
                 view.effective_ship_cost * view.cfg.col_cost_mult.clamp(0.5, 5.0);
 
-            let can_afford_col = known_neutral_count > 0
-                && rem_prod_buf >= col_res_cost
+            let can_afford_col = rem_prod_buf >= col_res_cost
                 && rem_surf[0] >= view.col_i
                 && rem_surf[2] >= view.col_g;
 
@@ -621,12 +623,14 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     .sector_directives
                     .get(t_sec as usize)
                     .copied()
-                    .unwrap_or(SectorMode::Expand);
+                    .unwrap_or(SectorMode::Balanced);
                 let sec_mult = match sec_mode {
                     SectorMode::Ignore => return -1.0,
-                    SectorMode::Expand => 1.8,
-                    SectorMode::Attack => 0.4,
-                    SectorMode::Fortify => 0.7,
+                    SectorMode::Expand => 2.2,
+                    SectorMode::Scout => 1.35,
+                    SectorMode::Balanced => 1.0,
+                    SectorMode::Fortify => 0.65,
+                    SectorMode::Attack => 0.35,
                 };
                 let dist_clamped = d.max(25.0);
                 if intel.is_pen_scanned() {
@@ -638,8 +642,10 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                         * (0.4 + intel.crust_sum_est * inv_crust_norm * m_weight_avg);
                     (quality.powf(qual_exp) / (dist_clamped / 180.0).powf(dist_exp)) * sec_mult
                 } else {
-                    // Unexplored or non-pen-scanned star: blind exploratory colonization score
-                    (0.22 / (dist_clamped / 180.0).powf(dist_exp)) * sec_mult
+                    // Non-pen-scanned neutral or unexplored star: allow exploratory colonization
+                    // rather than paralyzing expansion when penetrating scanners haven't reached it yet.
+                    let base_blind = 0.35 + 0.30 * policy.colonize_vs_attack_bias.clamp(0.0, 1.0);
+                    (base_blind / (dist_clamped / 180.0).powf(dist_exp)) * sec_mult
                 }
             };
 
@@ -868,11 +874,13 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                             .sector_directives
                             .get(t_sec as usize)
                             .copied()
-                            .unwrap_or(SectorMode::Expand);
+                            .unwrap_or(SectorMode::Balanced);
                         let sec_mult = match sec_mode {
                             SectorMode::Ignore => return None,
                             SectorMode::Attack => 4.5,
+                            SectorMode::Balanced => 1.0,
                             SectorMode::Expand => 0.85,
+                            SectorMode::Scout => 0.75,
                             SectorMode::Fortify => 0.65,
                         };
 
@@ -1034,7 +1042,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                         .sector_directives
                         .get(atk_sec as usize)
                         .copied()
-                        .unwrap_or(SectorMode::Expand);
+                        .unwrap_or(SectorMode::Balanced);
                     if atk_sec_mode == SectorMode::Attack {
                         true
                     } else {
@@ -1044,6 +1052,212 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                 (None, Some(_)) => true,
                 _ => false,
             };
+
+            // 4d. Active Exploration & Wormhole Probing (explicit orders + autonomous scouting)
+            let mut dispatched_exploration = false;
+            if !choose_attack && best_col_target.is_none() {
+                let can_use_orbit = op.orbit_warship >= 0
+                    && (!view.active_exploration_orders.is_empty()
+                        || op.orbit_count > policy.min_garrison_count);
+                let (cr_i, cr_b, cr_g) = view.cost_cruiser;
+                let can_build_scout = rem_prod_buf >= view.effective_ship_cost
+                    && rem_surf[0] >= cr_i
+                    && rem_surf[1] >= cr_b
+                    && rem_surf[2] >= cr_g
+                    && view.upkeep_ratio < max_upkeep * 0.85
+                    && view.total_active_fleets < 2400;
+
+                if can_use_orbit || can_build_scout {
+                    // Priority 1: Explicit ProbeWormhole orders (or one-sided discovered wormholes)
+                    let mut chosen_probe: Option<(usize, i16)> = None;
+                    for order in view.active_exploration_orders {
+                        if let ExplorationOrder::ProbeWormhole { wormhole_id } = *order {
+                            if let Some(vwh) = view
+                                .visible_wormholes
+                                .iter()
+                                .find(|v| v.wormhole_id == wormhole_id)
+                            {
+                                let (dir, ex, ey, near_exit) = if vwh.has_a && !vwh.has_b {
+                                    (0i16, vwh.wh.x1, vwh.wh.y1, view.wh_near_b.get(wormhole_id))
+                                } else if vwh.has_b && !vwh.has_a {
+                                    (1i16, vwh.wh.x2, vwh.wh.y2, view.wh_near_a.get(wormhole_id))
+                                } else {
+                                    (0i16, vwh.wh.x1, vwh.wh.y1, view.wh_near_b.get(wormhole_id))
+                                };
+                                let d_entry = (ex - op.x).hypot(ey - op.y);
+                                if d_entry <= view.range_cruiser * 1.5 {
+                                    let exit_target = near_exit
+                                        .and_then(|list| list.first().map(|&(p, _)| p as usize))
+                                        .unwrap_or(i);
+                                    chosen_probe =
+                                        Some((exit_target, (wormhole_id as i16) * 2 + dir));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Autonomous probe of any one-sided discovered wormhole within cruiser range
+                    if chosen_probe.is_none() && op.ai_turn {
+                        for vwh in view.visible_wormholes {
+                            if vwh.has_a ^ vwh.has_b {
+                                let (dir, ex, ey, near_exit) = if vwh.has_a {
+                                    (0i16, vwh.wh.x1, vwh.wh.y1, view.wh_near_b.get(vwh.wormhole_id))
+                                } else {
+                                    (1i16, vwh.wh.x2, vwh.wh.y2, view.wh_near_a.get(vwh.wormhole_id))
+                                };
+                                if (ex - op.x).hypot(ey - op.y) <= view.range_cruiser {
+                                    let exit_target = near_exit
+                                        .and_then(|list| list.first().map(|&(p, _)| p as usize))
+                                        .unwrap_or(i);
+                                    chosen_probe =
+                                        Some((exit_target, (vwh.wormhole_id as i16) * 2 + dir));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((target_idx, wh_route)) = chosen_probe {
+                        actions.push(GovernorAction::LaunchFleet {
+                            from: i,
+                            target: target_idx,
+                            class: if can_use_orbit {
+                                op.orbit_warship_class.unwrap_or(FleetClass::Cruiser)
+                            } else {
+                                FleetClass::Cruiser
+                            },
+                            ship_count: if can_use_orbit { 0 } else { 1 },
+                            wh_route,
+                            docked_fleet_idx: if can_use_orbit {
+                                Some(op.orbit_warship as usize)
+                            } else {
+                                None
+                            },
+                        });
+                        dispatched_exploration = true;
+                    }
+
+                    // Priority 2: Explicit ScoutSector orders or autonomous scouting of unscanned neutrals / unexplored stars
+                    if !dispatched_exploration {
+                        let mut best_scout_target: Option<usize> = None;
+                        let mut best_scout_score = -1.0f32;
+                        let scout_limit = view.range_cruiser.max(view.col_range);
+
+                        for &(j_u32, dist) in &view.neighbor_data[nb_start..nb_end] {
+                            if dist > scout_limit {
+                                break;
+                            }
+                            let j = j_u32 as usize;
+                            if (view.claim_mask[j] & my_bit) != 0 || claimed_targets.contains(&j) {
+                                continue;
+                            }
+                            let intel = &view.intel_planets[j];
+                            let needs_scan = !intel.is_explored()
+                                || (intel.owner == 0 && !intel.is_pen_scanned());
+                            if !needs_scan {
+                                continue;
+                            }
+                            let t_sec = sector_for_xy(
+                                view.planet_pos_x[j],
+                                view.planet_pos_y[j],
+                                view.world_w,
+                                view.world_h,
+                                view.sector_cols,
+                                view.sector_rows,
+                            );
+                            let sec_mode = view
+                                .sector_directives
+                                .get(t_sec as usize)
+                                .copied()
+                                .unwrap_or(SectorMode::Balanced);
+                            if sec_mode == SectorMode::Ignore {
+                                continue;
+                            }
+                            let explicit_order = view.active_exploration_orders.iter().any(|o| {
+                                matches!(o, ExplorationOrder::ScoutSector { sector_id } if *sector_id == t_sec)
+                            });
+                            let mode_mult = if explicit_order {
+                                4.0
+                            } else {
+                                match sec_mode {
+                                    SectorMode::Scout => 2.8,
+                                    SectorMode::Expand => 1.8,
+                                    SectorMode::Balanced => 1.0,
+                                    _ => 0.4,
+                                }
+                            };
+                            let kind_mult = if intel.is_explored() && intel.owner == 0 {
+                                1.4
+                            } else {
+                                1.1
+                            };
+                            let sc = (mode_mult * kind_mult) / (dist.max(30.0) / 120.0);
+                            if sc > best_scout_score {
+                                best_scout_score = sc;
+                                best_scout_target = Some(j);
+                            }
+                        }
+
+                        // If an explicit ScoutSector order had no neighbor in local CSR, scan all planets in that sector
+                        if best_scout_target.is_none() {
+                            for order in view.active_exploration_orders {
+                                if let ExplorationOrder::ScoutSector { sector_id } = *order {
+                                    let mut nearest_d = f32::INFINITY;
+                                    for j in 0..view.planet_pos_x.len() {
+                                        let t_sec = sector_for_xy(
+                                            view.planet_pos_x[j],
+                                            view.planet_pos_y[j],
+                                            view.world_w,
+                                            view.world_h,
+                                            view.sector_cols,
+                                            view.sector_rows,
+                                        );
+                                        if t_sec != sector_id {
+                                            continue;
+                                        }
+                                        let intel = &view.intel_planets[j];
+                                        if !intel.is_explored()
+                                            || (intel.owner == 0 && !intel.is_pen_scanned())
+                                        {
+                                            let d = (view.planet_pos_x[j] - op.x)
+                                                .hypot(view.planet_pos_y[j] - op.y);
+                                            if d < nearest_d {
+                                                nearest_d = d;
+                                                best_scout_target = Some(j);
+                                            }
+                                        }
+                                    }
+                                    if best_scout_target.is_some() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(target_idx) = best_scout_target {
+                            claimed_targets.push(target_idx);
+                            actions.push(GovernorAction::LaunchFleet {
+                                from: i,
+                                target: target_idx,
+                                class: if can_use_orbit {
+                                    op.orbit_warship_class.unwrap_or(FleetClass::Cruiser)
+                                } else {
+                                    FleetClass::Cruiser
+                                },
+                                ship_count: if can_use_orbit { 0 } else { 1 },
+                                wh_route: -1,
+                                docked_fleet_idx: if can_use_orbit {
+                                    Some(op.orbit_warship as usize)
+                                } else {
+                                    None
+                                },
+                            });
+                            dispatched_exploration = true;
+                        }
+                    }
+                }
+            }
 
             if choose_attack {
                 if let Some(target_idx) = best_atk_target {
@@ -1083,7 +1297,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     wh_route: best_col_wh,
                     docked_fleet_idx: None,
                 });
-            } else {
+            } else if !dispatched_exploration {
                 // Build or reinforce standing orbital garrison (especially when preparing to crack a fortified Starbase!)
                 let min_gar = if my_sector_mode == SectorMode::Fortify {
                     policy.min_garrison_count.max(2)

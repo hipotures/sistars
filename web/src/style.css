@@ -1965,3 +1965,40 @@ tr.rep-row-selected:hover {
   font-size: 0.6rem;
   color: var(--yellow);
 }
+
+/* Persistent MCP Seats strip inside Arena Bar (Sharp Retro-Tech) */
+.arena-mcp-seats {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.arena-mcp-label {
+  font-family: monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.arena-mcp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  font-family: monospace;
+  font-size: 0.62rem;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.arena-mcp-chip.bound {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.arena-mcp-chip.idle {
+  border-color: var(--border);
+  color: var(--muted);
+}

@@ -91,6 +91,7 @@ export interface UiCallbacks {
   onArenaConnect?: (serverUrl: string, matchId: string) => void;
   onArenaDeleteMatch?: (serverUrl: string, matchId: string) => void;
   onArenaToggleExecMode?: () => void;
+  onArenaBindMcpSeat?: (serverUrl: string, seatName: string, matchId: string | null, empireIdx?: number) => void;
   onArenaCreateMatch?: (
     serverUrl: string,
     opts: CreateArenaMatchOptions,
@@ -3230,6 +3231,7 @@ export class UiController {
           srv,
           {
             seed,
+            scenarioName: scen.name,
             simConfig,
             scenarioModifiers: scen.modifiers,
             galaxySize: size,
@@ -3448,14 +3450,64 @@ export class UiController {
     }
     sel.innerHTML = matches
       .map((m) => {
-        const seats = m.agentSeats.length > 0 ? `${m.agentSeats.length} AI` : 'Auto';
-        return `<option value="${m.matchId}">${m.matchId} • ${m.status} • Ep#${m.epoch} • Yr ${m.year.toFixed(1)} (${seats})</option>`;
+        const scen = m.scenarioName ?? 'Standard';
+        const gSize = m.galaxySize ?? 'Small';
+        const pCnt = m.totalPlanets ?? m.planetCount;
+        const eCnt = m.numEmpires ?? m.empireCount;
+        const mode = m.executionMode === 'lockstepEpoch' ? 'Lockstep' : 'Realtime';
+        return `<option value="${m.matchId}">${m.matchId.slice(0, 8)} | ${scen} · ${gSize} (${pCnt}p) · ${eCnt} races · Yr ${Math.floor(m.year)} · ${mode}</option>`;
       })
       .join('');
     if (prev && matches.some((m) => m.matchId === prev)) {
       sel.value = prev;
     } else if (matches.length > 0) {
       sel.value = matches[0].matchId;
+    }
+  }
+
+  public setMcpSeats(seats: import('./types').McpSeatPublicInfo[], activeMatchId: string | null): void {
+    const bar = document.getElementById('arenaMcpSeatsBar');
+    if (!bar) return;
+    if (seats.length === 0) {
+      bar.style.display = 'none';
+      bar.innerHTML = '';
+      return;
+    }
+    bar.style.display = 'flex';
+    const srv =
+      (document.getElementById('arenaServerInput') as HTMLInputElement | null)?.value ??
+      'http://localhost:8080';
+    bar.innerHTML = '<span class="arena-mcp-label">MCP SEATS</span>';
+    for (const seat of seats) {
+      const chip = document.createElement('span');
+      chip.className = `arena-mcp-chip ${seat.status === 'bound' ? 'bound' : 'idle'}`;
+      const txt = document.createElement('span');
+      txt.textContent =
+        seat.status === 'bound'
+          ? `${seat.seatName} → ${seat.empireName ?? `Emp#${(seat.empireIdx ?? 0) + 1}`}`
+          : `${seat.seatName}: IDLE`;
+      chip.appendChild(txt);
+
+      const actBtn = document.createElement('button');
+      actBtn.className = 'hud-btn';
+      actBtn.style.padding = '1px 5px';
+      actBtn.style.fontSize = '0.58rem';
+      if (seat.status === 'bound') {
+        actBtn.textContent = 'Unbind';
+        actBtn.addEventListener('click', () => {
+          this.callbacks.onArenaBindMcpSeat?.(srv, seat.seatName, null);
+        });
+      } else {
+        actBtn.textContent = 'Bind';
+        actBtn.disabled = !activeMatchId;
+        actBtn.addEventListener('click', () => {
+          if (activeMatchId) {
+            this.callbacks.onArenaBindMcpSeat?.(srv, seat.seatName, activeMatchId, 0);
+          }
+        });
+      }
+      chip.appendChild(actBtn);
+      bar.appendChild(chip);
     }
   }
 
@@ -3562,6 +3614,8 @@ export class UiController {
       DipMessage: '📨',
       DiplomacyChange: '🤝',
       SectorDirective: '🎯',
+      ScoutSector: '🔭',
+      ProbeWormhole: '🕳️',
       BuildHub: '🌀',
       PolicyUpdate: '📜',
       EpochStatus: '⏱',

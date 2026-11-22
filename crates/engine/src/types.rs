@@ -110,7 +110,9 @@ impl PlanetIntel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SectorMode {
+    Balanced,
     Expand,
+    Scout,
     Fortify,
     Attack,
     Ignore,
@@ -118,7 +120,7 @@ pub enum SectorMode {
 
 impl Default for SectorMode {
     fn default() -> Self {
-        SectorMode::Expand
+        SectorMode::Balanced
     }
 }
 
@@ -746,6 +748,26 @@ pub struct EpochDelta {
     pub new_alerts_count: usize,
 }
 
+/// Active one-shot exploration mission queued for the empire's Governor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExplorationOrder {
+    #[serde(rename_all = "camelCase")]
+    ScoutSector { sector_id: u16 },
+    #[serde(rename_all = "camelCase")]
+    ProbeWormhole { wormhole_id: usize },
+}
+
+/// Structured per-command validation & execution report returned by `submit_commands`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandFeedback {
+    pub command: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StrategicCommand {
@@ -770,6 +792,14 @@ pub enum StrategicCommand {
     SendDipMessage {
         to_emp: usize,
         text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ScoutSector {
+        sector_id: u16,
+    },
+    #[serde(rename_all = "camelCase")]
+    ProbeWormhole {
+        wormhole_id: usize,
     },
 }
 
@@ -1751,6 +1781,57 @@ pub struct KnownEmpireSummary {
     pub inbox: Vec<DipMessage>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnFleetsByClass {
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub colony: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub freighter: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub cruiser: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub battleship: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub bomber: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnSectorFleetBrief {
+    pub sector_id: u16,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub orbiting_count: u16,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub orbiting_power: f32,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub in_transit_count: u16,
+    pub active_mission_summary: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnFleetsSummary {
+    pub total: u32,
+    pub orbiting: u32,
+    pub in_transit: u32,
+    pub by_class: OwnFleetsByClass,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_sector: Vec<OwnSectorFleetBrief>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingHubOrderBrief {
+    pub planet_id: usize,
+    pub kind: HubKind,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub missing_res: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_minerals: Option<NamedMinerals>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentObservation {
@@ -1759,6 +1840,11 @@ pub struct AgentObservation {
     pub sectors: Vec<SectorSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub own_hubs: Vec<OwnHubBrief>,
+    pub own_fleets_summary: OwnFleetsSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_hub_orders: Vec<PendingHubOrderBrief>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_exploration_orders: Vec<ExplorationOrder>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enemy_planets: Vec<EnemyPlanetBrief>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

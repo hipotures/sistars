@@ -31,6 +31,8 @@ pub struct AppState {
     pub persistent_seat_tokens: RwLock<HashMap<String, String>>,
     /// Active bindings for persistent MCP seats: `seat_name -> (match_id, empire_idx)`.
     pub persistent_seat_bindings: RwLock<HashMap<String, (String, usize)>>,
+    /// Anti-Spy FoW Lock: `(seat_name, match_id) -> empire_idx` once a persistent seat has joined a match.
+    pub seat_match_history: RwLock<HashMap<(String, String), usize>>,
     pub public_url: Option<String>,
     pub admin_token: Option<String>,
     pub logs_dir: PathBuf,
@@ -70,6 +72,7 @@ impl AppState {
             token_index: RwLock::new(HashMap::new()),
             persistent_seat_tokens: RwLock::new(seat_tokens),
             persistent_seat_bindings: RwLock::new(HashMap::new()),
+            seat_match_history: RwLock::new(HashMap::new()),
             public_url: cleaned_public,
             admin_token: admin_token.filter(|s| !s.trim().is_empty()),
             logs_dir,
@@ -117,6 +120,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/openapi.json", get(get_openapi))
         .route("/health", get(health_check))
         .route(
+            "/mcp",
+            post(mcp::handle_mcp_header_post)
+                .get(mcp::handle_mcp_header_get)
+                .delete(mcp::handle_mcp_header_delete)
+                .options(mcp::handle_mcp_options),
+        )
+        .route(
+            "/mcp/",
+            post(mcp::handle_mcp_header_post)
+                .get(mcp::handle_mcp_header_get)
+                .delete(mcp::handle_mcp_header_delete)
+                .options(mcp::handle_mcp_options),
+        )
+        .route(
             "/mcp/{token}",
             post(mcp::handle_mcp_post)
                 .get(mcp::handle_mcp_get)
@@ -130,6 +147,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .delete(mcp::handle_mcp_delete)
                 .options(mcp::handle_mcp_options),
         )
+        .route("/api/v1/mcp/seats", get(mcp::list_persistent_seats))
         .route(
             "/api/v1/mcp/seats/{seat_name}/bind",
             post(mcp::bind_persistent_seat),
@@ -243,8 +261,34 @@ async fn create_match(
 
     let req = payload.map(|Json(r)| r).unwrap_or_default();
     let match_id = Uuid::new_v4().simple().to_string()[..12].to_string();
-    let (handle, empire_tokens, agent_seats) =
+    let auto_bind = req.auto_bind_seats.unwrap_or(false);
+    let (handle, empire_tokens, mut agent_seats) =
         MatchHandle::spawn(match_id.clone(), req, state.logs_dir.clone());
+
+    if auto_bind {
+        let mut seat_names: Vec<String> = {
+            let seats = state.persistent_seat_tokens.read().await;
+            seats.values().cloned().collect()
+        };
+        seat_names.sort();
+        seat_names.dedup();
+        let mut bindings = state.persistent_seat_bindings.write().await;
+        let mut history = state.seat_match_history.write().await;
+        let mut guard = handle.inner.write().await;
+        let num_emp = guard.sim.empires.len();
+        for seat_name in seat_names {
+            if bindings.contains_key(&seat_name) {
+                continue;
+            }
+            if let Some(free_idx) = (0..num_emp).find(|idx| !guard.agent_seats.contains(idx)) {
+                guard.agent_seats.push(free_idx);
+                guard.agent_seats.sort_unstable();
+                agent_seats = guard.agent_seats.clone();
+                bindings.insert(seat_name.clone(), (match_id.clone(), free_idx));
+                history.insert((seat_name, match_id.clone()), free_idx);
+            }
+        }
+    }
 
     let (status, execution_mode, paused, speed_mult, epoch, ticks_per_epoch, epoch_timeout_ms, debug_audit) = {
         let guard = handle.inner.read().await;
@@ -471,7 +515,7 @@ async fn submit_commands(
     }
     .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match_not_found", "Match not found"))?;
 
-    let (epoch, commands_queued, waiting_for_seats, should_notify) = {
+    let (epoch, commands_queued, waiting_for_seats, should_notify, command_feedback) = {
         let mut guard = handle.inner.write().await;
         if guard.status == MatchStatus::Finished {
             return Err(api_error(
@@ -503,13 +547,23 @@ async fn submit_commands(
                 reasoning_note: req.reasoning_note,
             },
         );
+        let mut feedback = Vec::new();
+        let mut feed_events = Vec::new();
+        if guard.execution_mode == ExecutionMode::RealtimeAsync {
+            let (evs, mut fb_map) = crate::match_runner::apply_submissions_locked(&mut guard, true);
+            feed_events = evs;
+            feedback = fb_map.remove(&empire_idx).unwrap_or_default();
+        }
         let waiting = guard.waiting_for_seats();
         let all_done = guard.status == MatchStatus::WaitingForAgents && waiting.is_empty();
-        (guard.epoch, commands_queued, waiting, all_done)
+        for ev in feed_events {
+            let _ = handle.ws_tx.send(SpectatorWsMessage::Feed { event: ev });
+        }
+        (guard.epoch, commands_queued, waiting, all_done, feedback)
     };
 
     if should_notify {
-        handle.barrier_notify.notify_one();
+        handle.barrier_notify.notify_waiters();
     }
 
     Ok(Json(SubmitCommandsResponse {
@@ -519,6 +573,7 @@ async fn submit_commands(
         empire_idx,
         commands_queued,
         waiting_for_seats,
+        command_feedback,
     }))
 }
 

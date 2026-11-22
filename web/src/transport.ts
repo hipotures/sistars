@@ -358,6 +358,35 @@ export async function fetchArenaMatches(serverUrl: string): Promise<ArenaMatchSu
   return (await resp.json()) as ArenaMatchSummary[];
 }
 
+export async function fetchMcpSeats(serverUrl: string): Promise<import('./types').McpSeatPublicInfo[]> {
+  const base = normalizeServerUrl(serverUrl);
+  try {
+    const resp = await fetch(`${base}/api/v1/mcp/seats`);
+    if (!resp.ok) return [];
+    return (await resp.json()) as import('./types').McpSeatPublicInfo[];
+  } catch {
+    return [];
+  }
+}
+
+export async function bindMcpSeat(
+  serverUrl: string,
+  seatName: string,
+  matchId: string | null,
+  empireIdx?: number,
+): Promise<boolean> {
+  const base = normalizeServerUrl(serverUrl);
+  const resp = await fetch(`${base}/api/v1/mcp/seats/${encodeURIComponent(seatName)}/bind`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      matchId,
+      empireIdx: matchId === null ? null : (empireIdx ?? 0),
+    }),
+  });
+  return resp.ok;
+}
+
 export async function deleteArenaMatch(serverUrl: string, matchId: string): Promise<boolean> {
   const base = normalizeServerUrl(serverUrl);
   const resp = await fetch(`${base}/api/v1/matches/${encodeURIComponent(matchId)}`, {
@@ -370,6 +399,7 @@ export async function createArenaMatch(
   serverUrl: string,
   options?: {
     seed?: number;
+    scenarioName?: string;
     simConfig?: SimConfig;
     scenarioModifiers?: ScenarioModifiers;
     galaxySize?: string;
@@ -397,6 +427,9 @@ export async function createArenaMatch(
     debugAudit: options?.debugAudit ?? true,
     startPaused: options?.startPaused ?? false,
   };
+  if (options?.scenarioName) {
+    body.scenarioName = options.scenarioName;
+  }
   if (options?.frameStrideTicks !== undefined) {
     body.frameStrideTicks = options.frameStrideTicks;
   }

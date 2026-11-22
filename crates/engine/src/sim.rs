@@ -14,10 +14,11 @@ use crate::tech::{
 };
 use crate::types::{
     round1, round2, AgentDebrisBrief, AgentEmpireSummary, AgentEnemyFleetBrief, AgentObservation,
-    AgentPolicyView, AgentStargateBrief, AgentWormholeBrief, CombatFx, DebrisField,
-    DetectedEnemyFleet, DipMessage, DiplomaticStance, EmpireStats, EmpireSummaryView,
-    EnemyPlanetBrief, Fleet, GalaxyOverview, HubKind, HudEvent, HudSnapshot, JumpFx,
-    KnownEmpireSummary, LiveAuditor, NamedMinerals, NamedTechLevels, OwnHubBrief, PlanetIntel,
+    AgentPolicyView, AgentStargateBrief, AgentWormholeBrief, CombatFx, CommandFeedback,
+    DebrisField, DetectedEnemyFleet, DipMessage, DiplomaticStance, EmpireStats, EmpireSummaryView,
+    EnemyPlanetBrief, ExplorationOrder, Fleet, GalaxyOverview, HubKind, HudEvent, HudSnapshot,
+    JumpFx, KnownEmpireSummary, LiveAuditor, NamedMinerals, NamedTechLevels, OwnFleetsByClass,
+    OwnFleetsSummary, OwnHubBrief, OwnSectorFleetBrief, PendingHubOrderBrief, PlanetIntel,
     PlanetView, RaceDef, ReportsSnapshot, SandboxPlanet, SectorMode, SectorSummary, SimAnomaly,
     SimEvent, SimSnapshot, StarSystemView, StepProfile, StrategicCommand, VictoryConfig,
     VictoryGoalView, VisibleDebrisBrief, Wormhole, WreckEntry, INTEL_FLAG_EXPLORED,
@@ -304,6 +305,7 @@ pub struct EmpireState {
     pub tech_cache: EmpireTechCache,
     pub sector_directives: Vec<SectorMode>,
     pub pending_hub_orders: Vec<(usize, HubKind)>,
+    pub active_exploration_orders: Vec<ExplorationOrder>,
     pub inbox: Vec<DipMessage>,
     pub recent_alerts: Vec<String>,
     pub contact_mask: u16,
@@ -337,8 +339,9 @@ impl EmpireState {
                 ..EmpireStats::default()
             },
             tech_cache,
-            sector_directives: vec![SectorMode::Expand; 36],
+            sector_directives: vec![SectorMode::Balanced; 36],
             pending_hub_orders: Vec::new(),
+            active_exploration_orders: Vec::new(),
             inbox: Vec::new(),
             recent_alerts: Vec::new(),
             contact_mask: 0,
@@ -1177,8 +1180,9 @@ impl Simulation {
             emp.unlocked_bp = emp.tech_cache.perk_mask;
             emp.sprawl_mult = 1.0;
             emp.res_total = 25.0;
-            emp.sector_directives.fill(SectorMode::Expand);
+            emp.sector_directives.fill(SectorMode::Balanced);
             emp.pending_hub_orders.clear();
+            emp.active_exploration_orders.clear();
             emp.inbox.clear();
             emp.recent_alerts.clear();
             emp.contact_mask = 0;
@@ -2232,12 +2236,15 @@ impl Simulation {
                             self.discovered_wh_a[w] |= 1u16 << e;
                             self.discovered_wh_b[w] |= 1u16 << e;
                         }
+                        self.empires[e]
+                            .active_exploration_orders
+                            .retain(|o| !matches!(o, ExplorationOrder::ProbeWormhole { wormhole_id } if *wormhole_id == w));
                         self.scan_area_for_empire(
                             ox,
                             oy,
                             e,
-                            ec.scan_r * 0.65,
-                            ec.scan_pen * 0.65,
+                            ec.scan_r.max(85.0),
+                            ec.scan_pen.max(40.0),
                             None,
                         );
 
@@ -2604,6 +2611,24 @@ impl Simulation {
                             fl.wh_route = -1;
                         }
                     } else {
+                        // Close-range orbital survey on neutral / non-hostile arrival (unlocks pen-scan intel!)
+                        let ox = self.pos_x[target_idx];
+                        let oy = self.pos_y[target_idx];
+                        self.scan_area_for_empire(
+                            ox,
+                            oy,
+                            e,
+                            ec.scan_r.max(70.0),
+                            ec.scan_pen.max(35.0),
+                            Some(target_idx),
+                        );
+                        let (scols, srows) = self.sector_grid_dims();
+                        let arrived_sec =
+                            sector_for_xy(ox, oy, self.world_w, self.world_h, scols, srows);
+                        self.empires[e]
+                            .active_exploration_orders
+                            .retain(|o| !matches!(o, ExplorationOrder::ScoutSector { sector_id } if *sector_id == arrived_sec));
+
                         let home = self.fleets[f_idx].from;
                         if home != target_idx && home < n && self.owner[home] == fl_emp {
                             self.fleets[f_idx].target = home;
@@ -2611,8 +2636,6 @@ impl Simulation {
                             self.fleets[f_idx].steer_y = self.pos_y[home];
                             self.fleets[f_idx].wh_route = -1;
                         } else {
-                            let ox = self.pos_x[target_idx];
-                            let oy = self.pos_y[target_idx];
                             let fl = &mut self.fleets[f_idx];
                             fl.x = ox;
                             fl.y = oy;
@@ -3783,12 +3806,14 @@ impl Simulation {
             let mut visible_wormholes = Vec::new();
             for (w, &wh) in self.wormholes.iter().enumerate() {
                 let bit = 1u16 << e;
-                let mask = self.discovered_wh_a.get(w).copied().unwrap_or(0)
-                    | self.discovered_wh_b.get(w).copied().unwrap_or(0);
-                if (mask & bit) != 0 {
+                let has_a = (self.discovered_wh_a.get(w).copied().unwrap_or(0) & bit) != 0;
+                let has_b = (self.discovered_wh_b.get(w).copied().unwrap_or(0) & bit) != 0;
+                if has_a || has_b {
                     visible_wormholes.push(VisibleWormhole {
                         wormhole_id: w,
                         wh,
+                        has_a,
+                        has_b,
                     });
                 }
             }
@@ -3855,6 +3880,7 @@ impl Simulation {
                     visible_enemy_fleets: &visible_enemy_fleets,
                     visible_debris: &visible_debris,
                     pending_hub_orders: &emp.pending_hub_orders,
+                    active_exploration_orders: &emp.active_exploration_orders,
                 };
                 let mut local_rng = self.rng_seed;
                 let acts = run_empire_governor(&view, &mut local_rng);
@@ -4351,15 +4377,49 @@ impl Simulation {
         }
     }
 
-    /// Processes a queue of high-level strategic commands (`StrategicCommand`) for `empire_idx`.
-    pub fn submit_commands(&mut self, empire_idx: usize, cmds: Vec<StrategicCommand>) {
+    /// Returns `(min_fac_for_gate, min_hub_dist, max_gates, gate_res, gate_iron, gate_germ)` for `empire_idx`.
+    pub fn stargate_requirements(&self, empire_idx: usize) -> (f32, f32, usize, f32, f32, f32) {
+        let emp = &self.empires[empire_idx];
+        let prt_it = !self.cfg.ignore_racial_traits && emp.race.prt == "PRT_IT";
+        let min_fac = if prt_it { 34.0 } else { 58.0 };
+        let min_hub_dist = if prt_it { 95.0 } else { 155.0 };
+        let max_gates = if prt_it { 12 } else { 6 };
+        let gate_cap_cost = if prt_it {
+            self.cfg.gate_cost
+        } else {
+            self.cfg.gate_cost * 1.4
+        };
+        let gate_res = gate_cap_cost * 1.1;
+        let gate_iron = gate_cap_cost * 0.7;
+        let gate_germ = gate_cap_cost * 0.7;
+        (min_fac, min_hub_dist, max_gates, gate_res, gate_iron, gate_germ)
+    }
+
+    /// Processes a queue of high-level strategic commands (`StrategicCommand`) for `empire_idx`
+    /// and returns deterministic per-command validation & execution feedback.
+    pub fn submit_commands(
+        &mut self,
+        empire_idx: usize,
+        cmds: Vec<StrategicCommand>,
+    ) -> Vec<CommandFeedback> {
+        let mut feedback = Vec::with_capacity(cmds.len());
         if empire_idx >= self.empires.len() {
-            return;
+            return feedback;
         }
+        let emp_u8 = (empire_idx + 1) as u8;
+        let n = self.owner.len();
+        let (sector_cols, sector_rows) = self.sector_grid_dims();
+        let num_sectors = sector_cols * sector_rows;
+
         for cmd in cmds {
             match cmd {
                 StrategicCommand::SetPolicy(patch) => {
                     self.empires[empire_idx].race.doctrine.apply_patch(&patch);
+                    feedback.push(CommandFeedback {
+                        command: "setPolicy".to_string(),
+                        status: "applied".to_string(),
+                        reason: None,
+                    });
                 }
                 StrategicCommand::SetDiplomacy {
                     target_emp,
@@ -4376,28 +4436,176 @@ impl Simulation {
                             target_idx,
                             format!("{sender_name} changed diplomatic stance to {stance:?}"),
                         );
+                        feedback.push(CommandFeedback {
+                            command: format!("setDiplomacy(targetEmp={target_emp}, {stance:?})"),
+                            status: "applied".to_string(),
+                            reason: None,
+                        });
+                    } else {
+                        feedback.push(CommandFeedback {
+                            command: format!("setDiplomacy(targetEmp={target_emp})"),
+                            status: "rejected".to_string(),
+                            reason: Some(format!("Invalid target empire ID {target_emp}")),
+                        });
                     }
                 }
                 StrategicCommand::SetSectorDirective { sector_id, mode } => {
                     let s = sector_id as usize;
-                    if s < 64 {
+                    if s < num_sectors.max(64) {
                         if s >= self.empires[empire_idx].sector_directives.len() {
                             self.empires[empire_idx]
                                 .sector_directives
-                                .resize(s + 1, SectorMode::Expand);
+                                .resize(s + 1, SectorMode::Balanced);
                         }
                         self.empires[empire_idx].sector_directives[s] = mode;
+                        feedback.push(CommandFeedback {
+                            command: format!("setSectorDirective(sectorId={sector_id}, {mode:?})"),
+                            status: "applied".to_string(),
+                            reason: None,
+                        });
+                    } else {
+                        feedback.push(CommandFeedback {
+                            command: format!("setSectorDirective(sectorId={sector_id})"),
+                            status: "rejected".to_string(),
+                            reason: Some(format!("Sector {sector_id} out of grid bounds")),
+                        });
                     }
                 }
                 StrategicCommand::BuildHub { planet_idx, kind } => {
-                    if planet_idx < self.owner.len()
-                        && !self.empires[empire_idx]
-                            .pending_hub_orders
-                            .contains(&(planet_idx, kind))
-                    {
-                        self.empires[empire_idx]
-                            .pending_hub_orders
-                            .push((planet_idx, kind));
+                    let cmd_label = format!("buildHub(planetId={planet_idx}, {kind:?})");
+                    if planet_idx >= n || self.owner[planet_idx] != emp_u8 {
+                        feedback.push(CommandFeedback {
+                            command: cmd_label,
+                            status: "rejected".to_string(),
+                            reason: Some(format!(
+                                "Planet {planet_idx} does not exist or is not owned by your empire"
+                            )),
+                        });
+                        continue;
+                    }
+                    match kind {
+                        HubKind::Stargate => {
+                            let (min_fac, min_hub_dist, max_gates, gate_res, gate_iron, gate_germ) =
+                                self.stargate_requirements(empire_idx);
+                            let mut reasons: Vec<String> = Vec::new();
+                            if !self.cfg.scenario_modifiers.allow_stargates {
+                                reasons.push("Stargates are disabled in this scenario".to_string());
+                            }
+                            if self.empires[empire_idx].tech_cache.stargate_max_range <= 0.0 {
+                                reasons.push("Stargate technology not yet unlocked".to_string());
+                            }
+                            if self.has_gate[planet_idx] != 0 {
+                                reasons.push(format!("Planet {planet_idx} already has a Stargate"));
+                            }
+                            if self.gate_lists[empire_idx].len() >= max_gates {
+                                reasons.push(format!(
+                                    "Empire reached Stargate limit ({}/{})",
+                                    self.gate_lists[empire_idx].len(),
+                                    max_gates
+                                ));
+                            }
+                            let fac_here = self.factories[planet_idx];
+                            if fac_here + 0.01 < min_fac {
+                                reasons.push(format!(
+                                    "Planet {planet_idx} has {:.1} factories (requires >= {:.1})",
+                                    fac_here, min_fac
+                                ));
+                            }
+                            let px = self.pos_x[planet_idx];
+                            let py = self.pos_y[planet_idx];
+                            for &g in &self.gate_lists[empire_idx] {
+                                let dist = (self.pos_x[g] - px).hypot(self.pos_y[g] - py);
+                                if dist < min_hub_dist {
+                                    reasons.push(format!(
+                                        "Planet {planet_idx} is {:.0} ly from existing Stargate on planet {g} (min {:.0} ly)",
+                                        dist, min_hub_dist
+                                    ));
+                                    break;
+                                }
+                            }
+                            if !reasons.is_empty() {
+                                feedback.push(CommandFeedback {
+                                    command: cmd_label,
+                                    status: "rejected".to_string(),
+                                    reason: Some(reasons.join("; ")),
+                                });
+                                continue;
+                            }
+                            if !self.empires[empire_idx]
+                                .pending_hub_orders
+                                .contains(&(planet_idx, kind))
+                            {
+                                self.empires[empire_idx]
+                                    .pending_hub_orders
+                                    .push((planet_idx, kind));
+                            }
+                            let b = planet_idx * 3;
+                            let miss_r = (gate_res - self.ship_prod_buf[planet_idx]).max(0.0);
+                            let miss_i = (gate_iron - self.min_surf[b]).max(0.0);
+                            let miss_g = (gate_germ - self.min_surf[b + 2]).max(0.0);
+                            let reason = if miss_r > 0.1 || miss_i > 0.1 || miss_g > 0.1 {
+                                Some(format!(
+                                    "Queued awaiting resources (missing {:.1} shipProdBuf, {:.1} iron, {:.1} germ)",
+                                    miss_r, miss_i, miss_g
+                                ))
+                            } else {
+                                Some("Queued — resources ready, will build on next tick".to_string())
+                            };
+                            feedback.push(CommandFeedback {
+                                command: cmd_label,
+                                status: "queued".to_string(),
+                                reason,
+                            });
+                        }
+                        HubKind::Starbase => {
+                            let target_tier =
+                                self.empires[empire_idx].tech_cache.best_starbase_tier.max(1);
+                            let cur_sb = self.starbase_tier[planet_idx];
+                            if cur_sb >= target_tier {
+                                feedback.push(CommandFeedback {
+                                    command: cmd_label,
+                                    status: "rejected".to_string(),
+                                    reason: Some(format!(
+                                        "Planet {planet_idx} already has Starbase tier {cur_sb} (max unlocked tier {target_tier})"
+                                    )),
+                                });
+                                continue;
+                            }
+                            if !self.empires[empire_idx]
+                                .pending_hub_orders
+                                .contains(&(planet_idx, kind))
+                            {
+                                self.empires[empire_idx]
+                                    .pending_hub_orders
+                                    .push((planet_idx, kind));
+                            }
+                            let (ti, tb, tg, tr) = starbase_build_cost(target_tier);
+                            let (pi, pb, pg, pr) = starbase_build_cost(cur_sb);
+                            let (ci, cb, cg, cr) = (
+                                (ti - pi * 0.5).max(0.0),
+                                (tb - pb * 0.5).max(0.0),
+                                (tg - pg * 0.5).max(0.0),
+                                (tr - pr * 0.5).max(0.0),
+                            );
+                            let b = planet_idx * 3;
+                            let miss_r = (cr - self.ship_prod_buf[planet_idx]).max(0.0);
+                            let miss_i = (ci - self.min_surf[b]).max(0.0);
+                            let miss_b = (cb - self.min_surf[b + 1]).max(0.0);
+                            let miss_g = (cg - self.min_surf[b + 2]).max(0.0);
+                            let reason = if miss_r > 0.1 || miss_i > 0.1 || miss_b > 0.1 || miss_g > 0.1 {
+                                Some(format!(
+                                    "Queued for Starbase T{target_tier} (missing {:.1} res, {:.1} iron, {:.1} bora, {:.1} germ)",
+                                    miss_r, miss_i, miss_b, miss_g
+                                ))
+                            } else {
+                                Some(format!("Queued for Starbase T{target_tier} — will build on next tick"))
+                            };
+                            feedback.push(CommandFeedback {
+                                command: cmd_label,
+                                status: "queued".to_string(),
+                                reason,
+                            });
+                        }
                     }
                 }
                 StrategicCommand::SendDipMessage { to_emp, text } => {
@@ -4420,10 +4628,92 @@ impl Simulation {
                             target_idx,
                             format!("Diplomatic transmission from {sender_name}: {text}"),
                         );
+                        feedback.push(CommandFeedback {
+                            command: format!("sendDipMessage(toEmp={to_emp})"),
+                            status: "applied".to_string(),
+                            reason: None,
+                        });
+                    } else {
+                        feedback.push(CommandFeedback {
+                            command: format!("sendDipMessage(toEmp={to_emp})"),
+                            status: "rejected".to_string(),
+                            reason: Some(format!("Invalid target empire ID {to_emp}")),
+                        });
+                    }
+                }
+                StrategicCommand::ScoutSector { sector_id } => {
+                    let cmd_label = format!("scoutSector(sectorId={sector_id})");
+                    if (sector_id as usize) >= num_sectors {
+                        feedback.push(CommandFeedback {
+                            command: cmd_label,
+                            status: "rejected".to_string(),
+                            reason: Some(format!(
+                                "Sector {sector_id} out of range (0..{num_sectors})"
+                            )),
+                        });
+                    } else {
+                        let order = ExplorationOrder::ScoutSector { sector_id };
+                        if !self.empires[empire_idx]
+                            .active_exploration_orders
+                            .contains(&order)
+                        {
+                            self.empires[empire_idx]
+                                .active_exploration_orders
+                                .push(order);
+                        }
+                        feedback.push(CommandFeedback {
+                            command: cmd_label,
+                            status: "queued".to_string(),
+                            reason: Some(format!(
+                                "Priority scout mission queued for Sector #{sector_id}"
+                            )),
+                        });
+                    }
+                }
+                StrategicCommand::ProbeWormhole { wormhole_id } => {
+                    let cmd_label = format!("probeWormhole(wormholeId={wormhole_id})");
+                    if wormhole_id >= self.wormholes.len()
+                        || !self.is_wormhole_discovered(empire_idx, wormhole_id)
+                    {
+                        feedback.push(CommandFeedback {
+                            command: cmd_label,
+                            status: "rejected".to_string(),
+                            reason: Some(format!(
+                                "Wormhole #{wormhole_id} is unknown or undiscovered by your empire"
+                            )),
+                        });
+                    } else if self.is_wormhole_end_a_discovered(empire_idx, wormhole_id)
+                        && self.is_wormhole_end_b_discovered(empire_idx, wormhole_id)
+                    {
+                        feedback.push(CommandFeedback {
+                            command: cmd_label,
+                            status: "applied".to_string(),
+                            reason: Some(format!(
+                                "Both endpoints of Wormhole #{wormhole_id} are already mapped"
+                            )),
+                        });
+                    } else {
+                        let order = ExplorationOrder::ProbeWormhole { wormhole_id };
+                        if !self.empires[empire_idx]
+                            .active_exploration_orders
+                            .contains(&order)
+                        {
+                            self.empires[empire_idx]
+                                .active_exploration_orders
+                                .push(order);
+                        }
+                        feedback.push(CommandFeedback {
+                            command: cmd_label,
+                            status: "queued".to_string(),
+                            reason: Some(format!(
+                                "Priority wormhole transit probe queued for Wormhole #{wormhole_id}"
+                            )),
+                        });
                     }
                 }
             }
         }
+        feedback
     }
 
     /// Generates a compact, strictly Fog-of-War-isolated, topology-only observation report for `empire_idx`.
@@ -4444,7 +4734,7 @@ impl Simulation {
                     .sector_directives
                     .get(s)
                     .copied()
-                    .unwrap_or(SectorMode::Expand),
+                    .unwrap_or(SectorMode::Balanced),
                 unexplored_stars: 0,
                 own_planets: 0,
                 own_res_per_year: 0.0,
@@ -4640,14 +4930,140 @@ impl Simulation {
         let mut own_fleets_count = 0u32;
         let mut own_orbiting_count = 0u32;
         let mut own_upkeep = 0.0f32;
+        let mut by_class = OwnFleetsByClass::default();
+        let mut sec_orbit_cnt = vec![0u16; num_sectors];
+        let mut sec_orbit_pow = vec![0.0f32; num_sectors];
+        let mut sec_transit_cnt = vec![0u16; num_sectors];
+        let mut sec_mission_col = vec![0u16; num_sectors];
+        let mut sec_mission_atk = vec![0u16; num_sectors];
+        let mut sec_mission_scout = vec![0u16; num_sectors];
+        let mut sec_mission_freight = vec![0u16; num_sectors];
+
         for fl in &self.fleets {
             if fl.emp == emp_u8 && fl.power > 0.0 {
                 own_fleets_count += 1;
-                if fl.orbiting {
+                own_upkeep += fl.upkeep;
+                match fl.fleet_type {
+                    FleetClass::Col => by_class.colony = by_class.colony.saturating_add(1),
+                    FleetClass::Freight => by_class.freighter = by_class.freighter.saturating_add(1),
+                    FleetClass::Cruiser => by_class.cruiser = by_class.cruiser.saturating_add(1),
+                    FleetClass::Battleship => by_class.battleship = by_class.battleship.saturating_add(1),
+                    FleetClass::Bomber => by_class.bomber = by_class.bomber.saturating_add(1),
+                }
+                let fsec = sector_for_xy(
+                    fl.x,
+                    fl.y,
+                    self.world_w,
+                    self.world_h,
+                    sector_cols,
+                    sector_rows,
+                ) as usize;
+                if fsec < num_sectors {
+                    if fl.orbiting {
+                        own_orbiting_count += 1;
+                        sec_orbit_cnt[fsec] = sec_orbit_cnt[fsec].saturating_add(1);
+                        sec_orbit_pow[fsec] += fl.power;
+                    } else {
+                        sec_transit_cnt[fsec] = sec_transit_cnt[fsec].saturating_add(1);
+                        if fl.fleet_type == FleetClass::Col {
+                            sec_mission_col[fsec] += 1;
+                        } else if fl.fleet_type == FleetClass::Freight {
+                            sec_mission_freight[fsec] += 1;
+                        } else if fl.target < n && self.owner[fl.target] != 0 && self.owner[fl.target] != emp_u8 {
+                            sec_mission_atk[fsec] += 1;
+                        } else {
+                            sec_mission_scout[fsec] += 1;
+                        }
+                    }
+                } else if fl.orbiting {
                     own_orbiting_count += 1;
                 }
-                own_upkeep += fl.upkeep;
             }
+        }
+
+        let mut by_sector_fleets: Vec<OwnSectorFleetBrief> = Vec::new();
+        for s in 0..num_sectors {
+            if sec_orbit_cnt[s] == 0 && sec_transit_cnt[s] == 0 {
+                continue;
+            }
+            let mut parts: Vec<String> = Vec::new();
+            if sec_orbit_cnt[s] > 0 {
+                parts.push(format!("{} garrison/idle", sec_orbit_cnt[s]));
+            }
+            if sec_mission_col[s] > 0 {
+                parts.push(format!("{} colonizing", sec_mission_col[s]));
+            }
+            if sec_mission_scout[s] > 0 {
+                parts.push(format!("{} scouting/transit", sec_mission_scout[s]));
+            }
+            if sec_mission_atk[s] > 0 {
+                parts.push(format!("{} attacking", sec_mission_atk[s]));
+            }
+            if sec_mission_freight[s] > 0 {
+                parts.push(format!("{} logistics", sec_mission_freight[s]));
+            }
+            by_sector_fleets.push(OwnSectorFleetBrief {
+                sector_id: s as u16,
+                orbiting_count: sec_orbit_cnt[s],
+                orbiting_power: round1(sec_orbit_pow[s]),
+                in_transit_count: sec_transit_cnt[s],
+                active_mission_summary: parts.join(", "),
+            });
+        }
+
+        let own_fleets_summary = OwnFleetsSummary {
+            total: own_fleets_count,
+            orbiting: own_orbiting_count,
+            in_transit: own_fleets_count.saturating_sub(own_orbiting_count),
+            by_class,
+            by_sector: by_sector_fleets,
+        };
+
+        // Build pendingHubOrders status for AgentObservation
+        let (_, _, _, gate_res, gate_iron, gate_germ) = self.stargate_requirements(e);
+        let mut pending_hub_orders: Vec<PendingHubOrderBrief> = Vec::new();
+        for &(pid, kind) in &self.empires[e].pending_hub_orders {
+            if pid >= n || self.owner[pid] != emp_u8 {
+                continue;
+            }
+            let b = pid * 3;
+            let (miss_r, miss_i, miss_b, miss_g) = match kind {
+                HubKind::Stargate => (
+                    (gate_res - self.ship_prod_buf[pid]).max(0.0),
+                    (gate_iron - self.min_surf[b]).max(0.0),
+                    0.0,
+                    (gate_germ - self.min_surf[b + 2]).max(0.0),
+                ),
+                HubKind::Starbase => {
+                    let target_tier = self.empires[e].tech_cache.best_starbase_tier.max(1);
+                    let cur_sb = self.starbase_tier[pid];
+                    let (ti, tb, tg, tr) = starbase_build_cost(target_tier);
+                    let (pi, pb, pg, pr) = starbase_build_cost(cur_sb);
+                    (
+                        ((tr - pr * 0.5).max(0.0) - self.ship_prod_buf[pid]).max(0.0),
+                        ((ti - pi * 0.5).max(0.0) - self.min_surf[b]).max(0.0),
+                        ((tb - pb * 0.5).max(0.0) - self.min_surf[b + 1]).max(0.0),
+                        ((tg - pg * 0.5).max(0.0) - self.min_surf[b + 2]).max(0.0),
+                    )
+                }
+            };
+            let has_missing_min = miss_i > 0.1 || miss_b > 0.1 || miss_g > 0.1;
+            let status = if miss_r <= 0.1 && !has_missing_min {
+                "ready".to_string()
+            } else {
+                "awaiting_resources".to_string()
+            };
+            pending_hub_orders.push(PendingHubOrderBrief {
+                planet_id: pid,
+                kind,
+                status,
+                missing_res: round1(miss_r),
+                missing_minerals: if has_missing_min {
+                    Some(NamedMinerals::from_array([miss_i, miss_b, miss_g]).round1())
+                } else {
+                    None
+                },
+            });
         }
 
         let mut raw_enemy_fleets =
@@ -4835,6 +5251,9 @@ impl Simulation {
             },
             sectors,
             own_hubs,
+            own_fleets_summary,
+            pending_hub_orders,
+            active_exploration_orders: emp.active_exploration_orders.clone(),
             enemy_planets,
             wormholes,
             stargates,

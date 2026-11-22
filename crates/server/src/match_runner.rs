@@ -10,14 +10,14 @@ use sistars_engine::config::SimConfig;
 use sistars_engine::sim::Simulation;
 use sistars_engine::tech::{classic_races, tech_store, LRT_LIST, PRT_LIST};
 use sistars_engine::types::{
-    round1, round2, AgentObservation, EpochDelta, NamedMinerals, NamedTechLevels,
-    StrategicCommand, StrategyMemory, TechCatalogView, VictoryConfig,
+    round1, round2, AgentObservation, CommandFeedback, EpochDelta, NamedMinerals, NamedTechLevels,
+    StrategicCommand, StrategyMemory, TechCatalogView, VictoryConfig, VictoryGoalView,
 };
 use tokio::sync::{broadcast, watch, Notify, RwLock};
 
 use crate::models::{
     ArenaFeedEvent, ArenaFeedKind, CreateMatchRequest, EngineMetadata, ExecutionMode,
-    MatchPublicSummary, MatchStatus, SpectatorWsMessage,
+    MatchPublicSummary, MatchSeatInfo, MatchStatus, SpectatorWsMessage,
 };
 
 const MAX_FEED_HISTORY: usize = 250;
@@ -85,6 +85,7 @@ pub struct EmpireEpochSnapshot {
 
 pub struct MatchInner {
     pub match_id: String,
+    pub scenario_name: String,
     pub sim: Simulation,
     pub status: MatchStatus,
     pub execution_mode: ExecutionMode,
@@ -125,9 +126,45 @@ impl MatchInner {
     }
 
     pub fn public_summary(&self) -> MatchPublicSummary {
+        let total_planets = self.sim.owner.len();
+        let num_empires = self.sim.empires.len();
+        let galaxy_size = format!("{:?}", self.sim.cfg.galaxy_size);
+        let victory_goal = VictoryGoalView {
+            planet_dominance_pct: round1(self.sim.victory_cfg.planet_share_threshold * 100.0),
+            resource_dominance_pct: round1(self.sim.victory_cfg.res_share_threshold * 100.0),
+            max_year: round1(self.sim.victory_cfg.max_year.unwrap_or(0.0)),
+        };
+        let seats: Vec<MatchSeatInfo> = self
+            .sim
+            .empires
+            .iter()
+            .enumerate()
+            .map(|(idx, emp)| {
+                let emp_u8 = (idx + 1) as u8;
+                let alive = self.sim.owner.iter().any(|&o| o == emp_u8)
+                    || self.sim.fleets.iter().any(|f| f.emp == emp_u8 && f.power > 0.0);
+                let occupied = self.agent_seats.contains(&idx);
+                MatchSeatInfo {
+                    empire_idx: idx,
+                    empire_id: idx + 1,
+                    name: emp.race.name.clone(),
+                    prt: emp.race.prt.clone(),
+                    prt_summary: prt_short_summary(&emp.race.prt).to_string(),
+                    alive,
+                    occupied,
+                    controlled_by: if occupied {
+                        "agent".to_string()
+                    } else {
+                        "governor".to_string()
+                    },
+                }
+            })
+            .collect();
+
         MatchPublicSummary {
             match_id: self.match_id.clone(),
-            year: self.sim.year,
+            scenario_name: self.scenario_name.clone(),
+            year: round1(self.sim.year),
             tick: self.sim.ticks,
             epoch: self.epoch,
             status: self.status,
@@ -136,8 +173,13 @@ impl MatchInner {
             speed_mult: self.speed_mult,
             tick_delay_ms: self.tick_delay_ms,
             winner: self.sim.winner,
-            planet_count: self.sim.owner.len(),
-            empire_count: self.sim.empires.len(),
+            galaxy_size,
+            total_planets,
+            planet_count: total_planets,
+            num_empires,
+            empire_count: num_empires,
+            victory_goal,
+            seats,
             agent_seats: self.agent_seats.clone(),
             submitted_seats: self.submitted_seats(),
             waiting_for_seats: self.waiting_for_seats(),
@@ -475,8 +517,17 @@ impl MatchHandle {
         // Epoch 0 never times out in LockstepEpoch; in RealtimeAsync there is no barrier deadline.
         let initial_deadline = None;
 
+        let scenario_name = req
+            .scenario_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Balanced Standard")
+            .to_string();
+
         let mut match_inner = MatchInner {
             match_id,
+            scenario_name,
             sim,
             status: initial_status,
             execution_mode,
@@ -531,12 +582,29 @@ impl MatchHandle {
     }
 }
 
+pub fn prt_short_summary(prt: &str) -> &'static str {
+    match prt {
+        "PRT_JOAT" => "Balanced generalist, intrinsic scanners, +20% max pop",
+        "PRT_WM" => "War Monger: +50% firepower, fast warships",
+        "PRT_HE" => "Hyper-Expansion: 2x growth, 0.5x max pop, cheap colonizers",
+        "PRT_IT" => "Interstellar Traveler: cheap Stargates, wormhole stability",
+        "PRT_IS" => "Inner Strength: strong planetary defense & Starbase repair",
+        "PRT_SS" => "Super Stealth: 75% cloaking & ECM espionage",
+        "PRT_AR" => "Alternate Reality: orbital Starbase economy",
+        "PRT_CA" => "Claim Adjuster: instant terraforming on colonization",
+        "PRT_PP" => "Packet Physics: mineral logistics & bombardment",
+        "PRT_SD" => "Space Demolition: defensive area denial around hubs",
+        _ => "Custom interstellar civilization",
+    }
+}
+
 pub(crate) fn apply_submissions_locked(
     guard: &mut MatchInner,
     capture_per_empire_delta: bool,
-) -> Vec<ArenaFeedEvent> {
+) -> (Vec<ArenaFeedEvent>, HashMap<usize, Vec<CommandFeedback>>) {
     let submissions = std::mem::take(&mut guard.pending_submissions);
     let mut new_feed_events = Vec::new();
+    let mut all_feedback: HashMap<usize, Vec<CommandFeedback>> = HashMap::new();
     for (emp_idx, decision) in submissions {
         if let Some(mem) = decision.strategy_memory {
             guard.latest_strategy.insert(emp_idx, mem.clone());
@@ -568,7 +636,10 @@ pub(crate) fn apply_submissions_locked(
             }
         }
 
-        for cmd in &decision.commands {
+        let cmds_for_feed = decision.commands.clone();
+        let feedback = guard.sim.submit_commands(emp_idx, decision.commands);
+
+        for (cmd, fb) in cmds_for_feed.iter().zip(feedback.iter()) {
             let ev = match cmd {
                 StrategicCommand::SetPolicy(patch) => {
                     let mut parts = Vec::new();
@@ -626,12 +697,18 @@ pub(crate) fn apply_submissions_locked(
                         None,
                     )
                 }
-                StrategicCommand::BuildHub { planet_idx, kind } => guard.push_feed_event(
-                    Some(emp_idx),
-                    ArenaFeedKind::BuildHub,
-                    format!("Ordered {kind:?} hub at Planet #{}", planet_idx + 1),
-                    None,
-                ),
+                StrategicCommand::BuildHub { planet_idx, kind } => {
+                    let suffix = match fb.reason.as_deref() {
+                        Some(r) => format!(" [{}]: {r}", fb.status),
+                        None => format!(" [{}]", fb.status),
+                    };
+                    guard.push_feed_event(
+                        Some(emp_idx),
+                        ArenaFeedKind::BuildHub,
+                        format!("BuildHub {kind:?} at Planet #{planet_idx}{suffix}"),
+                        None,
+                    )
+                }
                 StrategicCommand::SendDipMessage { to_emp, text } => {
                     let target_name = guard
                         .sim
@@ -647,17 +724,29 @@ pub(crate) fn apply_submissions_locked(
                         None,
                     )
                 }
+                StrategicCommand::ScoutSector { sector_id } => guard.push_feed_event(
+                    Some(emp_idx),
+                    ArenaFeedKind::ScoutSector,
+                    format!("ScoutSector #{sector_id} [{}]", fb.status),
+                    fb.reason.clone(),
+                ),
+                StrategicCommand::ProbeWormhole { wormhole_id } => guard.push_feed_event(
+                    Some(emp_idx),
+                    ArenaFeedKind::ProbeWormhole,
+                    format!("ProbeWormhole #{wormhole_id} [{}]", fb.status),
+                    fb.reason.clone(),
+                ),
             };
             new_feed_events.push(ev);
         }
 
-        guard.sim.submit_commands(emp_idx, decision.commands);
+        all_feedback.insert(emp_idx, feedback);
         if capture_per_empire_delta {
             let snap = guard.capture_empire_snapshot(emp_idx);
             guard.prev_epoch_snapshots.insert(emp_idx, snap);
         }
     }
-    new_feed_events
+    (new_feed_events, all_feedback)
 }
 
 async fn run_match_loop(
@@ -725,7 +814,7 @@ async fn run_match_loop(
                 guard.epoch_deadline_ms = None;
 
                 let feed_events = if !guard.pending_submissions.is_empty() {
-                    apply_submissions_locked(&mut guard, true)
+                    apply_submissions_locked(&mut guard, true).0
                 } else {
                     Vec::new()
                 };
@@ -931,7 +1020,7 @@ async fn run_match_loop(
                 let snap = guard.capture_empire_snapshot(emp_i);
                 guard.prev_epoch_snapshots.insert(emp_i, snap);
             }
-            let new_feed_events = apply_submissions_locked(&mut guard, false);
+            let (new_feed_events, _) = apply_submissions_locked(&mut guard, false);
             guard.status = MatchStatus::Running;
             guard.epoch_deadline_ms = None;
             let summary = guard.public_summary();

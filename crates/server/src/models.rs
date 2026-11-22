@@ -5,8 +5,8 @@ use sistars_engine::config::{
     BreakthroughMeta, SimConfig, TechFieldMeta, MAX_TECH_LEVEL, NUM_TECH_FIELDS,
 };
 use sistars_engine::types::{
-    AgentObservation, EpochDelta, HudSnapshot, RaceDef, ScenarioModifiers, StrategicCommand,
-    StrategyMemory, TechCatalogView, VictoryConfig,
+    AgentObservation, CommandFeedback, EpochDelta, HudSnapshot, RaceDef, ScenarioModifiers,
+    StrategicCommand, StrategyMemory, TechCatalogView, VictoryConfig, VictoryGoalView,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -74,6 +74,10 @@ pub struct CreateMatchRequest {
     pub execution_mode: Option<ExecutionMode>,
     /// Simulation speed multiplier (`1.0` = 20 ticks/s, range `0.05..=20.0`).
     pub speed_mult: Option<f32>,
+    /// Optional human-readable scenario name (e.g., "Balanced Standard", "Wormhole Chaos").
+    pub scenario_name: Option<String>,
+    /// Optional flag to automatically bind idle persistent MCP seats to empires in this match.
+    pub auto_bind_seats: Option<bool>,
     /// Start the match paused at tick 0 until unpaused via `/control` (default: false).
     pub start_paused: Option<bool>,
 }
@@ -98,8 +102,32 @@ pub struct CreateMatchResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MatchSeatInfo {
+    pub empire_idx: usize,
+    pub empire_id: usize,
+    pub name: String,
+    pub prt: String,
+    pub prt_summary: String,
+    pub alive: bool,
+    pub occupied: bool,
+    pub controlled_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSeatPublicInfo {
+    pub seat_name: String,
+    pub status: String,
+    pub match_id: Option<String>,
+    pub empire_idx: Option<usize>,
+    pub empire_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatchPublicSummary {
     pub match_id: String,
+    pub scenario_name: String,
     pub year: f32,
     pub tick: u64,
     pub epoch: u64,
@@ -109,8 +137,13 @@ pub struct MatchPublicSummary {
     pub speed_mult: f32,
     pub tick_delay_ms: u64,
     pub winner: Option<usize>,
+    pub galaxy_size: String,
+    pub total_planets: usize,
     pub planet_count: usize,
+    pub num_empires: usize,
     pub empire_count: usize,
+    pub victory_goal: VictoryGoalView,
+    pub seats: Vec<MatchSeatInfo>,
     pub agent_seats: Vec<usize>,
     pub submitted_seats: Vec<usize>,
     pub waiting_for_seats: Vec<usize>,
@@ -170,6 +203,8 @@ pub struct SubmitCommandsResponse {
     pub empire_idx: usize,
     pub commands_queued: usize,
     pub waiting_for_seats: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_feedback: Vec<CommandFeedback>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +214,8 @@ pub enum ArenaFeedKind {
     DipMessage,
     DiplomacyChange,
     SectorDirective,
+    ScoutSector,
+    ProbeWormhole,
     BuildHub,
     PolicyUpdate,
     EpochStatus,

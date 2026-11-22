@@ -12,9 +12,11 @@ import {
 } from './settingsStorage';
 import { UiController } from './ui';
 import {
+  bindMcpSeat,
   createArenaMatch,
   deleteArenaMatch,
   fetchArenaMatches,
+  fetchMcpSeats,
   LocalWasmTransport,
   normalizeServerUrl,
   RemoteArenaTransport,
@@ -417,6 +419,8 @@ async function bootstrap(): Promise<void> {
     try {
       const list = await fetchArenaMatches(arenaServerUrl);
       ui.setArenaMatchList(list, preferredMatchId ?? activeArenaMatchId ?? undefined);
+      const seats = await fetchMcpSeats(arenaServerUrl);
+      ui.setMcpSeats(seats, preferredMatchId ?? activeArenaMatchId ?? list[0]?.matchId ?? null);
       if (list.length === 0) {
         ui.setArenaConnectionState('disconnected', 'Connected to server • No active matches yet');
       }
@@ -457,6 +461,9 @@ async function bootstrap(): Promise<void> {
         ui.setActiveSpeedButton(srvSpeed);
       }
       ui.updateArenaStatus(summary);
+      void fetchMcpSeats(arenaServerUrl).then((seats) => {
+        ui.setMcpSeats(seats, activeArenaMatchId);
+      });
     });
     nextTransport.onConnectionState((state, msg) => ui.setArenaConnectionState(state, msg));
 
@@ -829,6 +836,14 @@ async function bootstrap(): Promise<void> {
       const nextMode = activeArenaExecMode === 'realtimeAsync' ? 'lockstepEpoch' : 'realtimeAsync';
       activeArenaExecMode = nextMode;
       transport.setExecutionMode?.(nextMode);
+    },
+    onArenaBindMcpSeat: (serverUrl, seatName, matchId, empireIdx) => {
+      arenaServerUrl = normalizeServerUrl(serverUrl);
+      void bindMcpSeat(arenaServerUrl, seatName, matchId, empireIdx).then(async (ok) => {
+        if (ok) {
+          await refreshArenaMatches(arenaServerUrl, activeArenaMatchId ?? undefined);
+        }
+      });
     },
     onArenaCreateMatch: async (serverUrl, opts, initialSpeed) => {
       arenaServerUrl = normalizeServerUrl(serverUrl);

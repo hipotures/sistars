@@ -23,7 +23,7 @@ from typing import Any
 
 
 VALID_STANCES = {"War", "Neutral", "Ceasefire", "Alliance"}
-VALID_SECTOR_MODES = {"Expand", "Fortify", "Attack", "Ignore"}
+VALID_SECTOR_MODES = {"Balanced", "Expand", "Scout", "Fortify", "Attack", "Ignore"}
 VALID_HUB_KINDS = {"Stargate", "Starbase"}
 
 POLICY_FLOAT_FIELDS = {
@@ -132,8 +132,11 @@ def build_system_prompt(empire_name: str, prt: str, goal: str, victory_goal: dic
         "- sectors: non-empty grid sectors with sectorId, row, col, directive, unexploredStars, ownPlanets, "
         "ownResPerYear, neutralKnown, neutralPenScanned, avgNeutralHab (0.0-1.0), enemyPlanetsByEmp [[empId, count]], "
         "detectedEnemyFleetPower, avgIntelAgeYears.\n"
+        "- STARGATE vs WORMHOLE: Stargate (built via buildHub) teleports fleets ONLY between two of your OWN Stargates "
+        "(requires >= 58 factories or >= 34 for PRT_IT, >= 155 ly spacing or 95 ly for PRT_IT). Wormholes are natural tunnels "
+        "whose far endpoint `toSector` stays null until a ship transits through — use `probeWormhole` or `scoutSector`.\n"
         "- ownHubs: top 10 own worlds (planetId, sectorId, pop, maxPop, factories, defense, starbaseTier, hasGate, "
-        "shipProdBuf, minerals). Use pop/maxPop against colPopReq/minShipyardPopRatio and shipProdBuf for build progress.\n"
+        "shipProdBuf, minerals). Also inspect ownFleetsSummary, pendingHubOrders, and activeExplorationOrders.\n"
         "- enemyPlanets: strictly foreign planets (never neutrals) with planetId, sectorId, ownerEmp, starbaseTier, "
         "hasStargate, intelAgeYears (higher = staler Fog-of-War snapshot), penScanned (true = penetrating scanner "
         "revealed popEst/facEst/defEst; false = surface scanner only).\n"
@@ -150,8 +153,9 @@ def build_system_prompt(empire_name: str, prt: str, goal: str, victory_goal: dic
         "Construction, Electronics, Biotechnology.\n"
         "  * mineralWeights {iron, bora, germ}: colonization/mining priority weights.\n"
         "  * maxUpkeepRatio: above this threshold, Governor pauses shipbuilding and scraps obsolete hulls.\n"
-        "- Sector Directives (setSectorDirective): Expand (colonize/develop), Fortify (defend/garrison), "
-        "Attack (offensive push), Ignore (deprioritize).\n"
+        "- Sector Directives (setSectorDirective): Balanced (default), Expand (high colonization priority), "
+        "Scout (high priority for pen-scanning neutrals, exploring dark stars & probing wormholes), Fortify, Attack, Ignore.\n"
+        "- Exploration Commands: scoutSector {sectorId} and probeWormhole {wormholeId}.\n"
         "- Diplomacy Stances (setDiplomacy): War, Neutral, Ceasefire, Alliance.\n\n"
         "=== REQUIRED JSON OUTPUT SCHEMA (STRICT camelCase) ===\n"
         "Respond ONLY with a single valid JSON object (no prose outside JSON):\n"
@@ -168,7 +172,9 @@ def build_system_prompt(empire_name: str, prt: str, goal: str, victory_goal: dic
         '    {"setSectorDirective": {"sectorId": 14, "mode": "Expand"}},\n'
         '    {"setDiplomacy": {"targetEmp": 2, "stance": "Neutral"}},\n'
         '    {"sendDipMessage": {"toEmp": 2, "text": "Short diplomatic cable"}},\n'
-        '    {"buildHub": {"planetId": 0, "kind": "Stargate"}}\n'
+        '    {"buildHub": {"planetId": 0, "kind": "Stargate"}},\n'
+        '    {"scoutSector": {"sectorId": 8}},\n'
+        '    {"probeWormhole": {"wormholeId": 0}}\n'
         "  ]\n"
         "}\n"
         "Rules:\n"
@@ -336,6 +342,14 @@ def sanitize_commands(raw_cmds: Any) -> list[dict[str, Any]]:
             kind = val.get("kind")
             if isinstance(planet_idx, int) and planet_idx >= 0 and kind in VALID_HUB_KINDS:
                 valid.append({"buildHub": {"planetIdx": planet_idx, "kind": kind}})
+        elif key == "scoutSector" and isinstance(val, dict):
+            sec = val.get("sectorId", val.get("sector_id"))
+            if isinstance(sec, int) and sec >= 0:
+                valid.append({"scoutSector": {"sectorId": sec}})
+        elif key == "probeWormhole" and isinstance(val, dict):
+            wid = val.get("wormholeId", val.get("wormhole_id"))
+            if isinstance(wid, int) and wid >= 0:
+                valid.append({"probeWormhole": {"wormholeId": wid}})
         elif key == "setPolicy" and isinstance(val, dict):
             patch = sanitize_policy_patch(val)
             if patch:

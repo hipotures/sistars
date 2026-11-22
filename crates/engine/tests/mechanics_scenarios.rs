@@ -1784,3 +1784,209 @@ fn scenario_wormhole_one_sided_discovery_and_camelcase_partial_policy() {
 }
 
 
+
+#[test]
+fn scenario_governor_scouts_unscanned_neutrals_and_expands() {
+    let mut cfg = SimConfig::default();
+    cfg.galaxy_size = GalaxySize::Small;
+    cfg.planets = 120;
+    let mut sim = Simulation::new(cfg, classic_races());
+    sim.init(777555, true);
+
+    // Force high colonization bias and zero penetrating scanner initially to reproduce the old paralysis trap
+    sim.empires[0].race.doctrine.colonize_vs_attack_bias = 1.0;
+    sim.empires[0].race.doctrine.col_pop_req = 0.20;
+    sim.empires[0].race.doctrine.min_shipyard_pop_ratio = 0.20;
+    sim.empires[0].tech_cache.scanner_pen = 0.0;
+
+    for _ in 0..450 {
+        sim.step_tick(true);
+    }
+
+    let obs = sim.take_agent_observation(0);
+    assert!(
+        obs.empire.planet_count > 4,
+        "Governor must actively scout unscanned neutrals and colonize > 4 worlds (got {})",
+        obs.empire.planet_count
+    );
+    assert!(
+        obs.galaxy_overview.explored_planets > obs.empire.planet_count as usize + 4,
+        "Expected active exploration well beyond owned planets, got {} explored vs {} owned",
+        obs.galaxy_overview.explored_planets,
+        obs.empire.planet_count
+    );
+}
+
+#[test]
+fn scenario_probe_wormhole_reveals_far_endpoint() {
+    use sistars_engine::types::{StrategicCommand, Wormhole};
+
+    let races = classic_races().into_iter().take(2).collect();
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 70.0,
+            factories: 40.0,
+            ship_prod_buf: 300.0,
+            iron_surf: 300.0,
+            bora_surf: 300.0,
+            germ_surf: 300.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 840.0,
+            y: 540.0,
+            owner: 0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 880.0,
+            y: 560.0,
+            owner: 2,
+            pop: 50.0,
+            factories: 30.0,
+            ..Default::default()
+        },
+    ];
+    let wormholes = vec![Wormhole {
+        x1: 135.0,
+        y1: 100.0,
+        x2: 810.0,
+        y2: 530.0,
+    }];
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 100.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Cruiser,
+        power: 80.0,
+        max_power: 80.0,
+        ship_count: 2,
+        orbiting: true,
+        ..Default::default()
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    sim.wormholes = wormholes;
+    sim.build_planet_neighbors();
+    sim.refresh_initial_fow();
+
+    // Initially only endpoint A is discovered -> toSector MUST be None
+    let obs0 = sim.take_agent_observation(0);
+    assert_eq!(obs0.wormholes.len(), 1);
+    assert_eq!(obs0.wormholes[0].to_sector, None);
+
+    // Issue ProbeWormhole command -> returns queued feedback
+    let fb = sim.submit_commands(0, vec![StrategicCommand::ProbeWormhole { wormhole_id: 0 }]);
+    assert_eq!(fb.len(), 1);
+    assert_eq!(fb[0].status, "queued");
+
+    // Step ticks until ship transits wormhole and maps endpoint B
+    let mut revealed = false;
+    for _ in 0..80 {
+        sim.step_tick(true);
+        let obs = sim.take_agent_observation(0);
+        if obs.wormholes.first().and_then(|w| w.to_sector).is_some() {
+            revealed = true;
+            break;
+        }
+    }
+    assert!(
+        revealed,
+        "ProbeWormhole must dispatch a ship through the wormhole and reveal toSector"
+    );
+    assert!(
+        sim.planet_intel(0, 1).is_explored(),
+        "Planet near wormhole exit must be explored after transit"
+    );
+}
+
+#[test]
+fn scenario_build_hub_deterministic_and_validation_feedback() {
+    use sistars_engine::types::{HubKind, StrategicCommand};
+
+    let races = classic_races().into_iter().take(2).collect();
+    // Planet 0: low factories (20 < 58) -> Stargate must be REJECTED with explicit reason
+    // Planet 1: high factories (70 >= 58), abundant ship_prod_buf & minerals -> Stargate must build DETERMINISTICALLY!
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 60.0,
+            factories: 20.0,
+            ship_prod_buf: 400.0,
+            iron_surf: 300.0,
+            bora_surf: 300.0,
+            germ_surf: 300.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 350.0,
+            y: 100.0,
+            owner: 1,
+            pop: 80.0,
+            factories: 70.0,
+            ship_prod_buf: 400.0,
+            iron_surf: 300.0,
+            bora_surf: 300.0,
+            germ_surf: 300.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 800.0,
+            y: 500.0,
+            owner: 2,
+            pop: 50.0,
+            factories: 30.0,
+            ..Default::default()
+        },
+    ];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), true);
+    sim.empires[0].tech_cache.stargate_max_range = 300.0;
+    sim.empires[0].tech_cache.stargate_name = Some("Stargate 100/250".to_string());
+
+    // 1. Planet 0 has only 20 factories -> rejected immediately with numbers in reason
+    let fb_reject = sim.submit_commands(
+        0,
+        vec![StrategicCommand::BuildHub {
+            planet_idx: 0,
+            kind: HubKind::Stargate,
+        }],
+    );
+    assert_eq!(fb_reject[0].status, "rejected");
+    assert!(
+        fb_reject[0]
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("factories"),
+        "Expected factory requirement in rejection reason, got: {:?}",
+        fb_reject[0]
+    );
+
+    // 2. Planet 1 meets all requirements -> queued and built deterministically within 2 ticks (zero RNG gate!)
+    let fb_ok = sim.submit_commands(
+        0,
+        vec![StrategicCommand::BuildHub {
+            planet_idx: 1,
+            kind: HubKind::Stargate,
+        }],
+    );
+    assert_eq!(fb_ok[0].status, "queued");
+    for _ in 0..3 {
+        sim.step_tick(true);
+    }
+    assert_eq!(
+        sim.has_gate[1], 1,
+        "Explicit BuildHub(Stargate) must build deterministically within a few ticks without RNG gating"
+    );
+}

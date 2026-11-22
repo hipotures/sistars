@@ -1029,7 +1029,7 @@ async fn e2e_mcp_full_handshake_and_gameplay() {
         .unwrap();
     assert_eq!(ping_body["result"], json!({}));
 
-    // 4. tools/list -> exactly 3 tools
+    // 4. tools/list -> exactly 6 tools
     let list_body: Value = srv
         .client
         .post(&mcp_url)
@@ -1041,9 +1041,19 @@ async fn e2e_mcp_full_handshake_and_gameplay() {
         .await
         .unwrap();
     let tools = list_body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 6);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["get_briefing", "get_observation", "submit_orders"]);
+    assert_eq!(
+        names,
+        vec![
+            "list_matches",
+            "join_match",
+            "leave_match",
+            "get_briefing",
+            "get_observation",
+            "submit_orders"
+        ]
+    );
 
     // 5. tools/call get_briefing
     let brief_body: Value = srv
@@ -1364,6 +1374,315 @@ async fn e2e_mcp_persistent_seat_rebinding() {
         serde_json::from_str(bound_resp["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(bound_inner["matchId"].as_str(), Some(match_id.as_str()));
     assert_eq!(bound_inner["state"]["empire"]["empireId"].as_u64(), Some(3));
+
+    state.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn e2e_mcp_header_auth_lobby_and_self_join() {
+    let logs_dir = std::env::temp_dir().join(format!(
+        "sistars_mcp_lobby_test_{}",
+        std::process::id()
+    ));
+    let secret1 = "claude_seat_1_secret_token_abc";
+    let secret2 = "gemini_seat_2_secret_token_xyz";
+    let state = AppState::new_with_mcp(
+        None,
+        logs_dir,
+        Some("https://sistars.lobby.test".to_string()),
+        Some(&format!("claude-1:{secret1},gemini-1:{secret2}")),
+    );
+    let app = build_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let client = reqwest::Client::new();
+    let mcp_url = format!("{base_url}/mcp");
+
+    // 1. POST /mcp without header & with bad token -> 403 Forbidden WITHOUT WWW-Authenticate
+    let no_auth = client
+        .post(&mcp_url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_auth.status(), StatusCode::FORBIDDEN);
+    assert!(no_auth.headers().get("www-authenticate").is_none());
+
+    let bad_auth = client
+        .post(&mcp_url)
+        .header("Authorization", "Bearer totally_wrong_token")
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_auth.status(), StatusCode::FORBIDDEN);
+    assert!(bad_auth.headers().get("www-authenticate").is_none());
+
+    // 2. Valid Authorization: Bearer + X-Api-Key handshake: initialize -> notifications/initialized (202) -> tools/list (6 tools)
+    let init_resp = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "claude", "version": "1.0" } }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(init_resp.status(), StatusCode::OK);
+    let notif_resp = client
+        .post(&mcp_url)
+        .header("X-Api-Key", secret1)
+        .json(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(notif_resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(notif_resp.text().await.unwrap(), "");
+
+    let tools_body: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tools_body["result"]["tools"].as_array().unwrap().len(), 6);
+
+    // 3. Create 2 matches with scenarioName
+    let m1: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 888001,
+            "scenarioName": "Wormhole Chaos",
+            "galaxySize": "small",
+            "startPaused": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let m1_id = m1["matchId"].as_str().unwrap().to_string();
+
+    let m2: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 888002,
+            "scenarioName": "Balanced Standard",
+            "galaxySize": "small",
+            "startPaused": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let m2_id = m2["matchId"].as_str().unwrap().to_string();
+
+    // 4. In idle state, list_matches returns rich public metadata & get_observation returns idle
+    let list_res: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "list_matches", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let list_json: Value =
+        serde_json::from_str(list_res["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(list_json["seatName"].as_str(), Some("claude-1"));
+    assert_eq!(list_json["matches"].as_array().unwrap().len(), 2);
+    let m1_entry = list_json["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["matchId"].as_str() == Some(m1_id.as_str()))
+        .unwrap();
+    assert_eq!(m1_entry["scenarioName"].as_str(), Some("Wormhole Chaos"));
+    assert_eq!(m1_entry["totalPlanets"].as_u64(), Some(120));
+    assert_eq!(m1_entry["seats"].as_array().unwrap().len(), 6);
+
+    // 5. claude-1 joins m1 as empireIdx 0
+    let join1: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": m1_id, "empireIdx": 0 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(join1["result"]["isError"].as_bool(), Some(false));
+
+    // 6. gemini-1 CANNOT claim occupied empireIdx 0 in m1 -> isError: true
+    let join_conflict: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret2}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": m1_id, "empireIdx": 0 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(join_conflict["result"]["isError"].as_bool(), Some(true));
+
+    // 7. claude-1 calls get_observation (verifying ownFleetsSummary) & submit_orders (verifying commandFeedback + scoutSector)
+    let obs_res: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let obs_json: Value =
+        serde_json::from_str(obs_res["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(obs_json["state"]["ownFleetsSummary"].is_object());
+
+    let sub_res: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "submit_orders",
+                "arguments": {
+                    "strategyMemory": {
+                        "phase": "Lobby Test",
+                        "priorities": ["Scout sector 5"],
+                        "rationale": "Testing commandFeedback",
+                        "diplomacyNotes": "None",
+                        "pivotTriggers": []
+                    },
+                    "commands": [
+                        { "scoutSector": { "sectorId": 5 } },
+                        { "buildHub": { "planetId": 0, "kind": "Stargate" } }
+                    ]
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sub_json: Value =
+        serde_json::from_str(sub_res["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let fb = sub_json["commandFeedback"].as_array().unwrap();
+    assert_eq!(fb.len(), 2);
+    assert_eq!(fb[0]["status"].as_str(), Some("queued"));
+    assert_eq!(fb[1]["status"].as_str(), Some("rejected")); // Planet 0 has 16 factories < 58
+
+    // 8. Anti-Spy FoW Lock: claude-1 leaves m1, CANNOT join empireIdx 1 in m1, CAN join empireIdx 1 in m2!
+    let leave_res: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": { "name": "leave_match", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(leave_res["result"]["isError"].as_bool(), Some(false));
+
+    let spy_attempt: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": m1_id, "empireIdx": 1 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        spy_attempt["result"]["isError"].as_bool(),
+        Some(true),
+        "Anti-Spy FoW Lock must reject switching empires in the same match"
+    );
+
+    let join_other_match: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": m2_id, "empireIdx": 1 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(join_other_match["result"]["isError"].as_bool(), Some(false));
+
+    // 9. GET /api/v1/mcp/seats MUST NEVER expose secret tokens
+    let seats_text = client
+        .get(format!("{base_url}/api/v1/mcp/seats"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(seats_text.contains("claude-1"));
+    assert!(seats_text.contains("gemini-1"));
+    assert!(!seats_text.contains(secret1), "Secret token leaked in /api/v1/mcp/seats!");
+    assert!(!seats_text.contains(secret2), "Secret token leaked in /api/v1/mcp/seats!");
 
     state.shutdown_all().await;
 }

@@ -478,8 +478,20 @@ export type ArenaMatchStatus = 'WaitingForAgents' | 'Running' | 'Finished';
 
 export type ExecutionMode = 'realtimeAsync' | 'lockstepEpoch';
 
+export interface McpSeatPublicInfo {
+  seatName: string;
+  status: 'idle' | 'bound';
+  matchId: string | null;
+  empireIdx: number | null;
+  empireName: string | null;
+}
+
 export interface ArenaMatchSummary {
   matchId: string;
+  scenarioName?: string;
+  galaxySize?: string;
+  totalPlanets?: number;
+  numEmpires?: number;
   year: number;
   tick: number;
   epoch: number;
@@ -503,6 +515,7 @@ export interface ArenaMatchSummary {
 
 export interface CreateArenaMatchOptions {
   seed?: number;
+  scenarioName?: string;
   simConfig?: SimConfig;
   scenarioModifiers?: ScenarioModifiers;
   galaxySize: string;
@@ -548,6 +561,8 @@ export type ArenaFeedKind =
   | 'DipMessage'
   | 'DiplomacyChange'
   | 'SectorDirective'
+  | 'ScoutSector'
+  | 'ProbeWormhole'
   | 'BuildHub'
   | 'PolicyUpdate'
   | 'EpochStatus'

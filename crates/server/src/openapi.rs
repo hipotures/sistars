@@ -42,7 +42,7 @@ pub fn build_openapi_spec() -> Value {
                 },
                 "SectorMode": {
                     "type": "string",
-                    "enum": ["Expand", "Fortify", "Attack", "Ignore"]
+                    "enum": ["Balanced", "Expand", "Scout", "Fortify", "Attack", "Ignore"]
                 },
                 "HubKind": {
                     "type": "string",
@@ -250,6 +250,32 @@ pub fn build_openapi_spec() -> Value {
                                 }
                             },
                             "required": ["sendDipMessage"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "scoutSector": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sectorId": { "type": "integer", "minimum": 0 }
+                                    },
+                                    "required": ["sectorId"]
+                                }
+                            },
+                            "required": ["scoutSector"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "probeWormhole": {
+                                    "type": "object",
+                                    "properties": {
+                                        "wormholeId": { "type": "integer", "minimum": 0 }
+                                    },
+                                    "required": ["wormholeId"]
+                                }
+                            },
+                            "required": ["probeWormhole"]
                         }
                     ]
                 },
@@ -379,6 +405,9 @@ pub fn build_openapi_spec() -> Value {
                                 }
                             }
                         },
+                        "ownFleetsSummary": { "type": "object" },
+                        "pendingHubOrders": { "type": "array", "items": { "type": "object" } },
+                        "activeExplorationOrders": { "type": "array", "items": { "type": "object" } },
                         "enemyPlanets": { "type": "array", "items": { "type": "object" } },
                         "wormholes": { "type": "array", "items": { "type": "object" } },
                         "stargates": { "type": "array", "items": { "type": "object" } },
@@ -505,6 +534,17 @@ pub fn build_openapi_spec() -> Value {
                     "responses": { "200": { "description": "OpenAPI JSON document" } }
                 }
             },
+            "/mcp": {
+                "post": {
+                    "summary": "Persistent Model Context Protocol (MCP — Streamable HTTP) endpoint with header auth (Authorization: Bearer <token> or X-Api-Key)",
+                    "description": "Exposes 6 tools: list_matches, join_match, leave_match, get_briefing, get_observation, submit_orders. Always returns 403 Forbidden (never 401) for invalid/missing tokens.",
+                    "responses": {
+                        "200": { "description": "JSON-RPC 2.0 response" },
+                        "202": { "description": "Accepted JSON-RPC notification (empty body)" },
+                        "403": { "description": "Missing or invalid token (no WWW-Authenticate header)" }
+                    }
+                }
+            },
             "/mcp/{token}": {
                 "post": {
                     "summary": "Model Context Protocol (MCP — Streamable HTTP) JSON-RPC 2.0 endpoint for Claude Custom Connectors",
@@ -520,6 +560,12 @@ pub fn build_openapi_spec() -> Value {
                     "summary": "Stateless MCP session termination",
                     "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
                     "responses": { "204": { "description": "Session terminated" } }
+                }
+            },
+            "/api/v1/mcp/seats": {
+                "get": {
+                    "summary": "List configured persistent MCP seats and their public binding status (zero secrets exposed)",
+                    "responses": { "200": { "description": "Array of McpSeatPublicInfo" } }
                 }
             },
             "/api/v1/mcp/seats/{seat_name}/bind": {
