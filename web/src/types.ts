@@ -126,6 +126,7 @@ export interface SimConfig {
   aggroBias: number;
   sprawlPenalty: number;
   colShipCost: number;
+  colCostMult?: number;
   bomberPen: number;
   facCostRes: number;
   facCostGerm: number;

@@ -1102,7 +1102,10 @@ impl Simulation {
             let trait_ship_discount = if prt_wm { 0.90 } else { 1.0 }
                 * if lrt & LRT_CE != 0 { 0.88 } else { 1.0 };
             let gate_range = tc.stargate_max_range.max(250.0);
-            let (col_i, _, col_g) = emp.ship_mineral_cost(FleetClass::Col);
+            let (col_i_raw, _, col_g_raw) = emp.ship_mineral_cost(FleetClass::Col);
+            let col_mult = self.cfg.col_cost_mult.clamp(0.5, 5.0);
+            let col_i = col_i_raw * col_mult;
+            let col_g = col_g_raw * col_mult;
             let warp_mult = (tc.engine_warp / 6.0).clamp(0.75, 2.0);
             let ife_mult = if lrt & LRT_IFE != 0 { 1.10 } else { 1.0 };
 
@@ -1706,7 +1709,9 @@ impl Simulation {
                     let nb_end = self.neighbor_offsets[i + 1] as usize;
 
                     let col_range = ec.col_range;
+                    let col_res_cost = effective_ship_cost * self.cfg.col_cost_mult.clamp(0.5, 5.0);
                     if neutral_planets_count > 0
+                        && self.ship_prod_buf[i] >= col_res_cost
                         && self.min_surf[base_idx] >= ec.col_i
                         && self.min_surf[base_idx + 2] >= ec.col_g
                     {
@@ -2113,12 +2118,20 @@ impl Simulation {
                             fl.steer_x = sx;
                             fl.steer_y = sy;
                         } else if mission == FleetClass::Col || emp_upkeep_ratio[e] < 0.42 {
-                            let (ci, cb, cg) = self.empires[e].ship_mineral_cost(mission);
-                            if self.min_surf[base_idx] >= ci
+                            let cost_mult = if mission == FleetClass::Col {
+                                self.cfg.col_cost_mult.clamp(0.5, 5.0)
+                            } else {
+                                1.0
+                            };
+                            let (ci_raw, cb_raw, cg_raw) = self.empires[e].ship_mineral_cost(mission);
+                            let (ci, cb, cg) = (ci_raw * cost_mult, cb_raw * cost_mult, cg_raw * cost_mult);
+                            let res_cost = effective_ship_cost * cost_mult;
+                            if self.ship_prod_buf[i] >= res_cost
+                                && self.min_surf[base_idx] >= ci
                                 && self.min_surf[base_idx + 1] >= cb
                                 && self.min_surf[base_idx + 2] >= cg
                             {
-                                self.ship_prod_buf[i] -= effective_ship_cost;
+                                self.ship_prod_buf[i] -= res_cost;
                                 self.min_surf[base_idx] -= ci;
                                 self.min_surf[base_idx + 1] -= cb;
                                 self.min_surf[base_idx + 2] -= cg;
@@ -3447,6 +3460,7 @@ impl Simulation {
                 needs_reset = true;
             }
             "gateCost" => self.cfg.gate_cost = value.clamp(15.0, 120.0),
+            "colCostMult" => self.cfg.col_cost_mult = (value / 100.0).clamp(0.5, 5.0),
             "interceptRad" => self.cfg.intercept_rad = value.clamp(8.0, 50.0),
             "salvageRate" => self.cfg.salvage_rate = (value / 100.0).clamp(0.0, 1.0),
             "aggroBias" => self.cfg.aggro_bias = (value / 100.0).clamp(0.0, 1.0),

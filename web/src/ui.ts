@@ -407,6 +407,7 @@ export class UiController {
     setSlider('wormholePairs', s.wormholePairs);
     setSlider('crustRichness', s.crustRichness);
     setSlider('gateCost', s.gateCost);
+    setSlider('colCostMult', s.colCostMult, '%');
     setSlider('interceptRad', s.interceptRad);
     setSlider('salvageRate', s.salvageRate, '%');
     setSlider('aggroBias', s.aggroBias, '%');
@@ -1277,7 +1278,7 @@ export class UiController {
         const key = input.dataset.param!;
         const num = parseFloat(input.value);
         const label = getEl(`v_${key}`);
-        if (key === 'sprawlPenalty' || key === 'aggroBias' || key === 'salvageRate') {
+        if (key === 'sprawlPenalty' || key === 'aggroBias' || key === 'salvageRate' || key === 'colCostMult') {
           label.textContent = `${num}%`;
         } else {
           label.textContent = String(num);

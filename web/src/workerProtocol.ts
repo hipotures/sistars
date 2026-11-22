@@ -22,6 +22,7 @@ export interface InitialSimSettings {
   wormholePairs: number;
   crustRichness: number;
   gateCost: number;
+  colCostMult: number;
   interceptRad: number;
   salvageRate: number;
   aggroBias: number;
@@ -44,6 +45,7 @@ export type MainToWorkerMsg =
       wormholePairs: number;
       crustRichness: number;
       gateCost: number;
+  colCostMult: number;
       interceptRad: number;
       salvageRate: number;
       aggroBias: number;

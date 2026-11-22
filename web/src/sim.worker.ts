@@ -221,6 +221,7 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
       if (s.wormholePairs !== 2) engine.update_param('wormholePairs', s.wormholePairs, msg.seed);
       if (s.crustRichness !== 800) engine.update_param('crustRichness', s.crustRichness, msg.seed);
       if (s.gateCost !== 45) engine.update_param('gateCost', s.gateCost, msg.seed);
+      if (s.colCostMult !== 100) engine.update_param('colCostMult', s.colCostMult, msg.seed);
       if (s.interceptRad !== 22) engine.update_param('interceptRad', s.interceptRad, msg.seed);
       if (s.salvageRate !== 65) engine.update_param('salvageRate', s.salvageRate, msg.seed);
       if (s.aggroBias !== 65) engine.update_param('aggroBias', s.aggroBias, msg.seed);
@@ -348,6 +349,7 @@ self.onmessage = async (event: MessageEvent<MainToWorkerMsg>): Promise<void> => 
       tickAccum = 0;
       engine.set_scenario_modifiers(msg.modifiers, msg.seed, false);
       engine.update_param('gateCost', msg.gateCost, msg.seed);
+      engine.update_param('colCostMult', msg.colCostMult, msg.seed);
       engine.update_param('interceptRad', msg.interceptRad, msg.seed);
       engine.update_param('salvageRate', msg.salvageRate, msg.seed);
       engine.update_param('aggroBias', msg.aggroBias, msg.seed);

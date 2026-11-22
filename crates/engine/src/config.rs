@@ -206,6 +206,10 @@ impl FleetClass {
     }
 }
 
+fn default_one() -> f32 {
+    1.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimConfig {
@@ -221,6 +225,8 @@ pub struct SimConfig {
     pub aggro_bias: f32,
     pub sprawl_penalty: f32,
     pub col_ship_cost: f32,
+    #[serde(default = "default_one")]
+    pub col_cost_mult: f32,
     pub bomber_pen: f32,
     pub fac_cost_res: f32,
     pub fac_cost_germ: f32,
@@ -249,6 +255,7 @@ impl Default for SimConfig {
             aggro_bias: 0.65,
             sprawl_penalty: 0.22,
             col_ship_cost: 85.0,
+            col_cost_mult: 1.0,
             bomber_pen: 0.65,
             fac_cost_res: 10.0,
             fac_cost_germ: 4.0,

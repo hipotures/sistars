@@ -225,6 +225,7 @@ async function bootstrap(): Promise<void> {
       wormholePairs: persisted.wormholePairs,
       crustRichness: persisted.crustRichness,
       gateCost: persisted.gateCost,
+      colCostMult: persisted.colCostMult,
       interceptRad: persisted.interceptRad,
       salvageRate: persisted.salvageRate,
       aggroBias: persisted.aggroBias,
@@ -515,6 +516,7 @@ async function bootstrap(): Promise<void> {
       else if (key === 'wormholePairs') persisted.wormholePairs = value;
       else if (key === 'crustRichness') persisted.crustRichness = value;
       else if (key === 'gateCost') persisted.gateCost = value;
+      else if (key === 'colCostMult') persisted.colCostMult = value;
       else if (key === 'interceptRad') persisted.interceptRad = value;
       else if (key === 'salvageRate') persisted.salvageRate = value;
       else if (key === 'aggroBias') persisted.aggroBias = value;
@@ -568,6 +570,7 @@ async function bootstrap(): Promise<void> {
         wormholePairs: persisted.wormholePairs,
         crustRichness: persisted.crustRichness,
         gateCost: persisted.gateCost,
+      colCostMult: persisted.colCostMult,
         interceptRad: persisted.interceptRad,
         salvageRate: persisted.salvageRate,
         aggroBias: persisted.aggroBias,

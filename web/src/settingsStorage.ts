@@ -36,6 +36,7 @@ export interface PersistedSettings {
   wormholePairs: number;
   crustRichness: number;
   gateCost: number;
+  colCostMult: number;
   interceptRad: number;
   salvageRate: number;
   aggroBias: number;
@@ -61,6 +62,7 @@ export const DEFAULT_SETTINGS: PersistedSettings = {
   wormholePairs: 2,
   crustRichness: 800,
   gateCost: 45,
+  colCostMult: 100,
   interceptRad: 22,
   salvageRate: 65,
   aggroBias: 65,
@@ -121,6 +123,7 @@ export function loadPersistedSettings(): PersistedSettings {
       wormholePairs: Math.round(clampNum(parsed.wormholePairs, DEFAULT_SETTINGS.wormholePairs, 0, 500)),
       crustRichness: Math.round(clampNum(parsed.crustRichness, DEFAULT_SETTINGS.crustRichness, 300, 2500)),
       gateCost: Math.round(clampNum(parsed.gateCost, DEFAULT_SETTINGS.gateCost, 15, 120)),
+      colCostMult: Math.round(clampNum(parsed.colCostMult, DEFAULT_SETTINGS.colCostMult, 50, 500)),
       interceptRad: Math.round(clampNum(parsed.interceptRad, DEFAULT_SETTINGS.interceptRad, 8, 50)),
       salvageRate: Math.round(clampNum(parsed.salvageRate, DEFAULT_SETTINGS.salvageRate, 0, 100)),
       aggroBias: Math.round(clampNum(parsed.aggroBias, DEFAULT_SETTINGS.aggroBias, 0, 100)),
