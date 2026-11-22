@@ -1052,7 +1052,6 @@ export class UiController {
       }
 
       this.callbacks.onSelectObject({ kind: 'fleet', id });
-      void this.openFleetView(id);
     });
 
     getEl('stargateTableBody').addEventListener('click', (e) => {
@@ -1662,6 +1661,9 @@ export class UiController {
     this.setFleetPreviewExpanded(false);
     this.modalShipRenderer.resetCamera();
     this.setFleetModalMode('solid');
+    getEl('planetInspector').style.display = 'none';
+    getEl('inspShipWrap').style.display = 'none';
+    this.inspShipRenderer.stop();
     getEl('fleetModal').style.display = 'flex';
     this.modalShipRenderer.start();
     if (this.lastHud) {
@@ -1675,6 +1677,9 @@ export class UiController {
     this.setFleetPreviewExpanded(false);
     getEl('fleetModal').style.display = 'none';
     this.modalShipRenderer.stop();
+    if (this.selection && this.lastHud) {
+      void this.updateInspector(this.lastHud);
+    }
   }
 
   private async refreshFleetModal(hud: HudSnapshot, isInitial: boolean): Promise<void> {
@@ -1695,6 +1700,8 @@ export class UiController {
 
     const emp = hud.empires[fl.emp - 1];
     const minNames = ['Ironium', 'Boranium', 'Germanium'];
+    const isSalvage = fl.type === 'freight' && Boolean(fl.salvageMode);
+    const salvageCargo = Math.round((fl.cargoIron ?? 0) + (fl.cargoBora ?? 0) + (fl.cargoGerm ?? 0));
     const hullName = emp
       ? fl.type === 'battleship'
         ? emp.loadout.battleshipHull
@@ -1703,7 +1710,9 @@ export class UiController {
           : fl.type === 'bomber'
             ? emp.loadout.bomberHull
             : fl.type === 'freight'
-              ? `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
+              ? isSalvage
+                ? 'Salvage Freighter'
+                : `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
               : 'Colony Ship'
       : FLEET_LABELS[fl.type];
 
@@ -1725,30 +1734,51 @@ export class UiController {
 
     const targetPl = await this.callbacks.getPlanetDetail(fl.target);
     if (seq !== this.fleetModalReqSeq || this.activeModalFleetId !== fleetId) return;
-    const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
+    const dist =
+      fl.salvageMode === 1
+        ? Math.hypot(fl.steerX - fl.x, fl.steerY - fl.y)
+        : targetPl
+          ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y)
+          : 0;
     const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
-    const statusTxt =
+    const missionTxt =
       fl.salvageMode === 1
         ? '✦ Salvage Outbound'
         : fl.salvageMode === 2
           ? '✦ Salvage Return'
-          : fl.hunting
-            ? '🎯 Intercepting'
-            : fl.whRoute >= 0
-              ? '🌀 Wormhole Route'
-              : fl.usedWh
-                ? '⚡ Gate / WH Jump'
-                : 'En Route';
+          : fl.type === 'freight'
+            ? `■ Transport ${minNames[fl.minType] ?? 'Minerals'}`
+            : fl.type === 'col'
+              ? targetPl && targetPl.owner === fl.emp
+                ? '● Reinforce Colony'
+                : '● Colonize'
+              : fl.hunting
+                ? '🎯 Intercept Fleet'
+                : fl.type === 'bomber'
+                  ? '★ Orbital Bombardment'
+                  : '⚔ Planetary Assault';
+    const routeTag = fl.whRoute >= 0 ? ' (🌀 WH)' : fl.usedWh ? ' (⚡ Jump)' : '';
+    const routeTxt =
+      fl.salvageMode === 1
+        ? `#${fl.from + 1} → (${Math.round(fl.steerX)}, ${Math.round(fl.steerY)}) (${eta.toFixed(1)} yr)`
+        : fl.salvageMode === 2
+          ? `Wreck → #${fl.target + 1} (${eta.toFixed(1)} yr)`
+          : `#${fl.from + 1} → #${fl.target + 1} (${eta.toFixed(1)} yr)`;
+    const cargoTxt = isSalvage
+      ? `${salvageCargo} / ${Math.round(fl.maxPower)} kT (I:${Math.round(fl.cargoIron ?? 0)} B:${Math.round(fl.cargoBora ?? 0)} G:${Math.round(fl.cargoGerm ?? 0)})`
+      : fl.type === 'freight'
+        ? `${Math.round(fl.power)} kT ${minNames[fl.minType] ?? ''}`
+        : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`;
 
-    getEl('fleetModalTitle').textContent = `🚀 Fleet F#${fl.id} • ${FLEET_LABELS[fl.type]}`;
-    getEl('fleetModalSub').textContent = `${hullName} • ${emp ? emp.name : `Empire #${fl.emp}`} • ${statusTxt}`;
+    getEl('fleetModalTitle').textContent = `🚀 Fleet F#${fl.id} • ${isSalvage ? '✦ Salvage Freighter' : FLEET_LABELS[fl.type]}`;
+    getEl('fleetModalSub').textContent = `${hullName} • ${emp ? emp.name : `Empire #${fl.emp}`} • ${missionTxt}${routeTag}`;
 
     getEl('fleetModalStats').innerHTML = `
       <div class="insp-stat"><span>Owner</span><b style="color:${emp?.color ?? '#e2e8f0'}">${emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`}</b></div>
       <div class="insp-stat"><span>Hull / Class</span><b>${hullName}</b></div>
-      <div class="insp-stat"><span>Route &amp; ETA</span><b>#${fl.from + 1} → #${fl.target + 1} (${eta.toFixed(1)} yr)</b></div>
-      <div class="insp-stat"><span>Orders / Dist</span><b>${statusTxt} · ${Math.round(dist)} ly</b></div>
-      <div class="insp-stat"><span>${fl.type === 'freight' ? 'Cargo Hold' : 'Power / HP'}</span><b style="color:var(--accent)">${fl.type === 'freight' ? `${Math.round(fl.power)} kT ${minNames[fl.minType] ?? ''}` : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`}</b></div>
+      <div class="insp-stat"><span>Route &amp; ETA</span><b>${routeTxt}</b></div>
+      <div class="insp-stat"><span>Mission / Dist</span><b>${missionTxt}${routeTag} · ${Math.round(dist)} ly</b></div>
+      <div class="insp-stat"><span>${fl.type === 'freight' ? 'Cargo Hold' : 'Power / HP'}</span><b style="color:${isSalvage ? '#c084fc' : 'var(--accent)'}">${cargoTxt}</b></div>
       <div class="insp-stat"><span>EW (Cloak / Tach / Jam)</span><b>${Math.round(cloakFrac * 100)}% / ${Math.round(tachFrac * 100)}% / ${Math.round(jamFrac * 100)}%</b></div>
     `;
 
@@ -1781,7 +1811,7 @@ export class UiController {
     const insp = getEl('planetInspector');
     const minWrap = getEl('inspMineralsWrap');
     const debrisHistWrap = getEl('inspDebrisHistoryWrap');
-    if (!sel) {
+    if (!sel || this.activeModalFleetId !== null) {
       insp.style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
