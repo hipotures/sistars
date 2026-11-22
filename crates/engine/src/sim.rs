@@ -1776,7 +1776,7 @@ impl Simulation {
                 });
         }
 
-        let has_debris = !self.debris_fields.is_empty();
+        let has_debris = mods.auto_salvage && !self.debris_fields.is_empty();
         if has_debris {
             let debris = &self.debris_fields;
             self.debris_grid
@@ -2502,6 +2502,7 @@ impl Simulation {
         if self.cfg.salvage_rate <= 0.0 {
             return;
         }
+        let ttl = self.cfg.scenario_modifiers.debris_ttl.max(1.0);
         let field = if dead_fleet.fleet_type == FleetClass::Freight {
             let mut m = [0.0f32; 3];
             m[dead_fleet.min_type as usize] = dead_fleet.max_power * self.cfg.salvage_rate;
@@ -2511,7 +2512,7 @@ impl Simulation {
                 iron: m[0],
                 bora: m[1],
                 germ: m[2],
-                ttl: 12.0,
+                ttl,
             }
         } else {
             let e = (dead_fleet.emp - 1) as usize;
@@ -2522,10 +2523,29 @@ impl Simulation {
                 iron: ci * self.cfg.salvage_rate,
                 bora: cb * self.cfg.salvage_rate,
                 germ: cg * self.cfg.salvage_rate,
-                ttl: 12.0,
+                ttl,
             }
         };
-        if self.debris_fields.len() >= MAX_DEBRIS_FIELDS {
+
+        // In persistent-debris / no-auto-salvage scenarios, merge nearby battle wreckage into larger graveyards
+        let persistent_mode = !self.cfg.scenario_modifiers.auto_salvage || ttl > 50.0;
+        if persistent_mode {
+            const MERGE_RAD_SQ: f32 = 18.0 * 18.0;
+            for existing in &mut self.debris_fields {
+                let dx = existing.x - x;
+                let dy = existing.y - y;
+                if dx * dx + dy * dy <= MERGE_RAD_SQ {
+                    existing.iron += field.iron;
+                    existing.bora += field.bora;
+                    existing.germ += field.germ;
+                    existing.ttl = existing.ttl.max(ttl);
+                    return;
+                }
+            }
+        }
+
+        let max_fields = if persistent_mode { 2000 } else { MAX_DEBRIS_FIELDS };
+        if self.debris_fields.len() >= max_fields {
             self.debris_fields.swap_remove(0);
         }
         self.debris_fields.push(field);

@@ -6,7 +6,8 @@ export type ScenarioId =
   | 'dark_forest'
   | 'core_rush'
   | 'fallen_empire'
-  | 'hyper_blitz';
+  | 'hyper_blitz'
+  | 'graveyard';
 
 export const GALAXY_SIZE_ORDER: readonly GalaxySize[] = [
   'small',
@@ -25,6 +26,8 @@ export const DEFAULT_SCENARIO_MODIFIERS: ScenarioModifiers = {
   coreRichnessBias: 0.0,
   fallenEmpire: false,
   allowStargates: true,
+  debrisTtl: 12.0,
+  autoSalvage: true,
 };
 
 export interface ScenarioDefaults {
@@ -172,6 +175,24 @@ export const SCENARIOS: readonly ScenarioDef[] = [
       growthRateMult: 2.0,
     },
     highlights: ['Tech Speed ×2.5', 'Growth ×2.0', 'No locks'],
+  },
+  {
+    id: 'graveyard',
+    name: 'Graveyard of Empires (Debris Lab)',
+    shortTag: 'Graveyard',
+    description:
+      'Auto-salvage is disabled and battle wreckage persists for 1000 years, merging nearby wrecks into massive scrap fields.',
+    defaults: {
+      galaxySize: 'large',
+      salvageRate: 100,
+    },
+    locks: {},
+    modifiers: {
+      ...DEFAULT_SCENARIO_MODIFIERS,
+      debrisTtl: 1000.0,
+      autoSalvage: false,
+    },
+    highlights: ['Debris TTL 1000 yr', 'Auto-Salvage OFF', 'Merged Graveyards'],
   },
 ];
 

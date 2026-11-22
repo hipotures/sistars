@@ -108,6 +108,8 @@ export interface ScenarioModifiers {
   coreRichnessBias: number;
   fallenEmpire: boolean;
   allowStargates: boolean;
+  debrisTtl: number;
+  autoSalvage: boolean;
 }
 
 export interface SimConfig {

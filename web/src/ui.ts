@@ -2231,7 +2231,8 @@ export class UiController {
         const germ = Math.round(deb.germ);
         return { idx, deb, iron, bora, germ, total: iron + bora + germ };
       })
-      .sort((a, b) => b.total - a.total);
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 200);
     getEl('debrisTableBody').innerHTML = rows
       .map(({ idx, deb, iron, bora, germ, total }) => {
         return `<tr data-debris-idx="${idx}" data-x="${deb.x}" data-y="${deb.y}">

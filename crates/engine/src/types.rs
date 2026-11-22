@@ -11,6 +11,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_debris_ttl() -> f32 {
+    12.0
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioModifiers {
@@ -28,6 +32,10 @@ pub struct ScenarioModifiers {
     pub fallen_empire: bool,
     #[serde(default = "default_true")]
     pub allow_stargates: bool,
+    #[serde(default = "default_debris_ttl")]
+    pub debris_ttl: f32,
+    #[serde(default = "default_true")]
+    pub auto_salvage: bool,
 }
 
 impl Default for ScenarioModifiers {
@@ -40,6 +48,8 @@ impl Default for ScenarioModifiers {
             core_richness_bias: 0.0,
             fallen_empire: false,
             allow_stargates: true,
+            debris_ttl: 12.0,
+            auto_salvage: true,
         }
     }
 }
