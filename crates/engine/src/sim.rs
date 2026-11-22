@@ -1268,7 +1268,7 @@ impl Simulation {
                 // Dedicated Salvage Freighter dispatch (flies to rich debris, scoops up to cargo_cap, chains nearby wrecks, returns home)
                 if any_debris
                     && self.pop[i] > 20.0
-                    && self.next_rand() < 0.14
+                    && self.next_rand() < 0.06
                     && self.fleets.len() < 4000
                 {
                     let xi = self.pos_x[i];
@@ -1317,7 +1317,8 @@ impl Simulation {
                             emp: emp_u8,
                             fleet_type: FleetClass::Freight,
                             min_type: 0,
-                            power: 0.0,
+                            // Non-zero hull HP so outbound empty salvage freighters survive the end-of-tick death sweep
+                            power: 12.0,
                             max_power: ec.cargo_cap,
                             hunting: false,
                             used_wh: false,
@@ -1888,7 +1889,9 @@ impl Simulation {
                 if dist_sq <= scoop_r * scoop_r {
                     // Scoop up to remaining cargo capacity proportionally from debris fields at this site
                     let cap = self.fleets[f_idx].max_power.max(45.0);
-                    let mut carried = self.fleets[f_idx].power;
+                    let mut carried = self.fleets[f_idx].cargo_iron
+                        + self.fleets[f_idx].cargo_bora
+                        + self.fleets[f_idx].cargo_germ;
                     let salvage_mult = ec.salvage_mult;
                     let debris_slice = &mut self.debris_fields;
                     let mut add_i = 0.0f32;
@@ -1939,12 +1942,13 @@ impl Simulation {
                     self.fleets[f_idx].cargo_iron += add_i;
                     self.fleets[f_idx].cargo_bora += add_b;
                     self.fleets[f_idx].cargo_germ += add_g;
-                    self.fleets[f_idx].power = self.fleets[f_idx].cargo_iron
+                    let total_cargo = self.fleets[f_idx].cargo_iron
                         + self.fleets[f_idx].cargo_bora
                         + self.fleets[f_idx].cargo_germ;
+                    self.fleets[f_idx].power = total_cargo.max(12.0);
 
                     // Multi-stop chaining: if hold still has room (>= 15 kT) and another wreck is within 85 ly & fuel range
-                    let rem_after = (cap - self.fleets[f_idx].power).max(0.0);
+                    let rem_after = (cap - total_cargo).max(0.0);
                     let mut next_stop: Option<(f32, f32)> = None;
                     if rem_after >= 15.0 {
                         let home_idx = self.fleets[f_idx].from;

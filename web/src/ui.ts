@@ -1891,7 +1891,9 @@ export class UiController {
             : fl.type === 'bomber'
               ? emp.loadout.bomberHull
               : fl.type === 'freight'
-                ? `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
+                ? fl.salvageMode
+                  ? 'Salvage Freighter'
+                  : `Freighter (${minNames[fl.minType] ?? 'Mineral'})`
                 : 'Colony Ship'
         : FLEET_LABELS[fl.type];
       const hpRatio = fl.maxPower > 0 ? Math.max(0, Math.min(1, fl.power / fl.maxPower)) : 1;
@@ -1922,28 +1924,55 @@ export class UiController {
       });
       this.inspShipRenderer.start();
 
-      getEl('inspTitle').textContent = `Fleet F#${fl.id} • ${FLEET_LABELS[fl.type]}`;
+      const isSalvage = fl.type === 'freight' && Boolean(fl.salvageMode);
+      const salvageCargo = Math.round((fl.cargoIron ?? 0) + (fl.cargoBora ?? 0) + (fl.cargoGerm ?? 0));
+      getEl('inspTitle').textContent = `Fleet F#${fl.id} • ${isSalvage ? '✦ Salvage Freighter' : FLEET_LABELS[fl.type]}`;
       this.setInspCell(0, 'Owner', emp ? `${emp.name} (${shortPrt(emp.prt)})` : `Empire #${fl.emp}`, emp ? emp.color : '#e2e8f0');
       this.setInspCell(1, 'Hull / Class', hullName);
-      this.setInspCell(2, fl.type === 'freight' ? 'Cargo' : 'Power / HP', fl.type === 'freight' ? `${Math.round(fl.power)} kT` : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`, 'var(--accent)');
+      this.setInspCell(
+        2,
+        fl.type === 'freight' ? 'Cargo' : 'Power / HP',
+        isSalvage
+          ? `${salvageCargo} / ${Math.round(fl.maxPower)} kT`
+          : fl.type === 'freight'
+            ? `${Math.round(fl.power)} kT (${minNames[fl.minType] ?? 'Mineral'})`
+            : `${Math.round(fl.power)} / ${Math.round(fl.maxPower)} (${hpPct}%)`,
+        isSalvage ? '#c084fc' : 'var(--accent)',
+      );
       const targetPl = await this.callbacks.getPlanetDetail(fl.target);
       if (reqSeq !== this.inspectorReqSeq || !this.selection) return;
-      const dist = targetPl ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y) : 0;
+      const dist =
+        fl.salvageMode === 1
+          ? Math.hypot(fl.steerX - fl.x, fl.steerY - fl.y)
+          : targetPl
+            ? Math.hypot(targetPl.x - fl.x, targetPl.y - fl.y)
+            : 0;
       const eta = dist / Math.max(1, this.lastConfig.fleetSpeed);
-      this.setInspCell(3, 'Route / ETA', `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`);
-      const statusTxt =
+      const routeTxt =
+        fl.salvageMode === 1
+          ? `#${fl.from + 1}→(${Math.round(fl.steerX)},${Math.round(fl.steerY)}) (${eta.toFixed(1)}yr)`
+          : fl.salvageMode === 2
+            ? `Wreck→#${fl.target + 1} (${eta.toFixed(1)}yr)`
+            : `#${fl.from + 1}→#${fl.target + 1} (${eta.toFixed(1)}yr)`;
+      this.setInspCell(3, 'Route / ETA', routeTxt);
+      const missionTxt =
         fl.salvageMode === 1
           ? '✦ Salvage Outbound'
           : fl.salvageMode === 2
             ? '✦ Salvage Return'
-            : fl.hunting
-              ? '🎯 Intercepting'
-              : fl.whRoute >= 0
-                ? '🌀 Wormhole Route'
-                : fl.usedWh
-                  ? '⚡ Gate/WH Jump'
-                  : 'En Route';
-      this.setInspCell(4, 'Orders / Dist', `${statusTxt} • ${Math.round(dist)}ly`);
+            : fl.type === 'freight'
+              ? `■ Transport ${minNames[fl.minType] ?? 'Minerals'}`
+              : fl.type === 'col'
+                ? targetPl && targetPl.owner === fl.emp
+                  ? '● Reinforce Colony'
+                  : '● Colonize'
+                : fl.hunting
+                  ? '🎯 Intercept Fleet'
+                  : fl.type === 'bomber'
+                    ? '★ Orbital Bombardment'
+                    : '⚔ Planetary Assault';
+      const routeTag = fl.whRoute >= 0 ? ' (🌀 WH)' : fl.usedWh ? ' (⚡ Jump)' : '';
+      this.setInspCell(4, 'Mission / Dist', `${missionTxt}${routeTag} • ${Math.round(dist)}ly`);
       this.setInspCell(5, 'EW (Cloak/Tach/Jam)', `${cloakPct}% / ${tachPct}% / ${jamPct}%`);
       return;
     }
@@ -2283,17 +2312,32 @@ export class UiController {
 
     const rows = rep.fleets.map((fl) => {
       const target = rep.planets[fl.target];
-      const dist = target ? Math.hypot(target.x - fl.x, target.y - fl.y) : 0;
+      const dist =
+        fl.salvageMode === 1
+          ? Math.hypot(fl.steerX - fl.x, fl.steerY - fl.y)
+          : target
+            ? Math.hypot(target.x - fl.x, target.y - fl.y)
+            : 0;
       const eta = dist / this.lastConfig.fleetSpeed;
       const label =
         fl.type === 'freight'
           ? fl.salvageMode === 1
-            ? '✦ Salvage (Outbound)'
+            ? '✦ Salvage → Wreck'
             : fl.salvageMode === 2
-              ? '✦ Salvage (Return)'
-              : `■ Freight (${minLetters[fl.minType] ?? 'I'})`
-          : `${FLEET_LABELS[fl.type]}${fl.hunting ? ' 🎯' : ''}${fl.usedWh ? ' ⚡' : ''}`;
-      return { fl, dist, eta, label };
+              ? '✦ Salvage ↩ Home'
+              : `■ Transport (${minLetters[fl.minType] ?? 'I'})`
+          : fl.type === 'col'
+            ? target && target.owner === fl.emp
+              ? '● Reinforce'
+              : '● Colonize'
+            : fl.type === 'bomber'
+              ? `★ Bombard${fl.usedWh ? ' ⚡' : ''}`
+              : `${FLEET_LABELS[fl.type]} · ${fl.hunting ? 'Intercept 🎯' : 'Assault'}${fl.usedWh ? ' ⚡' : ''}`;
+      const cargoVal =
+        fl.type === 'freight' && fl.salvageMode
+          ? (fl.cargoIron ?? 0) + (fl.cargoBora ?? 0) + (fl.cargoGerm ?? 0)
+          : fl.power;
+      return { fl, dist, eta, label, cargoVal };
     });
 
     const { key, asc } = this.reportSort.fleets;
@@ -2314,7 +2358,7 @@ export class UiController {
           cmp = a.fl.from - b.fl.from || a.fl.target - b.fl.target;
           break;
         case 'power':
-          cmp = a.fl.power - b.fl.power;
+          cmp = a.cargoVal - b.cargoVal;
           break;
         case 'dist':
           cmp = a.dist - b.dist;
@@ -2328,7 +2372,7 @@ export class UiController {
 
     const slice = rows.slice(0, 200);
     getEl('fleetTableBody').innerHTML = slice
-      .map(({ fl, dist, eta, label }) => {
+      .map(({ fl, dist, eta, label, cargoVal }) => {
         const empCol = hud.empires[fl.emp - 1]?.color ?? '#94a3b8';
         const col =
           fl.type === 'freight'
@@ -2341,12 +2385,24 @@ export class UiController {
                 ? '#f87171'
                 : '#93c5fd';
         const hpPct = fl.maxPower > 0 ? Math.round((fl.power / fl.maxPower) * 100) : 0;
+        const routeTxt =
+          fl.salvageMode === 1
+            ? `#${fl.from + 1}→(${Math.round(fl.steerX)},${Math.round(fl.steerY)})`
+            : fl.salvageMode === 2
+              ? `Wreck→#${fl.target + 1}`
+              : `#${fl.from + 1}→#${fl.target + 1}`;
+        const powerTxt =
+          fl.type === 'freight' && fl.salvageMode
+            ? `${Math.round(cargoVal)}/${Math.round(fl.maxPower)} kT`
+            : fl.type === 'freight'
+              ? `${Math.round(fl.power)} kT`
+              : `${Math.round(fl.power)} (${hpPct}%)`;
         return `<tr data-fleet-id="${fl.id}" data-from-idx="${fl.from}" data-target-idx="${fl.target}">
           <td>F${fl.id}</td>
           <td><span class="dot" style="background:${empCol}"></span></td>
           <td style="color:${col};font-weight:bold;">${label}</td>
-          <td class="fleet-route-cell" data-route-focus="1" title="Focus route on galaxy map">#${fl.from + 1}→#${fl.target + 1}</td>
-          <td>${Math.round(fl.power)} (${hpPct}%)</td>
+          <td class="fleet-route-cell" data-route-focus="1" title="Focus route on galaxy map">${routeTxt}</td>
+          <td>${powerTxt}</td>
           <td>${Math.round(dist)}ly</td>
           <td>${eta.toFixed(1)}yr</td>
         </tr>`;
