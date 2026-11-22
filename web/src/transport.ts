@@ -500,6 +500,19 @@ export class RemoteArenaTransport implements SimTransport {
       let settled = false;
       const ws = new WebSocket(wsUrl);
       this.ws = ws;
+      const initTimer = window.setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+          this.connHandler?.('error', `Timed out connecting to ${this.matchId}`);
+          reject(new Error(`Timed out waiting for Spectator WebSocket init (${wsUrl})`));
+        }
+      }, 10000);
+      const clearInitTimer = () => window.clearTimeout(initTimer);
 
       ws.onopen = () => {
         this.connHandler?.('connected', `Live Spectator: ${this.matchId}`);
@@ -508,6 +521,7 @@ export class RemoteArenaTransport implements SimTransport {
       ws.onerror = () => {
         if (!settled) {
           settled = true;
+          clearInitTimer();
           this.connHandler?.('error', `WebSocket error connecting to ${wsUrl}`);
           reject(new Error(`Failed to connect to Spectator WebSocket at ${wsUrl}`));
         } else {
@@ -518,6 +532,7 @@ export class RemoteArenaTransport implements SimTransport {
       ws.onclose = () => {
         if (!settled) {
           settled = true;
+          clearInitTimer();
           this.connHandler?.('disconnected', 'Connection closed before init');
           reject(new Error('WebSocket closed before receiving initial arena state'));
         } else if (!this.disposed) {
@@ -564,6 +579,7 @@ export class RemoteArenaTransport implements SimTransport {
 
           if (!settled) {
             settled = true;
+            clearInitTimer();
             resolve({
               meta: msg.meta,
               catalog: msg.catalog,
