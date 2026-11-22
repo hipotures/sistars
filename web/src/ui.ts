@@ -3036,6 +3036,14 @@ export class UiController {
     btnRefresh?.addEventListener('click', () => {
       this.callbacks.onArenaRefreshMatches?.(serverInput?.value ?? 'http://localhost:8080');
     });
+    serverInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        this.callbacks.onArenaRefreshMatches?.(serverInput.value);
+      }
+    });
+    serverInput?.addEventListener('change', () => {
+      this.callbacks.onArenaRefreshMatches?.(serverInput.value);
+    });
     btnConnect?.addEventListener('click', () => {
       const srv = serverInput?.value ?? 'http://localhost:8080';
       const mid = matchSelect?.value ?? '';

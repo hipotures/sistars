@@ -140,11 +140,16 @@ async function bootstrap(): Promise<void> {
     speed: persisted.speed,
   });
 
-  // Check URL parameters (?server=http://localhost:8080&match=<id>) for direct Spectator Mode launch
+  // Check URL parameters (?server=http://host:8080&match=<id>) for direct Spectator Mode launch
+  // When served over HTTPS (e.g. Vite dev server with TLS), default to same-origin so Vite proxies /api and /ws cleanly without Mixed Content blocks.
   const urlParams = new URLSearchParams(window.location.search);
   const urlServer = urlParams.get('server');
   const urlMatch = urlParams.get('match');
-  let arenaServerUrl = normalizeServerUrl(urlServer ?? 'http://localhost:8080');
+  const defaultServer =
+    window.location.protocol === 'https:'
+      ? window.location.origin
+      : `http://${window.location.hostname || 'localhost'}:8080`;
+  let arenaServerUrl = normalizeServerUrl(urlServer ?? defaultServer);
   let activeArenaMatchId: string | null = urlMatch;
 
   let transport: SimTransport;
