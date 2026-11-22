@@ -8,7 +8,7 @@ use crate::config::{
 };
 use crate::sim::Simulation;
 use crate::tech::{classic_races, tech_store, LRT_LIST, PRT_LIST};
-use crate::types::{RaceDef, ScenarioModifiers, TechCatalogView};
+use crate::types::{RaceDef, ScenarioModifiers, StrategicCommand, TechCatalogView};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,5 +238,28 @@ impl WasmEngine {
 
     pub fn export_anomalies_json(&self) -> String {
         self.sim.export_anomalies_json()
+    }
+
+    /// Returns a compact, Fog-of-War-isolated intelligence report for an external AI / LLM agent (`0..num_empires`).
+    pub fn take_agent_observation(&self, empire_idx: usize) -> JsValue {
+        let obs = self.sim.take_agent_observation(empire_idx);
+        serde_wasm_bindgen::to_value(&obs).unwrap_or(JsValue::NULL)
+    }
+
+    /// Serializes `AgentObservation` directly to a compact JSON string (~2-4 KB).
+    pub fn take_agent_observation_json(&self, empire_idx: usize) -> String {
+        self.sim.take_agent_observation_json(empire_idx)
+    }
+
+    /// Applies a batch of high-level strategic commands (`StrategicCommand`) from an external AI agent.
+    pub fn submit_commands(&mut self, empire_idx: usize, cmds_js: JsValue) -> bool {
+        let parsed: Result<Vec<StrategicCommand>, _> = serde_wasm_bindgen::from_value(cmds_js);
+        match parsed {
+            Ok(cmds) => {
+                self.sim.submit_commands(empire_idx, cmds);
+                true
+            }
+            Err(_) => false,
+        }
     }
 }

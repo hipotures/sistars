@@ -259,6 +259,7 @@ pub fn classic_races() -> Vec<RaceDef> {
                 gates: 0,
                 last_fit: 0,
                 win_rate: 17,
+                ..Doctrine::default()
             },
         },
         RaceDef {
@@ -284,6 +285,7 @@ pub fn classic_races() -> Vec<RaceDef> {
                 gates: 0,
                 last_fit: 0,
                 win_rate: 17,
+                ..Doctrine::default()
             },
         },
         RaceDef {
@@ -309,6 +311,7 @@ pub fn classic_races() -> Vec<RaceDef> {
                 gates: 0,
                 last_fit: 0,
                 win_rate: 17,
+                ..Doctrine::default()
             },
         },
         RaceDef {
@@ -334,6 +337,7 @@ pub fn classic_races() -> Vec<RaceDef> {
                 gates: 0,
                 last_fit: 0,
                 win_rate: 17,
+                ..Doctrine::default()
             },
         },
         RaceDef {
@@ -359,6 +363,7 @@ pub fn classic_races() -> Vec<RaceDef> {
                 gates: 0,
                 last_fit: 0,
                 win_rate: 16,
+                ..Doctrine::default()
             },
         },
         RaceDef {
@@ -384,6 +389,7 @@ pub fn classic_races() -> Vec<RaceDef> {
                 gates: 0,
                 last_fit: 0,
                 win_rate: 16,
+                ..Doctrine::default()
             },
         },
     ]

@@ -1,9 +1,11 @@
 use sistars_engine::config::{FleetClass, SimConfig};
 use sistars_engine::galaxy::GalaxySize;
+use sistars_engine::governor::sector_for_xy;
 use sistars_engine::sim::Simulation;
 use sistars_engine::tech::{classic_races, LRT_UR};
 use sistars_engine::types::{
-    DebrisField, DiplomaticStance, Fleet, SandboxPlanet, SimEvent, VictoryConfig,
+    DebrisField, DiplomaticStance, Fleet, SandboxPlanet, SectorMode, SimEvent, StrategicCommand,
+    VictoryConfig, Wormhole,
 };
 
 #[test]
@@ -947,4 +949,745 @@ fn live_auditor_prunes_valid_events_and_captures_anomalies_to_json() {
     let json = sim.export_anomalies_json();
     assert!(json.contains("SalvageCargoCapExceeded"));
 }
+
+#[test]
+fn scenario_fow_intel_freezes_out_of_scanner_range() {
+    let races = classic_races();
+    // Planet #0 (Empire 1 homeworld at x=100) and Planet #1 (Empire 2 world far away at x=500)
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 60.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 500.0,
+            y: 100.0,
+            owner: 2,
+            pop: 40.0,
+            factories: 30.0,
+            defense: 20.0,
+            starbase_tier: 0,
+            ..Default::default()
+        },
+    ];
+    // Empire 1 scout fleet starts right next to Planet #1 (within orbital penetrating scan range <= 4 ly)
+    // and is heading back home to Planet #0 (x=100).
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 498.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Cruiser,
+        power: 80.0,
+        max_power: 80.0,
+        steer_x: 100.0,
+        steer_y: 100.0,
+        ..Default::default()
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    sim.empires[0].tech_cache.scanner_range = 60.0;
+    sim.empires[0].tech_cache.scanner_pen = 30.0;
+
+    // Tick 1: Fleet at x=498 scans Planet #1 at x=500 (distance 2 ly <= pen_radius)
+    sim.step_tick(true);
+    let intel_t1 = sim.planet_intel(0, 1);
+    assert!(intel_t1.is_explored());
+    assert!(intel_t1.is_pen_scanned());
+    assert_eq!(intel_t1.owner, 2);
+    assert_eq!(intel_t1.starbase_tier, 0);
+    let seen_tick_before_leaving = intel_t1.last_seen_tick;
+    let seen_fac_before = intel_t1.fac_est;
+    let seen_pop_before = intel_t1.pop_est;
+    let seen_def_before = intel_t1.def_est;
+    assert!((seen_fac_before - sim.factories[1]).abs() < 1.0);
+
+    // Move the fleet back to homeworld (x=100), completely out of scanner range of Planet #1 (distance 400 ly > 60 ly)
+    sim.fleets[0].x = 120.0;
+    sim.fleets[0].y = 100.0;
+
+    // Now Planet #1 builds +50 factories, +40 defense, grows pop, and commissions a Tier 3 Starbase!
+    sim.factories[1] += 50.0;
+    sim.defense[1] += 40.0;
+    sim.pop[1] += 35.0;
+    sim.starbase_tier[1] = 3;
+    sim.starbase_hp[1] = 500.0;
+    sim.starbase_max_hp[1] = 500.0;
+
+    for _ in 0..15 {
+        sim.step_tick(true);
+    }
+
+    // Verify Empire 1's intel on Planet #1 is completely frozen at the old scan (zero live-feed leak!)
+    let intel_frozen = sim.planet_intel(0, 1);
+    assert_eq!(
+        intel_frozen.last_seen_tick, seen_tick_before_leaving,
+        "last_seen_tick must freeze once planet leaves scanner coverage"
+    );
+    assert_eq!(
+        intel_frozen.starbase_tier, 0,
+        "Unseen Starbase construction must not leak into frozen PlanetIntel"
+    );
+    assert!((intel_frozen.fac_est - seen_fac_before).abs() < 1e-4);
+    assert!((intel_frozen.pop_est - seen_pop_before).abs() < 1e-4);
+    assert!((intel_frozen.def_est - seen_def_before).abs() < 1e-4);
+}
+
+#[test]
+fn scenario_fow_scanner_pen_required_for_surface_intel() {
+    let races = classic_races();
+    let planets = vec![
+        // Planet #0: Empire 1 scanner post at (100, 100)
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 60.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+        // Planet #1: Neutral planet at distance 80 ly (x=180, y=100)
+        SandboxPlanet {
+            x: 180.0,
+            y: 100.0,
+            owner: 0,
+            hab: 0.88,
+            iron_crust: 300.0,
+            bora_crust: 250.0,
+            germ_crust: 350.0,
+            ..Default::default()
+        },
+        // Planet #2: Enemy planet at distance 85 ly (x=100, y=185)
+        SandboxPlanet {
+            x: 100.0,
+            y: 185.0,
+            owner: 2,
+            hab: 0.75,
+            pop: 55.0,
+            factories: 48.0,
+            defense: 32.0,
+            starbase_tier: 2,
+            ..Default::default()
+        },
+    ];
+
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
+    // Basic non-penetrating scanner: range = 120 ly, pen = 0 ly
+    sim.empires[0].tech_cache.scanner_range = 120.0;
+    sim.empires[0].tech_cache.scanner_pen = 0.0;
+    sim.refresh_initial_fow();
+    sim.step_tick(true);
+
+    // 1. Non-penetrating scan sees owner & starbase_tier, but ZERO surface intel
+    let intel_neutral = sim.planet_intel(0, 1);
+    assert!(intel_neutral.is_explored());
+    assert!(
+        !intel_neutral.is_pen_scanned(),
+        "Neutral planet at 80 ly must NOT be pen-scanned when scanner_pen == 0"
+    );
+    assert_eq!(intel_neutral.owner, 0);
+    assert_eq!(intel_neutral.hab_est, 0.0);
+    assert_eq!(intel_neutral.crust_sum_est, 0.0);
+
+    let intel_enemy = sim.planet_intel(0, 2);
+    assert!(intel_enemy.is_explored());
+    assert!(
+        !intel_enemy.is_pen_scanned(),
+        "Enemy planet at 85 ly must NOT be pen-scanned when scanner_pen == 0"
+    );
+    assert_eq!(intel_enemy.owner, 2);
+    assert_eq!(intel_enemy.starbase_tier, 2);
+    assert_eq!(intel_enemy.pop_est, 0.0);
+    assert_eq!(intel_enemy.fac_est, 0.0);
+    assert_eq!(intel_enemy.def_est, 0.0);
+
+    let obs_non_pen = sim.take_agent_observation(0);
+    for fp in &obs_non_pen.key_points.known_foreign_planets {
+        assert!(!fp.pen_scanned);
+        assert!(fp.pop_est.is_none());
+        assert!(fp.fac_est.is_none());
+        assert!(fp.def_est.is_none());
+        assert!(fp.hab_est.is_none());
+        assert!(fp.crust_sum_est.is_none());
+    }
+
+    // 2. Unlock penetrating scanner (scanner_pen = 100 ly >= 85 ly) and step 1 tick
+    sim.empires[0].tech_cache.scanner_pen = 100.0;
+    sim.step_tick(true);
+
+    let intel_neutral_pen = sim.planet_intel(0, 1);
+    assert!(intel_neutral_pen.is_pen_scanned());
+    assert!((intel_neutral_pen.hab_est - 0.88).abs() < 1e-4);
+    assert!((intel_neutral_pen.crust_sum_est - 900.0).abs() < 1.0);
+
+    let intel_enemy_pen = sim.planet_intel(0, 2);
+    assert!(intel_enemy_pen.is_pen_scanned());
+    assert!(intel_enemy_pen.pop_est >= 50.0);
+    assert!(intel_enemy_pen.fac_est >= 45.0);
+    assert!(intel_enemy_pen.def_est >= 30.0);
+}
+
+#[test]
+fn scenario_fow_cloak_and_ecm_hide_fleet_from_observation_and_intercept() {
+    let races = classic_races();
+    let planets = vec![
+        // Planet #0: Empire 1 base far away at (50, 100)
+        SandboxPlanet {
+            x: 50.0,
+            y: 100.0,
+            owner: 1,
+            pop: 50.0,
+            factories: 30.0,
+            ..Default::default()
+        },
+        // Planet #1: Empire 2 fortress with active ECM jammer at (300, 100)
+        SandboxPlanet {
+            x: 300.0,
+            y: 100.0,
+            owner: 2,
+            pop: 80.0,
+            factories: 60.0,
+            defense: 75.0, // >= 55.0 activates planetary ECM jammer
+            has_gate: true,
+            ..Default::default()
+        },
+        // Planet #2: Neutral waypoint at (200, 250) so Empire 1 Cruiser has a flight target
+        SandboxPlanet {
+            x: 200.0,
+            y: 250.0,
+            owner: 0,
+            ..Default::default()
+        },
+    ];
+    // Empire 1 Cruiser at (200, 100) with power=150; Empire 2 Bomber at (285, 100) (distance 85 ly, inside Planet #1's ECM field)
+    let fleets = vec![
+        Fleet {
+            id: 1,
+            x: 200.0,
+            y: 100.0,
+            from: 0,
+            target: 2,
+            emp: 1,
+            fleet_type: FleetClass::Cruiser,
+            power: 150.0,
+            max_power: 150.0,
+            steer_x: 200.0,
+            steer_y: 250.0,
+            ..Default::default()
+        },
+        Fleet {
+            id: 2,
+            x: 285.0,
+            y: 100.0,
+            from: 1,
+            target: 1,
+            emp: 2,
+            fleet_type: FleetClass::Bomber,
+            power: 40.0,
+            max_power: 40.0,
+            steer_x: 300.0,
+            steer_y: 100.0,
+            ..Default::default()
+        },
+    ];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    // Guarantee Cruiser interception roll passes when target is detected
+    sim.empires[0].race.doctrine.intercept_bias = 1.0;
+    sim.empires[0].tech_cache.scanner_range = 100.0;
+    sim.empires[0].tech_cache.tachyon_cloak_reduction = 0.0;
+
+    // Give Empire 2 heavy stealth (75% armed cloak) + strong planetary ECM jammer (80% strength, 120 ly radius)
+    sim.empires[1].tech_cache.cloak_armed_pct = 0.75;
+    sim.empires[1].tech_cache.ecm_jammer_strength = 0.80;
+    sim.empires[1].tech_cache.ecm_jammer_range = 120.0;
+
+    sim.step_tick(true);
+
+    // 1. While cloaked and under ECM cover at 85 ly, effective_detection_range is < 20 ly:
+    //    Cruiser MUST NOT intercept, and AgentObservation MUST NOT see the enemy Bomber!
+    assert!(
+        !sim.fleets[0].hunting,
+        "Cruiser must not intercept a cloaked/ECM-protected fleet outside effective detection range"
+    );
+    let obs_hidden = sim.take_agent_observation(0);
+    assert!(
+        obs_hidden.key_points.detected_enemy_fleets.is_empty(),
+        "Cloaked/ECM-jammed fleet must not appear in AgentObservation.detected_enemy_fleets"
+    );
+
+    // 2. Equip Empire 1 with a Tachyon Detector (85% cloak reduction) and move the enemy Bomber
+    //    out of the ECM umbrella to (245, 100) (~45 ly from the Cruiser, well within countered detection range)
+    sim.empires[0].tech_cache.tachyon_cloak_reduction = 0.85;
+    sim.fleets[1].x = 245.0;
+    sim.fleets[1].y = 100.0;
+
+    let obs_revealed = sim.take_agent_observation(0);
+    assert_eq!(
+        obs_revealed.key_points.detected_enemy_fleets.len(),
+        1,
+        "Fleet should now be detected once Tachyon counters cloak outside ECM"
+    );
+
+    sim.step_tick(true);
+    assert!(
+        sim.fleets[0].hunting,
+        "Cruiser should immediately enter hunting/interception mode once target enters effective detection range"
+    );
+}
+
+#[test]
+fn scenario_fow_debris_and_wormholes_hidden_outside_scanners() {
+    let races = classic_races();
+    let planets = vec![
+        // Planet #0: Empire 1 homeworld at (100, 100) with docked freighter & colonizer resources
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            hab: 1.0,
+            pop: 120.0,
+            mines: 50.0,
+            factories: 80.0,
+            iron_surf: 400.0,
+            bora_surf: 400.0,
+            germ_surf: 400.0,
+            ..Default::default()
+        },
+        // Planet #1: Rich neutral world at (750, 750), reachable ONLY via the wormhole
+        SandboxPlanet {
+            x: 750.0,
+            y: 750.0,
+            owner: 0,
+            hab: 0.95,
+            iron_crust: 800.0,
+            bora_crust: 800.0,
+            germ_crust: 800.0,
+            ..Default::default()
+        },
+    ];
+    // Docked freighter at Planet #0 ready for immediate salvage dispatch if debris is spotted
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 100.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Freight,
+        power: 12.0,
+        max_power: 200.0,
+        orbiting: true,
+        ..Default::default()
+    }];
+    // Rich 300 kT debris field at (260, 100) -> distance 160 ly (inside freight_range=350, outside scanner_range=80)
+    let debris = vec![DebrisField {
+        x: 260.0,
+        y: 100.0,
+        iron: 100.0,
+        bora: 100.0,
+        germ: 100.0,
+        ttl: 200.0,
+        wrecks: Vec::new(),
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, debris, true);
+    sim.empires[0].tech_cache.scanner_range = 80.0;
+    sim.empires[0].tech_cache.scanner_pen = 40.0;
+    sim.empires[0].tech_cache.range_freight = 400.0;
+    sim.empires[0].tech_cache.range_col = 400.0;
+
+    // Add a wormhole at (250, 100) <-> (740, 750): entry is 150 ly from Planet #0 (outside 80 ly scanner!)
+    sim.wormholes.push(Wormhole {
+        x1: 250.0,
+        y1: 100.0,
+        x2: 740.0,
+        y2: 750.0,
+    });
+    sim.build_planet_neighbors();
+    sim.refresh_initial_fow();
+
+    // Run 25 ticks with ai_enabled=true while debris (160 ly) & wormhole (150 ly) are outside 80 ly scanner range
+    for _ in 0..25 {
+        sim.step_tick(true);
+    }
+
+    let obs_hidden = sim.take_agent_observation(0);
+    assert!(
+        obs_hidden.key_points.visible_debris.is_empty(),
+        "Debris at 160 ly must be invisible to an 80 ly scanner"
+    );
+    assert!(
+        obs_hidden.key_points.discovered_wormholes.is_empty(),
+        "Wormhole at 150 ly must remain undiscovered to an 80 ly scanner"
+    );
+    assert!(
+        !sim.fleets.iter().any(|fl| fl.salvage_mode == 1),
+        "Governor must NOT dispatch salvage freighters to debris outside active scanner range"
+    );
+    assert!(
+        !sim.fleets
+            .iter()
+            .any(|fl| fl.fleet_type == FleetClass::Col && fl.target == 1),
+        "Governor must NOT colonize through an undiscovered wormhole to an unexplored planet"
+    );
+
+    // Now upgrade Empire 1's planetary scanner range to 200 ly so both the debris field (160 ly)
+    // and wormhole entry (150 ly) enter active scanner coverage!
+    sim.empires[0].tech_cache.scanner_range = 200.0;
+    let mut dispatched_salvage = false;
+    for _ in 0..40 {
+        sim.step_tick(true);
+        if sim.fleets.iter().any(|fl| fl.salvage_mode == 1) {
+            dispatched_salvage = true;
+            break;
+        }
+    }
+
+    let obs_visible = sim.take_agent_observation(0);
+    assert_eq!(
+        obs_visible.key_points.discovered_wormholes.len(),
+        1,
+        "Wormhole at 150 ly must be discovered once scanner_range reaches 200 ly"
+    );
+    assert_eq!(
+        obs_visible.key_points.visible_debris.len(),
+        1,
+        "Debris at 160 ly must appear in visible_debris once scanner_range reaches 200 ly"
+    );
+    assert!(
+        dispatched_salvage,
+        "Governor should dispatch a salvage freighter once debris enters active scanner coverage"
+    );
+}
+
+#[test]
+fn scenario_governor_respects_starbase_and_min_force_ratio() {
+    let races = classic_races();
+    let planets = vec![
+        // Planet #0: Empire 1 staging world at (100, 100)
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            hab: 1.0,
+            pop: 110.0,
+            mines: 10.0,
+            factories: 20.0,
+            defense: 20.0,
+            iron_surf: 15.0,
+            bora_surf: 15.0,
+            germ_surf: 15.0,
+            ..Default::default()
+        },
+        // Planet #1: Empire 2 heavily fortified world at (160, 100) with Tier 3 Starbase (500 HP)
+        SandboxPlanet {
+            x: 160.0,
+            y: 100.0,
+            owner: 2,
+            hab: 1.0,
+            pop: 45.0,
+            mines: 20.0,
+            factories: 35.0,
+            defense: 40.0,
+            starbase_tier: 3,
+            starbase_hp: Some(500.0),
+            ..Default::default()
+        },
+    ];
+    // Single weak Cruiser in orbit at Planet #0 (power = 90 << required_power ~ 660)
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 100.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Cruiser,
+        power: 90.0,
+        max_power: 90.0,
+        orbiting: true,
+        ship_count: 1,
+        ..Default::default()
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    sim.empires[0].tech_cache.scanner_range = 120.0;
+    sim.empires[0].tech_cache.scanner_pen = 120.0;
+    sim.empires[0].race.doctrine.min_force_ratio = 1.25;
+    sim.empires[0].race.doctrine.colonize_vs_attack_bias = 0.0; // pure attack focus
+    // Disable Empire 2's shipyard so it stays a static fortified target
+    sim.empires[1].race.doctrine.ship_share = 0.0;
+    sim.empires[1].race.doctrine.surplus_ship_share = 0.0;
+    sim.refresh_initial_fow();
+
+    // 1. With only 1 Cruiser (90 power) and low minerals against a 500 HP Starbase + 40 def,
+    //    the Governor MUST NOT launch a suicidal attack!
+    for _ in 0..8 {
+        sim.step_tick(true);
+        assert!(
+            !sim.fleets
+                .iter()
+                .any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
+            "Governor must not send an under-powered fleet against a Tier 3 Starbase"
+        );
+    }
+
+    // 2. Now supply Planet #0 with massive shipyard budget and minerals so it can build/reinforce
+    //    a strike fleet that exceeds `enemy_def * min_force_ratio`!
+    sim.ship_prod_buf[0] = 2500.0;
+    sim.min_surf[0] = 2500.0;
+    sim.min_surf[1] = 2500.0;
+    sim.min_surf[2] = 2500.0;
+
+    let mut launched_power = 0.0f32;
+    for _ in 0..10 {
+        sim.step_tick(true);
+        if let Some(strike) = sim
+            .fleets
+            .iter()
+            .find(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1)
+        {
+            launched_power = strike.power;
+            break;
+        }
+    }
+
+    assert!(
+        launched_power >= 550.0,
+        "Expected Governor to accumulate and launch a heavy strike force (>= 550 power) to crack the Starbase, got {launched_power}"
+    );
+}
+
+#[test]
+fn scenario_governor_sector_directive_and_diplomacy_commands() {
+    let races = classic_races();
+    // Map is 900x900 (4x4 sectors, each 225x225).
+    // Sector 0 is (0..225, 0..225); Sector 1 is (225..450, 0..225).
+    let planets = vec![
+        // Planet #0: Empire 1 homeworld at (210, 100) right on the border of Sector 0 and Sector 1
+        SandboxPlanet {
+            x: 210.0,
+            y: 100.0,
+            owner: 1,
+            hab: 1.0,
+            pop: 140.0,
+            mines: 60.0,
+            factories: 110.0,
+            iron_surf: 800.0,
+            bora_surf: 800.0,
+            germ_surf: 800.0,
+            ..Default::default()
+        },
+        // Planet #1: Neutral world in Sector 0 at (150, 100) (distance 60 ly)
+        SandboxPlanet {
+            x: 150.0,
+            y: 100.0,
+            owner: 0,
+            hab: 0.90,
+            ..Default::default()
+        },
+        // Planet #2: Weak Empire 2 world in Sector 1 at (270, 100) (distance 60 ly)
+        SandboxPlanet {
+            x: 270.0,
+            y: 100.0,
+            owner: 2,
+            hab: 0.90,
+            pop: 15.0,
+            factories: 10.0,
+            defense: 5.0,
+            ..Default::default()
+        },
+    ];
+
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+    sim.empires[0].tech_cache.scanner_range = 150.0;
+    sim.empires[0].tech_cache.scanner_pen = 150.0;
+    sim.empires[1].race.doctrine.ship_share = 0.0;
+    sim.empires[1].race.doctrine.surplus_ship_share = 0.0;
+    sim.refresh_initial_fow();
+    sim.ship_prod_buf[0] = 600.0;
+
+    let sec0 = sector_for_xy(150.0, 100.0, sim.world_w, sim.world_h, 4, 4);
+    let sec1 = sector_for_xy(270.0, 100.0, sim.world_w, sim.world_h, 4, 4);
+    assert_eq!(sec0, 0);
+    assert_eq!(sec1, 1);
+
+    // 1. Submit StrategicCommands:
+    //    - Ignore Sector 0 (so Planet #1 in Sector 0 must NOT be colonized)
+    //    - Attack Sector 1
+    //    - Set Ceasefire with Empire 2 (so Planet #2 must NOT be attacked yet despite Sector 1 Attack)
+    //    - Send a diplomatic message from Empire 1 (idx 0) to Empire 2 (idx 1)
+    sim.submit_commands(
+        0,
+        vec![
+            StrategicCommand::SetSectorDirective {
+                sector_id: sec0,
+                mode: SectorMode::Ignore,
+            },
+            StrategicCommand::SetSectorDirective {
+                sector_id: sec1,
+                mode: SectorMode::Attack,
+            },
+            StrategicCommand::SetDiplomacy {
+                target_emp: 1,
+                stance: DiplomaticStance::Ceasefire,
+            },
+            StrategicCommand::SendDipMessage {
+                to_emp: 1,
+                text: "OfferPeace: Hold fire along Sector 1 border.".to_string(),
+            },
+        ],
+    );
+
+    // Verify Empire 2 received the diplomatic message in its AgentObservation inbox
+    let obs_emp2 = sim.take_agent_observation(1);
+    let emp1_summary = obs_emp2
+        .known_empires
+        .iter()
+        .find(|k| k.emp_id == 1)
+        .expect("Empire 2 should know Empire 1 after diplomatic transmission");
+    assert_eq!(emp1_summary.stance, DiplomaticStance::Ceasefire);
+    assert_eq!(emp1_summary.inbox.len(), 1);
+    assert!(emp1_summary.inbox[0].text.contains("OfferPeace"));
+
+    // Step 10 ticks under Ceasefire + Sector 0 Ignore:
+    // Neither Planet #1 (in Ignored Sector 0) nor Planet #2 (protected by Ceasefire) may be targeted!
+    for _ in 0..10 {
+        sim.step_tick(true);
+    }
+    assert!(
+        !sim.fleets.iter().any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
+        "Governor must not colonize Planet #1 in SectorMode::Ignore"
+    );
+    assert!(
+        !sim.fleets.iter().any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 2),
+        "Governor must not attack Planet #2 while DiplomaticStance::Ceasefire is active"
+    );
+
+    // 2. Now declare War on Empire 2 via StrategicCommand::SetDiplomacy
+    sim.submit_commands(
+        0,
+        vec![StrategicCommand::SetDiplomacy {
+            target_emp: 1,
+            stance: DiplomaticStance::War,
+        }],
+    );
+
+    let mut attacked_p2 = false;
+    for _ in 0..10 {
+        sim.step_tick(true);
+        if sim
+            .fleets
+            .iter()
+            .any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 2)
+            || sim.owner[2] == 1
+        {
+            attacked_p2 = true;
+            break;
+        }
+    }
+    assert!(
+        attacked_p2,
+        "Governor must launch an attack on Planet #2 in Sector 1 once War is declared"
+    );
+    assert!(
+        !sim.fleets.iter().any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
+        "Sector 0 must still remain ignored"
+    );
+}
+
+#[test]
+fn scenario_agent_observation_compact_and_isolated() {
+    let mut cfg = SimConfig::default();
+    cfg.galaxy_size = GalaxySize::Huge; // 1,000 planets!
+    cfg.planets = 1000;
+    let mut sim = Simulation::new(cfg, classic_races());
+    sim.init(777123, true);
+
+    for _ in 0..25 {
+        sim.step_tick(true);
+    }
+
+    let obs = sim.take_agent_observation(0);
+    let json = sim.take_agent_observation_json(0);
+
+    // 1. Compactness: even on a 1,000-planet map, JSON payload must be compact (< 10 KB)
+    assert!(
+        json.len() < 10_000,
+        "Expected compact AgentObservation JSON (< 10 KB) on 1,000-planet map, got {} bytes",
+        json.len()
+    );
+    assert_eq!(obs.sectors.len(), 16);
+
+    // 2. Total planet accounting across all 16 sectors must equal 1,000
+    let total_sector_planets: u32 = obs
+        .sectors
+        .iter()
+        .map(|s| {
+            let foreign_sum: u32 = s.foreign_planets_by_emp.iter().map(|&(_, cnt)| cnt as u32).sum();
+            s.own_planets as u32
+                + foreign_sum
+                + s.neutral_explored_planets as u32
+                + s.unexplored_stars as u32
+        })
+        .sum();
+    assert_eq!(total_sector_planets, 1000);
+
+    // 3. Strict Fog-of-War isolation:
+    //    - Every planet in `known_foreign_planets` must be explored in Empire 0's PlanetIntel
+    for fp in &obs.key_points.known_foreign_planets {
+        let intel = sim.planet_intel(0, fp.planet_idx);
+        assert!(
+            intel.is_explored(),
+            "Unexplored planet #{} leaked into AgentObservation!",
+            fp.planet_idx
+        );
+        if !intel.is_pen_scanned() {
+            assert!(
+                fp.pop_est.is_none()
+                    && fp.fac_est.is_none()
+                    && fp.def_est.is_none()
+                    && fp.hab_est.is_none()
+                    && fp.crust_sum_est.is_none(),
+                "Non-pen-scanned planet #{} leaked surface stats into AgentObservation!",
+                fp.planet_idx
+            );
+        }
+    }
+
+    //    - Every wormhole in `discovered_wormholes` must be discovered by Empire 0
+    for wh in &obs.key_points.discovered_wormholes {
+        assert!(
+            sim.is_wormhole_discovered(0, wh.wormhole_id),
+            "Undiscovered wormhole #{} leaked into AgentObservation!",
+            wh.wormhole_id
+        );
+    }
+}
+
 
