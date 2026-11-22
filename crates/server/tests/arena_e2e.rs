@@ -260,6 +260,7 @@ async fn e2e_epoch_barrier_and_timeout() {
             "executionMode": "lockstepEpoch",
             "ticksPerEpoch": 10,
             "epochTimeoutMs": 450,
+            "lobbyTimeoutSec": 0,
             "agentSeats": [0, 1]
         }))
         .send()
@@ -661,6 +662,7 @@ async fn e2e_realtime_async_and_live_control() {
             "galaxySize": "small",
             "speedMult": 5.0,
             "ticksPerEpoch": 20,
+            "lobbyTimeoutSec": 0,
             "agentSeats": [0]
         }))
         .send()
@@ -1482,6 +1484,8 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
             "seed": 888002,
             "scenarioName": "Balanced Standard",
             "galaxySize": "small",
+            "openAgentSeats": [0, 1],
+            "lobbyTimeoutSec": 0,
             "startPaused": true
         }))
         .send()
@@ -1522,11 +1526,12 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
     assert_eq!(m1_entry["totalPlanets"].as_u64(), Some(120));
     let m1_seats = m1_entry["seats"].as_array().unwrap();
     assert_eq!(m1_seats.len(), 6);
-    // Seats reserved in agentSeats ([0, 2]) must show as `open_agent_seat` (NOT occupied!)
-    assert_eq!(m1_seats[0]["status"].as_str(), Some("open_agent_seat"));
-    assert_eq!(m1_seats[0]["reservedForAgent"].as_bool(), Some(true));
-    assert_eq!(m1_seats[1]["status"].as_str(), Some("free"));
-    assert_eq!(m1_seats[2]["status"].as_str(), Some("open_agent_seat"));
+    // Seats reserved in agentSeats ([0, 2]) must show as `open` (agent role), others as `bot`
+    assert_eq!(m1_seats[0]["joinState"].as_str(), Some("open"));
+    assert_eq!(m1_seats[0]["seatRole"].as_str(), Some("agent"));
+    assert_eq!(m1_seats[1]["joinState"].as_str(), Some("bot"));
+    assert_eq!(m1_seats[1]["seatRole"].as_str(), Some("bot"));
+    assert_eq!(m1_seats[2]["joinState"].as_str(), Some("open"));
 
     // 5. claude-1 joins m1 as empireIdx 0
     let join1: Value = client
@@ -1692,4 +1697,392 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
     assert!(!seats_text.contains(secret2), "Secret token leaked in /api/v1/mcp/seats!");
 
     state.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
+    let secret1 = "lobby_claude_secret_001";
+    let secret2 = "lobby_gemini_secret_002";
+    let logs_dir = std::env::temp_dir().join(format!("sistars_e2e_lobby1_{}", uuid::Uuid::new_v4()));
+    let state = AppState::new_with_mcp(
+        None,
+        logs_dir,
+        None,
+        Some(&format!("claude-1:{secret1},gemini-1:{secret2}")),
+    );
+    let router = build_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let ws_base_url = format!("ws://{addr}");
+    let mcp_url = format!("{base_url}/mcp");
+    let client = reqwest::Client::new();
+
+    // 1. Create match with 6 races, openAgentSeats: [0, 1], lobbyTimeoutSec: 60
+    let created: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 910001,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "speedMult": 5.0,
+            "openAgentSeats": [0, 1],
+            "lobbyTimeoutSec": 60
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    assert_eq!(created["status"].as_str(), Some("WaitingForAgents"));
+    assert_eq!(created["requiredAgentCount"].as_u64(), Some(2));
+    assert_eq!(created["joinedAgentCount"].as_u64(), Some(0));
+    assert!(created["lobbyDeadlineMs"].as_u64().is_some());
+
+    // Connect spectator WS to verify lobbyState events
+    let ws_url = format!("{ws_base_url}/ws/matches/{match_id}/spectate");
+    let (mut ws_stream, _) = connect_async(&ws_url).await.unwrap();
+    let _init = tokio::time::timeout(Duration::from_secs(2), ws_stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let initial_lobby_ws = tokio::time::timeout(Duration::from_secs(2), ws_stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let initial_lobby_json: Value = serde_json::from_str(initial_lobby_ws.to_text().unwrap()).unwrap();
+    assert_eq!(initial_lobby_json["type"].as_str(), Some("lobbyState"));
+    assert_eq!(initial_lobby_json["status"].as_str(), Some("WaitingForAgents"));
+
+    // Verify simulation stays frozen at tick 0 while waiting in lobby
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let status_before: Value = client
+        .get(format!("{base_url}/api/v1/matches/{match_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status_before["status"].as_str(), Some("WaitingForAgents"));
+    assert_eq!(status_before["tick"].as_u64(), Some(0));
+
+    // 2. Agent 1 (claude-1) joins empireIdx 0 -> joinedAgentCount == 1, still WaitingForAgents
+    let j1: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": match_id, "empireIdx": 0 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(j1["result"]["isError"].as_bool(), Some(false));
+    let j1_payload: Value = serde_json::from_str(j1["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(j1_payload["joinedAgentCount"].as_u64(), Some(1));
+    assert_eq!(j1_payload["matchStatus"].as_str(), Some("WaitingForAgents"));
+
+    // 3. Agent 1 tries to also join empireIdx 1 -> REJECTED (same player cannot hold 2 seats)
+    let j1_dup: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": match_id, "empireIdx": 1 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(j1_dup["result"]["isError"].as_bool(), Some(true));
+
+    // 4. Agent 2 (gemini-1) tries to join empireIdx 2 (bot-only seat) -> REJECTED
+    let j2_bot: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret2}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": match_id, "empireIdx": 2 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(j2_bot["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        j2_bot["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("bot-only"),
+        "Expected clear bot-only seat message, got: {j2_bot}"
+    );
+
+    // 5. Agent 2 joins empireIdx 1 -> IMMEDIATE AUTO-START (startReason: "allAgentsJoined")
+    let j2_ok: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret2}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": match_id, "empireIdx": 1 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(j2_ok["result"]["isError"].as_bool(), Some(false));
+    let j2_payload: Value = serde_json::from_str(j2_ok["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(j2_payload["matchStatus"].as_str(), Some("Running"));
+    assert_eq!(j2_payload["startReason"].as_str(), Some("allAgentsJoined"));
+
+    // Verify WebSocket receives lobbyState with status Running & startReason allAgentsJoined
+    let mut saw_running_lobby_ws = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_millis(300), ws_stream.next()).await {
+            if let Ok(txt) = msg.to_text() {
+                if let Ok(v) = serde_json::from_str::<Value>(txt) {
+                    if v["type"].as_str() == Some("lobbyState")
+                        && v["status"].as_str() == Some("Running")
+                        && v["startReason"].as_str() == Some("allAgentsJoined")
+                    {
+                        saw_running_lobby_ws = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_running_lobby_ws, "Spectator WS must receive lobbyState transition to Running");
+
+    // Verify ticks actually advance now!
+    tokio::time::sleep(Duration::from_millis(180)).await;
+    let status_after: Value = client
+        .get(format!("{base_url}/api/v1/matches/{match_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status_after["status"].as_str(), Some("Running"));
+    assert!(
+        status_after["tick"].as_u64().unwrap_or(0) > 0,
+        "Ticks must advance after allAgentsJoined autostart, got {status_after}"
+    );
+
+    state.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn e2e_lobby_timeout_autostart_and_late_join() {
+    let secret1 = "late_claude_secret_001";
+    let secret2 = "late_gemini_secret_002";
+    let logs_dir = std::env::temp_dir().join(format!("sistars_e2e_lobby2_{}", uuid::Uuid::new_v4()));
+    let state = AppState::new_with_mcp(
+        None,
+        logs_dir,
+        None,
+        Some(&format!("claude-1:{secret1},gemini-1:{secret2}")),
+    );
+    let router = build_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let mcp_url = format!("{base_url}/mcp");
+    let client = reqwest::Client::new();
+
+    // 1. Create match with openAgentSeats: [0, 1], short lobbyTimeoutSec: 2
+    let created: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 910002,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "speedMult": 10.0,
+            "openAgentSeats": [0, 1],
+            "lobbyTimeoutSec": 2
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    assert_eq!(created["status"].as_str(), Some("WaitingForAgents"));
+
+    // Only Agent 1 joins during lobby; seat 1 remains unfilled
+    let j1: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret1}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": match_id, "empireIdx": 0 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(j1["result"]["isError"].as_bool(), Some(false));
+
+    // 2. Wait ~2.3s for lobbyTimeout autostart + several simulation ticks
+    tokio::time::sleep(Duration::from_millis(2400)).await;
+    let mid_status: Value = client
+        .get(format!("{base_url}/api/v1/matches/{match_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mid_status["status"].as_str(), Some("Running"));
+    assert_eq!(mid_status["startReason"].as_str(), Some("lobbyTimeout"));
+    assert!(
+        mid_status["tick"].as_u64().unwrap_or(0) >= 5,
+        "Simulation must advance smoothly after lobbyTimeout, got {mid_status}"
+    );
+
+    // 3. Agent 2 performs late-join on open seat 1 while Running
+    let j2: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret2}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "join_match", "arguments": { "matchId": match_id, "empireIdx": 1 } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(j2["result"]["isError"].as_bool(), Some(false));
+
+    // Agent 2 calls get_observation -> sees advanced tick > 0
+    let obs2: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret2}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let obs2_json: Value = serde_json::from_str(obs2["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        obs2_json["tick"].as_u64().unwrap_or(0) > 0,
+        "Late-join agent must observe advanced tick > 0"
+    );
+
+    // Agent 2 submits orders -> accepted & applied
+    let sub2: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret2}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "submit_orders",
+                "arguments": {
+                    "strategyMemory": {
+                        "phase": "Late-Join Takeover",
+                        "priorities": ["Scout sector 0"],
+                        "rationale": "Taking over from Governor autopilot",
+                        "diplomacyNotes": "None",
+                        "pivotTriggers": []
+                    },
+                    "commands": [{ "scoutSector": { "sectorId": 0 } }]
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sub2["result"]["isError"].as_bool(), Some(false));
+    let sub2_json: Value = serde_json::from_str(sub2["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(sub2_json["accepted"].as_bool(), Some(true));
+
+    state.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn e2e_zero_agent_seats_starts_immediately() {
+    let srv = spawn_test_server().await;
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 910003,
+            "galaxySize": "small",
+            "openAgentSeats": [],
+            "lobbyTimeoutSec": 60,
+            "speedMult": 5.0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    assert_eq!(created["status"].as_str(), Some("Running"));
+    assert_eq!(created["requiredAgentCount"].as_u64(), Some(0));
+    assert!(created["lobbyRemainingSec"].is_null());
+
+    tokio::time::sleep(Duration::from_millis(160)).await;
+    let status: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["status"].as_str(), Some("Running"));
+    assert!(status["tick"].as_u64().unwrap_or(0) > 0);
 }

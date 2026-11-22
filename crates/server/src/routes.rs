@@ -155,6 +155,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/matches", get(list_matches).post(create_match))
         .route("/api/v1/matches/{id}", get(get_match).delete(delete_match))
         .route("/api/v1/matches/{id}/control", post(control_match))
+        .route("/api/v1/matches/{id}/start", post(start_match))
         .route("/api/v1/matches/{id}/observation", get(get_observation))
         .route("/api/v1/matches/{id}/commands", post(submit_commands))
         .route("/api/v1/matches/{id}/system/{planet_idx}", get(get_star_system))
@@ -201,7 +202,7 @@ async fn resolve_agent_seat(
     state: &AppState,
     headers: &HeaderMap,
     match_id: &str,
-) -> Result<usize, (StatusCode, Json<ApiErrorBody>)> {
+) -> Result<(usize, String), (StatusCode, Json<ApiErrorBody>)> {
     let token = extract_bearer_token(headers).ok_or_else(|| {
         api_error(
             StatusCode::UNAUTHORIZED,
@@ -227,7 +228,8 @@ async fn resolve_agent_seat(
         ));
     }
 
-    Ok(*empire_idx)
+    let prefix: String = token.chars().take(12).collect();
+    Ok((*empire_idx, format!("rest:{prefix}")))
 }
 
 async fn get_openapi() -> Json<Value> {
@@ -262,7 +264,7 @@ async fn create_match(
     let req = payload.map(|Json(r)| r).unwrap_or_default();
     let match_id = Uuid::new_v4().simple().to_string()[..12].to_string();
     let auto_bind = req.auto_bind_seats.unwrap_or(false);
-    let (handle, empire_tokens, mut agent_seats) =
+    let (handle, empire_tokens, mut open_agent_seats) =
         MatchHandle::spawn(match_id.clone(), req, state.logs_dir.clone());
 
     if auto_bind {
@@ -280,28 +282,35 @@ async fn create_match(
             if bindings.contains_key(&seat_name) {
                 continue;
             }
-            if let Some(free_idx) = (0..num_emp).find(|idx| !guard.agent_seats.contains(idx)) {
-                guard.agent_seats.push(free_idx);
-                guard.agent_seats.sort_unstable();
-                agent_seats = guard.agent_seats.clone();
+            let target_idx = guard
+                .open_agent_seats
+                .iter()
+                .copied()
+                .find(|idx| !guard.joined_players.contains_key(idx))
+                .or_else(|| {
+                    if guard.open_agent_seats.is_empty() {
+                        (0..num_emp).find(|idx| !guard.joined_players.contains_key(idx))
+                    } else {
+                        None
+                    }
+                });
+            if let Some(free_idx) = target_idx {
+                if !guard.open_agent_seats.contains(&free_idx) {
+                    guard.open_agent_seats.push(free_idx);
+                    guard.open_agent_seats.sort_unstable();
+                }
+                let _ = guard.register_player_join(free_idx, format!("mcp:{seat_name}"));
+                open_agent_seats = guard.open_agent_seats.clone();
                 bindings.insert(seat_name.clone(), (match_id.clone(), free_idx));
                 history.insert((seat_name, match_id.clone()), free_idx);
             }
         }
+        handle.control_notify.notify_waiters();
     }
 
-    let (status, execution_mode, paused, speed_mult, epoch, ticks_per_epoch, epoch_timeout_ms, debug_audit) = {
+    let summary_snap = {
         let guard = handle.inner.read().await;
-        (
-            guard.status,
-            guard.execution_mode,
-            guard.paused,
-            guard.speed_mult,
-            guard.epoch,
-            guard.ticks_per_epoch,
-            guard.epoch_timeout_ms,
-            guard.debug_audit,
-        )
+        guard.public_summary()
     };
 
     {
@@ -329,15 +338,22 @@ async fn create_match(
             spectator_ws_url,
             empire_tokens,
             mcp_urls,
-            status,
-            execution_mode,
-            paused,
-            speed_mult,
-            epoch,
-            ticks_per_epoch,
-            epoch_timeout_ms,
-            agent_seats,
-            debug_audit,
+            status: summary_snap.status,
+            execution_mode: summary_snap.execution_mode,
+            paused: summary_snap.paused,
+            speed_mult: summary_snap.speed_mult,
+            epoch: summary_snap.epoch,
+            ticks_per_epoch: summary_snap.ticks_per_epoch,
+            epoch_timeout_ms: summary_snap.epoch_timeout_ms,
+            agent_seats: open_agent_seats.clone(),
+            open_agent_seats,
+            lobby_timeout_sec: summary_snap.lobby_timeout_sec,
+            lobby_remaining_sec: summary_snap.lobby_remaining_sec,
+            lobby_deadline_ms: summary_snap.lobby_deadline_ms,
+            required_agent_count: summary_snap.required_agent_count,
+            joined_agent_count: summary_snap.joined_agent_count,
+            start_reason: summary_snap.start_reason,
+            debug_audit: summary_snap.debug_audit,
         }),
     ))
 }
@@ -434,7 +450,9 @@ async fn control_match(
         }
         if let Some(mode) = req.execution_mode {
             guard.execution_mode = mode;
-            if mode == ExecutionMode::RealtimeAsync && guard.status == MatchStatus::WaitingForAgents
+            if mode == ExecutionMode::RealtimeAsync
+                && !guard.lobby_active
+                && guard.status == MatchStatus::WaitingForAgents
             {
                 guard.status = MatchStatus::Running;
                 guard.epoch_deadline_ms = None;
@@ -449,7 +467,15 @@ async fn control_match(
         if let Some(steps) = req.step_ticks {
             guard.pending_step_ticks = guard.pending_step_ticks.saturating_add(steps.min(100));
         }
+        let lobby_started = if req.force_start == Some(true) {
+            guard.transition_lobby_to_running("manualStart")
+        } else {
+            false
+        };
         let summary = guard.public_summary();
+        if lobby_started {
+            let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
+        }
         let _ = handle.ws_tx.send(SpectatorWsMessage::Control {
             paused: guard.paused,
             speed_mult: guard.speed_mult,
@@ -466,40 +492,84 @@ async fn control_match(
     Ok(Json(summary))
 }
 
+async fn start_match(
+    state: State<Arc<AppState>>,
+    path: Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<MatchPublicSummary>, (StatusCode, Json<ApiErrorBody>)> {
+    control_match(
+        state,
+        path,
+        headers,
+        Json(MatchControlRequest {
+            force_start: Some(true),
+            paused: Some(false),
+            ..Default::default()
+        }),
+    )
+    .await
+}
+
 async fn get_observation(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<ObservationEnvelope>, (StatusCode, Json<ApiErrorBody>)> {
-    let empire_idx = resolve_agent_seat(&state, &headers, &id).await?;
+    let (empire_idx, player_id) = resolve_agent_seat(&state, &headers, &id).await?;
     let handle = {
         let matches = state.matches.read().await;
         matches.get(&id).cloned()
     }
     .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match_not_found", "Match not found"))?;
 
-    let guard = handle.inner.read().await;
-    let observation = guard.sim.take_agent_observation(empire_idx);
-    let already_submitted = guard.execution_mode == ExecutionMode::LockstepEpoch
-        && guard.pending_submissions.contains_key(&empire_idx);
-    let previous_strategy = guard.latest_strategy.get(&empire_idx).cloned();
-    let delta = guard.compute_epoch_delta(empire_idx, &observation);
-    Ok(Json(ObservationEnvelope {
-        match_id: guard.match_id.clone(),
-        epoch: guard.epoch,
-        tick: guard.sim.ticks,
-        year: sistars_engine::types::round1(guard.sim.year),
-        status: guard.status,
-        execution_mode: guard.execution_mode,
-        paused: guard.paused,
-        speed_mult: guard.speed_mult,
-        epoch_timeout_ms: guard.epoch_timeout_ms,
-        deadline_ms: guard.epoch_deadline_ms,
-        already_submitted,
-        previous_strategy,
-        delta,
-        observation,
-    }))
+    let (envelope, should_notify) = {
+        let mut guard = handle.inner.write().await;
+        let mut notify = false;
+        if guard.open_agent_seats.contains(&empire_idx)
+            && !guard.joined_players.contains_key(&empire_idx)
+        {
+            if let Ok(autostarted) = guard.register_player_join(empire_idx, player_id) {
+                let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
+                let summary = guard.public_summary();
+                let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
+                if autostarted {
+                    notify = true;
+                }
+            }
+        }
+        let observation = guard.sim.take_agent_observation(empire_idx);
+        let already_submitted = guard.execution_mode == ExecutionMode::LockstepEpoch
+            && !guard.lobby_active
+            && guard.pending_submissions.contains_key(&empire_idx);
+        let previous_strategy = guard.latest_strategy.get(&empire_idx).cloned();
+        let delta = guard.compute_epoch_delta(empire_idx, &observation);
+        let env = ObservationEnvelope {
+            match_id: guard.match_id.clone(),
+            epoch: guard.epoch,
+            tick: guard.sim.ticks,
+            year: sistars_engine::types::round1(guard.sim.year),
+            status: guard.status,
+            execution_mode: guard.execution_mode,
+            paused: guard.paused,
+            speed_mult: guard.speed_mult,
+            epoch_timeout_ms: guard.epoch_timeout_ms,
+            deadline_ms: guard.epoch_deadline_ms,
+            lobby_remaining_sec: guard.lobby_remaining_sec(),
+            lobby_deadline_ms: guard.lobby_deadline_ms,
+            required_agent_count: guard.open_agent_seats.len(),
+            joined_agent_count: guard.distinct_joined_count(),
+            already_submitted,
+            previous_strategy,
+            delta,
+            observation,
+        };
+        (env, notify)
+    };
+    if should_notify {
+        handle.control_notify.notify_waiters();
+        handle.barrier_notify.notify_waiters();
+    }
+    Ok(Json(envelope))
 }
 
 async fn submit_commands(
@@ -508,7 +578,7 @@ async fn submit_commands(
     headers: HeaderMap,
     Json(req): Json<SubmitCommandsRequest>,
 ) -> Result<Json<SubmitCommandsResponse>, (StatusCode, Json<ApiErrorBody>)> {
-    let empire_idx = resolve_agent_seat(&state, &headers, &id).await?;
+    let (empire_idx, player_id) = resolve_agent_seat(&state, &headers, &id).await?;
     let handle = {
         let matches = state.matches.read().await;
         matches.get(&id).cloned()
@@ -523,6 +593,17 @@ async fn submit_commands(
                 "match_finished",
                 "Match has already finished",
             ));
+        }
+        let mut lobby_autostarted = false;
+        if guard.open_agent_seats.contains(&empire_idx)
+            && !guard.joined_players.contains_key(&empire_idx)
+        {
+            if let Ok(autostarted) = guard.register_player_join(empire_idx, player_id) {
+                let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
+                let summary = guard.public_summary();
+                let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
+                lobby_autostarted = autostarted;
+            }
         }
         if guard.execution_mode == ExecutionMode::LockstepEpoch {
             if let Some(req_epoch) = req.epoch {
@@ -555,7 +636,8 @@ async fn submit_commands(
             feedback = fb_map.remove(&empire_idx).unwrap_or_default();
         }
         let waiting = guard.waiting_for_seats();
-        let all_done = guard.status == MatchStatus::WaitingForAgents && waiting.is_empty();
+        let all_done = lobby_autostarted
+            || (guard.status == MatchStatus::WaitingForAgents && waiting.is_empty());
         for ev in feed_events {
             let _ = handle.ws_tx.send(SpectatorWsMessage::Feed { event: ev });
         }
@@ -563,6 +645,7 @@ async fn submit_commands(
     };
 
     if should_notify {
+        handle.control_notify.notify_waiters();
         handle.barrier_notify.notify_waiters();
     }
 
@@ -758,13 +841,26 @@ async fn handle_spectator_socket(socket: WebSocket, handle: Arc<MatchHandle>) {
     // Subscribe BEFORE building Init snapshot so zero frames/events are missed during handshake
     let mut rx = handle.ws_tx.subscribe();
 
-    let init_msg = {
+    let (init_msg, lobby_msg_opt) = {
         let mut guard = handle.inner.write().await;
-        guard.build_init_ws_message()
+        let init = guard.build_init_ws_message();
+        let lobby = if guard.lobby_active {
+            Some(guard.build_lobby_ws_message())
+        } else {
+            None
+        };
+        (init, lobby)
     };
     if let Ok(json_str) = serde_json::to_string(&init_msg) {
         if sender.send(Message::Text(json_str.into())).await.is_err() {
             return;
+        }
+    }
+    if let Some(lobby_msg) = lobby_msg_opt {
+        if let Ok(json_str) = serde_json::to_string(&lobby_msg) {
+            if sender.send(Message::Text(json_str.into())).await.is_err() {
+                return;
+            }
         }
     }
 

@@ -62,8 +62,14 @@ pub struct CreateMatchRequest {
     pub ticks_per_epoch: Option<u32>,
     /// Maximum time (ms) to wait at the macro-epoch barrier before defaulting missing seats to the built-in Governor (default: 20000).
     pub epoch_timeout_ms: Option<u64>,
-    /// Empire indices (`0..num_empires`) controlled by external AI agents.
-    pub agent_seats: Option<Vec<usize>>,
+    /// Empire indices (`0..num_empires`) open for external AI agents (alias: `agentSeats`).
+    /// Remaining empires are permanently marked as Bot / Governor seats.
+    #[serde(alias = "agentSeats")]
+    pub open_agent_seats: Option<Vec<usize>>,
+    /// Shorthand: if `openAgentSeats` is omitted, opens the first `0..openAgentCount` seats for agents.
+    pub open_agent_count: Option<usize>,
+    /// Lobby auto-start timeout in seconds (default: 60). Set `0` for immediate start without lobby.
+    pub lobby_timeout_sec: Option<u64>,
     /// Enable LiveAuditor invariant checking & anomaly logging to `logs/match_{id}_anomalies.jsonl`.
     pub debug_audit: Option<bool>,
     /// Broadcast a WebSocket render frame every N ticks during an epoch (default: 2).
@@ -97,6 +103,13 @@ pub struct CreateMatchResponse {
     pub ticks_per_epoch: u32,
     pub epoch_timeout_ms: u64,
     pub agent_seats: Vec<usize>,
+    pub open_agent_seats: Vec<usize>,
+    pub lobby_timeout_sec: u64,
+    pub lobby_remaining_sec: Option<u64>,
+    pub lobby_deadline_ms: Option<u64>,
+    pub required_agent_count: usize,
+    pub joined_agent_count: usize,
+    pub start_reason: Option<String>,
     pub debug_audit: bool,
 }
 
@@ -111,6 +124,12 @@ pub struct MatchSeatInfo {
     pub alive: bool,
     pub occupied: bool,
     pub controlled_by: String,
+    /// `"agent"` if in `openAgentSeats`, `"bot"` otherwise.
+    pub seat_role: String,
+    /// `"bot"` | `"open"` | `"occupied"` | `"yours"`
+    pub join_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub joined_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +164,13 @@ pub struct MatchPublicSummary {
     pub victory_goal: VictoryGoalView,
     pub seats: Vec<MatchSeatInfo>,
     pub agent_seats: Vec<usize>,
+    pub open_agent_seats: Vec<usize>,
+    pub lobby_timeout_sec: u64,
+    pub lobby_remaining_sec: Option<u64>,
+    pub lobby_deadline_ms: Option<u64>,
+    pub required_agent_count: usize,
+    pub joined_agent_count: usize,
+    pub start_reason: Option<String>,
     pub submitted_seats: Vec<usize>,
     pub waiting_for_seats: Vec<usize>,
     pub ticks_per_epoch: u32,
@@ -163,6 +189,7 @@ pub struct MatchControlRequest {
     pub tick_delay_ms: Option<u64>,
     pub frame_stride_ticks: Option<u32>,
     pub step_ticks: Option<u32>,
+    pub force_start: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +205,10 @@ pub struct ObservationEnvelope {
     pub speed_mult: f32,
     pub epoch_timeout_ms: u64,
     pub deadline_ms: Option<u64>,
+    pub lobby_remaining_sec: Option<u64>,
+    pub lobby_deadline_ms: Option<u64>,
+    pub required_agent_count: usize,
+    pub joined_agent_count: usize,
     pub already_submitted: bool,
     pub previous_strategy: Option<StrategyMemory>,
     pub delta: Option<EpochDelta>,
@@ -283,6 +314,18 @@ pub enum SpectatorWsMessage {
         paused: bool,
         speed_mult: f32,
         execution_mode: ExecutionMode,
+    },
+    #[serde(rename_all = "camelCase")]
+    LobbyState {
+        status: MatchStatus,
+        lobby_timeout_sec: u64,
+        lobby_remaining_sec: Option<u64>,
+        lobby_deadline_ms: Option<u64>,
+        required_agent_count: usize,
+        joined_agent_count: usize,
+        open_agent_seats: Vec<usize>,
+        start_reason: Option<String>,
+        seats: Vec<MatchSeatInfo>,
     },
 }
 

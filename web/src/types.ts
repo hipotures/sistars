@@ -486,6 +486,20 @@ export interface McpSeatPublicInfo {
   empireName: string | null;
 }
 
+export interface ArenaMatchSeatInfo {
+  empireIdx: number;
+  empireId: number;
+  name: string;
+  prt: string;
+  prtSummary: string;
+  alive: boolean;
+  occupied: boolean;
+  controlledBy: string;
+  seatRole?: 'agent' | 'bot';
+  joinState?: 'bot' | 'open' | 'occupied' | 'yours';
+  joinedBy?: string | null;
+}
+
 export interface ArenaMatchSummary {
   matchId: string;
   scenarioName?: string;
@@ -503,7 +517,15 @@ export interface ArenaMatchSummary {
   winner: number | null;
   planetCount: number;
   empireCount: number;
+  seats?: ArenaMatchSeatInfo[];
   agentSeats: number[];
+  openAgentSeats?: number[];
+  lobbyTimeoutSec?: number;
+  lobbyRemainingSec?: number | null;
+  lobbyDeadlineMs?: number | null;
+  requiredAgentCount?: number;
+  joinedAgentCount?: number;
+  startReason?: string | null;
   submittedSeats: number[];
   waitingForSeats: number[];
   ticksPerEpoch: number;
@@ -525,6 +547,9 @@ export interface CreateArenaMatchOptions {
   ticksPerEpoch: number;
   epochTimeoutMs: number;
   agentSeats: number[];
+  openAgentSeats?: number[];
+  openAgentCount?: number;
+  lobbyTimeoutSec?: number;
   debugAudit: boolean;
   frameStrideTicks?: number;
   tickDelayMs?: number;
@@ -544,6 +569,13 @@ export interface CreateArenaMatchResponse {
   ticksPerEpoch: number;
   epochTimeoutMs: number;
   agentSeats: number[];
+  openAgentSeats?: number[];
+  lobbyTimeoutSec?: number;
+  lobbyRemainingSec?: number | null;
+  lobbyDeadlineMs?: number | null;
+  requiredAgentCount?: number;
+  joinedAgentCount?: number;
+  startReason?: string | null;
   debugAudit: boolean;
 }
 

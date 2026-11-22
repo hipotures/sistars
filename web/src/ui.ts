@@ -92,6 +92,7 @@ export interface UiCallbacks {
   onArenaDeleteMatch?: (serverUrl: string, matchId: string) => void;
   onArenaToggleExecMode?: () => void;
   onArenaBindMcpSeat?: (serverUrl: string, seatName: string, matchId: string | null, empireIdx?: number) => void;
+  onArenaForceStart?: (serverUrl: string, matchId: string) => void;
   onArenaCreateMatch?: (
     serverUrl: string,
     opts: CreateArenaMatchOptions,
@@ -3044,6 +3045,10 @@ export class UiController {
   }
 
   private arenaFeedCount = 0;
+  private prevArenaMatchId: string | null = null;
+  private prevMatchStatus: import('./types').ArenaMatchStatus | null = null;
+  private activeLobbySummary: ArenaMatchSummary | null = null;
+  private lobbyTimerId: number | null = null;
 
   private bindArenaEvents(): void {
     const btnLocal = document.getElementById('btnModeLocal');
@@ -3163,6 +3168,33 @@ export class UiController {
       }
     });
 
+    const agentCountSel = document.getElementById('arenaNewAgentCount') as HTMLSelectElement | null;
+    const seatCheckboxes = Array.from(
+      document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
+    );
+    agentCountSel?.addEventListener('change', () => {
+      const cnt = Math.max(0, Math.min(seatCheckboxes.length, Number(agentCountSel.value) || 0));
+      seatCheckboxes.forEach((cb, idx) => {
+        cb.checked = idx < cnt;
+      });
+    });
+    seatCheckboxes.forEach((cb) => {
+      cb.addEventListener('change', () => {
+        if (!agentCountSel) return;
+        const checkedCount = seatCheckboxes.filter((c) => c.checked).length;
+        agentCountSel.value = String(checkedCount);
+      });
+    });
+
+    const btnForceStart = document.getElementById('btnArenaForceStart') as HTMLButtonElement | null;
+    btnForceStart?.addEventListener('click', () => {
+      const srv = serverInput?.value ?? 'http://localhost:8080';
+      const mid = this.activeLobbySummary?.matchId ?? matchSelect?.value ?? '';
+      if (mid) {
+        this.callbacks.onArenaForceStart?.(srv, mid);
+      }
+    });
+
     const btnLaunch = document.getElementById('btnArenaLaunchMatch') as HTMLButtonElement | null;
     btnLaunch?.addEventListener('click', async () => {
       btnLaunch.blur();
@@ -3176,7 +3208,13 @@ export class UiController {
       const seed = seedRaw !== '' ? Number(seedRaw) : undefined;
       const ticksPerEpoch = Number(ticksSlider?.value ?? 20);
       const epochTimeoutMs = Number(timeoutSlider?.value ?? 20) * 1000;
-      const speedSel = Number((document.getElementById('arenaNewSpeed') as HTMLSelectElement | null)?.value ?? 0);
+      const speedSel = Number((document.getElementById('arenaNewSpeed') as HTMLSelectElement | null)?.value ?? 1);
+      const lobbyTimeoutRaw = Number(
+        (document.getElementById('arenaNewLobbyTimeout') as HTMLInputElement | null)?.value ?? 60,
+      );
+      const lobbyTimeoutSec = Number.isFinite(lobbyTimeoutRaw)
+        ? Math.max(0, Math.min(600, Math.floor(lobbyTimeoutRaw)))
+        : 60;
       const debugAudit = (document.getElementById('arenaNewDebugAudit') as HTMLInputElement | null)?.checked ?? true;
 
       const simConfig: SimConfig = {
@@ -3241,6 +3279,8 @@ export class UiController {
             ticksPerEpoch,
             epochTimeoutMs,
             agentSeats,
+            openAgentSeats: agentSeats,
+            lobbyTimeoutSec,
             debugAudit,
             startPaused,
           },
@@ -3249,7 +3289,9 @@ export class UiController {
         if (res) {
           this.showArenaCreatedMatch(srv, res);
           if (statusEl) {
-            if (startPaused) {
+            if (res.status === 'WaitingForAgents' && res.lobbyTimeoutSec && res.lobbyTimeoutSec > 0) {
+              statusEl.textContent = `✓ Match ${res.matchId} in Lobby (${res.joinedAgentCount ?? 0}/${res.requiredAgentCount ?? res.agentSeats.length} joined, auto-start in ${res.lobbyRemainingSec ?? res.lobbyTimeoutSec}s).`;
+            } else if (startPaused) {
               statusEl.textContent =
                 res.agentSeats.length > 0
                   ? `✓ Match ${res.matchId} created (⏸ Paused at 2400.0). Connect agents below, then press 1x / Space.`
@@ -3534,24 +3576,47 @@ export class UiController {
     }
   }
 
-  public updateArenaStatus(summary: ArenaMatchSummary): void {
+  private stopLobbyCountdownTimer(): void {
+    if (this.lobbyTimerId !== null) {
+      window.clearInterval(this.lobbyTimerId);
+      this.lobbyTimerId = null;
+    }
+  }
+
+  private computeLobbyRemainingSec(summary: ArenaMatchSummary): number | null {
+    if (summary.status !== 'WaitingForAgents') return null;
+    if (summary.lobbyDeadlineMs != null) {
+      return Math.max(0, Math.ceil((summary.lobbyDeadlineMs - Date.now()) / 1000));
+    }
+    return summary.lobbyRemainingSec ?? null;
+  }
+
+  private renderLobbyHudAndDrawer(summary: ArenaMatchSummary): void {
+    const remSec = this.computeLobbyRemainingSec(summary);
+    const isLobby = summary.status === 'WaitingForAgents' && remSec !== null;
     const badge = document.getElementById('arenaConnBadge');
     const info = document.getElementById('arenaEpochInfo');
     const waitPill = document.getElementById('arenaWaitPill');
+    const lobbyBox = document.getElementById('arenaLobbyBox');
+    const lobbyCountdown = document.getElementById('arenaLobbyCountdown');
+    const lobbySeatsList = document.getElementById('arenaLobbySeatsList');
+
+    const reqCnt = summary.requiredAgentCount ?? (summary.openAgentSeats ?? summary.agentSeats).length;
+    const joinedCnt = summary.joinedAgentCount ?? 0;
 
     if (badge) {
       badge.className = 'arena-badge';
       if (summary.status === 'Finished') {
         badge.textContent = 'FINISHED';
         badge.classList.add('finished');
+      } else if (isLobby) {
+        badge.textContent = `LOBBY ${remSec}s`;
+        badge.classList.add('waiting');
       } else if (summary.paused) {
         badge.textContent = 'PAUSED';
         badge.classList.add('waiting');
       } else if (summary.status === 'WaitingForAgents') {
         badge.textContent = 'BARRIER';
-        badge.classList.add('waiting');
-      } else if (summary.paused) {
-        badge.textContent = 'PAUSED';
         badge.classList.add('waiting');
       } else {
         badge.textContent = 'LIVE';
@@ -3559,18 +3624,12 @@ export class UiController {
       }
     }
 
-    const execToggle = document.getElementById('btnArenaExecToggle');
-    const modeLabel = summary.executionMode === 'lockstepEpoch' ? '🔒 Lockstep' : '⚡ Realtime';
     const spd = summary.speedMult ?? 1.0;
     const spdLabel = summary.paused ? '⏸ Paused' : `${spd}x`;
-    if (execToggle) {
-      execToggle.textContent = modeLabel;
-      execToggle.classList.toggle('active', summary.executionMode !== 'lockstepEpoch');
-    }
-
     if (info) {
-      const waitTxt =
-        summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0
+      const waitTxt = isLobby
+        ? `Lobby ${joinedCnt}/${reqCnt} joined • Auto-start in ${remSec}s`
+        : summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0
           ? `Waiting seats [${summary.waitingForSeats.join(', ')}]`
           : summary.status === 'Finished'
             ? `Winner: Empire #${(summary.winner ?? 0) + 1}`
@@ -3579,12 +3638,83 @@ export class UiController {
     }
 
     if (waitPill) {
-      if (summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0) {
+      if (isLobby) {
+        waitPill.style.display = 'inline-block';
+        waitPill.textContent = `LOBBY ${joinedCnt}/${reqCnt} (${remSec}s)`;
+      } else if (summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0) {
         waitPill.style.display = 'inline-block';
         waitPill.textContent = `WAIT [${summary.waitingForSeats.join(',')}]`;
       } else {
         waitPill.style.display = 'none';
       }
+    }
+
+    if (lobbyBox) {
+      if (isLobby) {
+        lobbyBox.style.display = 'flex';
+        if (lobbyCountdown) {
+          lobbyCountdown.textContent = `WAITING FOR AGENTS · ${joinedCnt}/${reqCnt} JOINED · AUTO-START IN ${remSec}s`;
+        }
+        if (lobbySeatsList && summary.seats) {
+          lobbySeatsList.innerHTML = summary.seats
+            .map((s) => {
+              if (s.seatRole === 'bot' || s.joinState === 'bot') {
+                return `<span class="arena-lobby-seat-pill bot">${s.name}: BOT</span>`;
+              }
+              if (s.joinState === 'occupied' || s.occupied) {
+                const who = s.joinedBy ? ` (${s.joinedBy})` : '';
+                return `<span class="arena-lobby-seat-pill joined">${s.name}: JOINED${who}</span>`;
+              }
+              return `<span class="arena-lobby-seat-pill open">${s.name}: OPEN</span>`;
+            })
+            .join('');
+        }
+      } else {
+        lobbyBox.style.display = 'none';
+      }
+    }
+  }
+
+  public updateArenaStatus(summary: ArenaMatchSummary): void {
+    const transitionedLobbyToRunning =
+      this.prevArenaMatchId === summary.matchId &&
+      this.prevMatchStatus === 'WaitingForAgents' &&
+      summary.status === 'Running';
+
+    this.prevArenaMatchId = summary.matchId;
+    this.prevMatchStatus = summary.status;
+    this.activeLobbySummary = summary;
+
+    const execToggle = document.getElementById('btnArenaExecToggle');
+    const modeLabel = summary.executionMode === 'lockstepEpoch' ? '🔒 Lockstep' : '⚡ Realtime';
+    if (execToggle) {
+      execToggle.textContent = modeLabel;
+      execToggle.classList.toggle('active', summary.executionMode !== 'lockstepEpoch');
+    }
+
+    this.renderLobbyHudAndDrawer(summary);
+
+    const isLobby =
+      summary.status === 'WaitingForAgents' &&
+      (summary.lobbyDeadlineMs != null || summary.lobbyRemainingSec != null);
+
+    if (isLobby) {
+      if (this.lobbyTimerId === null) {
+        this.lobbyTimerId = window.setInterval(() => {
+          if (this.activeLobbySummary && this.activeLobbySummary.status === 'WaitingForAgents') {
+            this.renderLobbyHudAndDrawer(this.activeLobbySummary);
+          } else {
+            this.stopLobbyCountdownTimer();
+          }
+        }, 1000);
+      }
+    } else {
+      this.stopLobbyCountdownTimer();
+    }
+
+    // Auto-close side drawer as soon as match transitions from WaitingForAgents -> Running
+    if (transitionedLobbyToRunning) {
+      this.closeAllDrawers();
     }
   }
 

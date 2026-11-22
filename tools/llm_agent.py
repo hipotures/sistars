@@ -718,6 +718,7 @@ def main() -> int:
     warned_manual_mode = False
     system_prompt: str | None = None
     printed_system_once = False
+    logged_lobby_wait = False
     thread_messages: list[dict[str, str]] = []
     thread_turns = 0
 
@@ -762,6 +763,21 @@ def main() -> int:
                 flush=True,
             )
             return 0
+
+        # Pre-start Lobby wait: match is WaitingForAgents with lobbyRemainingSec set -> poll every 1s without submitting commands
+        lobby_rem = env.get("lobbyRemainingSec")
+        if match_status == "WaitingForAgents" and lobby_rem is not None:
+            if not logged_lobby_wait:
+                joined_cnt = env.get("joinedAgentCount", 0)
+                req_cnt = env.get("requiredAgentCount", 0)
+                print(
+                    f"[llm_agent] Joined lobby ({joined_cnt}/{req_cnt}) — waiting for remaining agents or {lobby_rem}s auto-start...",
+                    flush=True,
+                )
+                logged_lobby_wait = True
+            time.sleep(1.0)
+            continue
+        logged_lobby_wait = False
 
         if args.manual and not warned_manual_mode:
             warned_manual_mode = True

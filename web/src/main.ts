@@ -17,6 +17,7 @@ import {
   deleteArenaMatch,
   fetchArenaMatches,
   fetchMcpSeats,
+  forceStartArenaMatch,
   LocalWasmTransport,
   normalizeServerUrl,
   RemoteArenaTransport,
@@ -842,6 +843,14 @@ async function bootstrap(): Promise<void> {
       void bindMcpSeat(arenaServerUrl, seatName, matchId, empireIdx).then(async (ok) => {
         if (ok) {
           await refreshArenaMatches(arenaServerUrl, activeArenaMatchId ?? undefined);
+        }
+      });
+    },
+    onArenaForceStart: (serverUrl, matchId) => {
+      arenaServerUrl = normalizeServerUrl(serverUrl);
+      void forceStartArenaMatch(arenaServerUrl, matchId).then(async (ok) => {
+        if (ok) {
+          await refreshArenaMatches(arenaServerUrl, matchId);
         }
       });
     },

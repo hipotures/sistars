@@ -97,7 +97,17 @@ pub struct MatchInner {
     pub epoch_timeout_ms: u64,
     pub frame_stride_ticks: u32,
     pub tick_delay_ms: u64,
-    pub agent_seats: Vec<usize>,
+    /// Open empire indices (`0..num_empires`) reserved for external AI agents.
+    /// All other indices are permanently Bot / Governor seats.
+    pub open_agent_seats: Vec<usize>,
+    /// Currently joined external players: `empire_idx -> player_identity` (e.g. `"mcp:claude-1"` or `"rest:a1b2c3d4"`).
+    pub joined_players: HashMap<usize, String>,
+    /// True while the match is frozen in the pre-start lobby (`WaitingForAgents` at tick 0).
+    pub lobby_active: bool,
+    pub lobby_timeout_sec: u64,
+    pub lobby_deadline_ms: Option<u64>,
+    pub lobby_deadline_instant: Option<tokio::time::Instant>,
+    pub start_reason: Option<String>,
     pub pending_submissions: BTreeMap<usize, QueuedDecision>,
     pub latest_strategy: HashMap<usize, StrategyMemory>,
     pub prev_epoch_snapshots: HashMap<usize, EmpireEpochSnapshot>,
@@ -110,19 +120,164 @@ pub struct MatchInner {
 }
 
 impl MatchInner {
+    pub fn lobby_remaining_sec(&self) -> Option<u64> {
+        if !self.lobby_active || self.status != MatchStatus::WaitingForAgents {
+            return None;
+        }
+        let deadline = self.lobby_deadline_ms?;
+        let now = now_unix_ms();
+        let rem_ms = deadline.saturating_sub(now);
+        Some(rem_ms.div_ceil(1000))
+    }
+
+    pub fn distinct_joined_count(&self) -> usize {
+        let mut uniq: HashSet<&str> = HashSet::new();
+        for (&emp_idx, player_id) in &self.joined_players {
+            if self.open_agent_seats.contains(&emp_idx) {
+                uniq.insert(player_id.as_str());
+            }
+        }
+        uniq.len()
+    }
+
+    pub fn all_open_seats_filled_by_distinct_players(&self) -> bool {
+        if self.open_agent_seats.is_empty() {
+            return false;
+        }
+        let all_present = self
+            .open_agent_seats
+            .iter()
+            .all(|idx| self.joined_players.contains_key(idx));
+        all_present && self.distinct_joined_count() == self.open_agent_seats.len()
+    }
+
+    /// Returns the empire seats that the LockstepEpoch barrier should wait for.
+    /// In post-lobby matches (`lobby_timeout_sec > 0`), only currently joined players block the barrier;
+    /// unfilled open seats run smoothly on the built-in Governor (auto).
+    pub fn active_lockstep_seats(&self) -> Vec<usize> {
+        if self.lobby_timeout_sec > 0 {
+            let mut seats: Vec<usize> = self
+                .open_agent_seats
+                .iter()
+                .copied()
+                .filter(|s| self.joined_players.contains_key(s))
+                .collect();
+            seats.sort_unstable();
+            seats
+        } else {
+            self.open_agent_seats.clone()
+        }
+    }
+
+    pub fn register_player_join(
+        &mut self,
+        empire_idx: usize,
+        player_id: String,
+    ) -> Result<bool, String> {
+        if !self.open_agent_seats.contains(&empire_idx) {
+            return Err(format!(
+                "Empire {empire_idx} is a bot-only seat; open agent seats in this match are: {:?}",
+                self.open_agent_seats
+            ));
+        }
+        if let Some(existing) = self.joined_players.get(&empire_idx) {
+            if existing != &player_id {
+                return Err(format!(
+                    "Seat occupied: empireIdx {empire_idx} in match '{}' is already controlled by '{existing}'.",
+                    self.match_id
+                ));
+            }
+            return Ok(self.try_autostart_if_ready());
+        }
+        if let Some((&other_idx, _)) = self
+            .joined_players
+            .iter()
+            .find(|(&idx, pid)| idx != empire_idx && **pid == player_id)
+        {
+            return Err(format!(
+                "Player '{player_id}' already occupies empireIdx {other_idx} in match '{}'. One player may control at most one empire per match.",
+                self.match_id
+            ));
+        }
+        self.joined_players.insert(empire_idx, player_id);
+        Ok(self.try_autostart_if_ready())
+    }
+
+    pub fn unregister_player(&mut self, player_id: &str) -> bool {
+        let before = self.joined_players.len();
+        self.joined_players.retain(|_, pid| pid != player_id);
+        self.joined_players.len() != before
+    }
+
+    pub fn transition_lobby_to_running(&mut self, reason: &str) -> bool {
+        if !self.lobby_active {
+            return false;
+        }
+        self.lobby_active = false;
+        self.lobby_deadline_ms = None;
+        self.lobby_deadline_instant = None;
+        self.start_reason = Some(reason.to_string());
+        self.status = MatchStatus::Running;
+        if reason == "manualStart" {
+            self.paused = false;
+        }
+        let joined = self.distinct_joined_count();
+        let req = self.open_agent_seats.len();
+        let msg = match reason {
+            "allAgentsJoined" => format!("Match started ({joined}/{req} agents joined)."),
+            "lobbyTimeout" => format!(
+                "Lobby timeout reached ({joined}/{req} agents joined) — unfilled seats on Governor autopilot; late-join remains open."
+            ),
+            "manualStart" => format!("Host forced match start ({joined}/{req} agents joined)."),
+            other => format!("Match started ({other})."),
+        };
+        self.push_feed_event(None, ArenaFeedKind::EpochStatus, msg, None);
+        true
+    }
+
+    pub fn try_autostart_if_ready(&mut self) -> bool {
+        if self.lobby_active && self.all_open_seats_filled_by_distinct_players() {
+            self.transition_lobby_to_running("allAgentsJoined")
+        } else {
+            false
+        }
+    }
+
     pub fn waiting_for_seats(&self) -> Vec<usize> {
         if self.status != MatchStatus::WaitingForAgents {
             return Vec::new();
         }
-        self.agent_seats
-            .iter()
-            .copied()
+        if self.lobby_active {
+            return self
+                .open_agent_seats
+                .iter()
+                .copied()
+                .filter(|seat| !self.joined_players.contains_key(seat))
+                .collect();
+        }
+        self.active_lockstep_seats()
+            .into_iter()
             .filter(|seat| !self.pending_submissions.contains_key(seat))
             .collect()
     }
 
     pub fn submitted_seats(&self) -> Vec<usize> {
         self.pending_submissions.keys().copied().collect()
+    }
+
+    pub fn build_lobby_ws_message(&self) -> SpectatorWsMessage {
+        let summary = self.public_summary();
+        SpectatorWsMessage::LobbyState {
+            status: summary.status,
+            lobby_timeout_sec: summary.lobby_timeout_sec,
+            lobby_remaining_sec: summary.lobby_remaining_sec,
+            lobby_deadline_ms: summary.lobby_deadline_ms,
+            required_agent_count: summary.required_agent_count,
+            joined_agent_count: summary.joined_agent_count,
+            open_agent_seats: summary.open_agent_seats,
+            start_reason: summary.start_reason,
+            seats: summary.seats,
+        }
     }
 
     pub fn public_summary(&self) -> MatchPublicSummary {
@@ -143,7 +298,29 @@ impl MatchInner {
                 let emp_u8 = (idx + 1) as u8;
                 let alive = self.sim.owner.iter().any(|&o| o == emp_u8)
                     || self.sim.fleets.iter().any(|f| f.emp == emp_u8 && f.power > 0.0);
-                let occupied = self.agent_seats.contains(&idx);
+                let is_open_role = self.open_agent_seats.contains(&idx);
+                let joined_raw = self.joined_players.get(&idx);
+                let joined_display = joined_raw.map(|pid| {
+                    pid.strip_prefix("mcp:")
+                        .unwrap_or(pid.as_str())
+                        .to_string()
+                });
+                let occupied = joined_raw.is_some();
+                let (seat_role, join_state, controlled_by) = if !is_open_role {
+                    ("bot".to_string(), "bot".to_string(), "governor".to_string())
+                } else if occupied {
+                    (
+                        "agent".to_string(),
+                        "occupied".to_string(),
+                        "agent".to_string(),
+                    )
+                } else {
+                    (
+                        "agent".to_string(),
+                        "open".to_string(),
+                        "governor".to_string(),
+                    )
+                };
                 MatchSeatInfo {
                     empire_idx: idx,
                     empire_id: idx + 1,
@@ -152,11 +329,10 @@ impl MatchInner {
                     prt_summary: prt_short_summary(&emp.race.prt).to_string(),
                     alive,
                     occupied,
-                    controlled_by: if occupied {
-                        "agent".to_string()
-                    } else {
-                        "governor".to_string()
-                    },
+                    controlled_by,
+                    seat_role,
+                    join_state,
+                    joined_by: joined_display,
                 }
             })
             .collect();
@@ -180,7 +356,14 @@ impl MatchInner {
             empire_count: num_empires,
             victory_goal,
             seats,
-            agent_seats: self.agent_seats.clone(),
+            agent_seats: self.open_agent_seats.clone(),
+            open_agent_seats: self.open_agent_seats.clone(),
+            lobby_timeout_sec: self.lobby_timeout_sec,
+            lobby_remaining_sec: self.lobby_remaining_sec(),
+            lobby_deadline_ms: self.lobby_deadline_ms,
+            required_agent_count: self.open_agent_seats.len(),
+            joined_agent_count: self.distinct_joined_count(),
+            start_reason: self.start_reason.clone(),
             submitted_seats: self.submitted_seats(),
             waiting_for_seats: self.waiting_for_seats(),
             ticks_per_epoch: self.ticks_per_epoch,
@@ -467,19 +650,20 @@ impl MatchHandle {
         sim.fill_render_buffers();
 
         let num_empires = sim.empires.len();
-        let mut agent_seats: Vec<usize> = req
-            .agent_seats
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|&s| s < num_empires)
-            .collect();
-        agent_seats.sort_unstable();
-        agent_seats.dedup();
+        let mut open_agent_seats: Vec<usize> = if let Some(seats) = req.open_agent_seats {
+            seats.into_iter().filter(|&s| s < num_empires).collect()
+        } else if let Some(cnt) = req.open_agent_count {
+            (0..cnt.min(num_empires)).collect()
+        } else {
+            Vec::new()
+        };
+        open_agent_seats.sort_unstable();
+        open_agent_seats.dedup();
 
-        // Issue unique bearer tokens for every empire seat (or specifically for agent_seats + all empires so admin can attach to any seat).
+        // Issue unique bearer tokens for open agent seats (or all empires when 0 open seats so admin can inspect).
         let mut empire_tokens = HashMap::new();
         for seat in 0..num_empires {
-            if agent_seats.is_empty() || agent_seats.contains(&seat) {
+            if open_agent_seats.is_empty() || open_agent_seats.contains(&seat) {
                 empire_tokens.insert(seat, generate_secret_token());
             }
         }
@@ -508,11 +692,18 @@ impl MatchHandle {
             }
         };
         let start_paused = req.start_paused.unwrap_or(false);
-
-        let initial_status = if execution_mode == ExecutionMode::LockstepEpoch && !agent_seats.is_empty() {
-            MatchStatus::WaitingForAgents
+        let lobby_timeout_sec = req.lobby_timeout_sec.unwrap_or(60);
+        let lobby_active = !open_agent_seats.is_empty() && lobby_timeout_sec > 0;
+        let (initial_status, lobby_deadline_ms, lobby_deadline_instant) = if lobby_active {
+            (
+                MatchStatus::WaitingForAgents,
+                Some(now_unix_ms() + lobby_timeout_sec * 1000),
+                Some(tokio::time::Instant::now() + Duration::from_secs(lobby_timeout_sec)),
+            )
+        } else if execution_mode == ExecutionMode::LockstepEpoch && !open_agent_seats.is_empty() {
+            (MatchStatus::WaitingForAgents, None, None)
         } else {
-            MatchStatus::Running
+            (MatchStatus::Running, None, None)
         };
         // Epoch 0 never times out in LockstepEpoch; in RealtimeAsync there is no barrier deadline.
         let initial_deadline = None;
@@ -539,7 +730,13 @@ impl MatchHandle {
             epoch_timeout_ms,
             frame_stride_ticks,
             tick_delay_ms,
-            agent_seats: agent_seats.clone(),
+            open_agent_seats: open_agent_seats.clone(),
+            joined_players: HashMap::new(),
+            lobby_active,
+            lobby_timeout_sec,
+            lobby_deadline_ms,
+            lobby_deadline_instant,
+            start_reason: None,
             pending_submissions: BTreeMap::new(),
             latest_strategy: HashMap::new(),
             prev_epoch_snapshots: HashMap::new(),
@@ -578,7 +775,7 @@ impl MatchHandle {
             shutdown_rx,
         ));
 
-        (handle, empire_tokens, agent_seats)
+        (handle, empire_tokens, open_agent_seats)
     }
 }
 
@@ -760,6 +957,53 @@ async fn run_match_loop(
     let mut tps_window_start = Instant::now();
     let mut tps_window_ticks = 0u32;
 
+    // =========================================================================
+    // PHASE 0: Pre-Start Lobby (WaitingForAgents at tick 0 until all distinct
+    // open seats join, lobbyTimeoutSec elapses, or host calls forceStart)
+    // =========================================================================
+    loop {
+        if *shutdown_rx.borrow() {
+            return;
+        }
+        let (lobby_active, deadline_opt) = {
+            let guard = inner.read().await;
+            (guard.lobby_active, guard.lobby_deadline_instant)
+        };
+        if !lobby_active {
+            break;
+        }
+        if let Some(deadline) = deadline_opt {
+            tokio::select! {
+                _ = control_notify.notified() => {}
+                _ = barrier_notify.notified() => {}
+                _ = tokio::time::sleep_until(deadline) => {
+                    let mut guard = inner.write().await;
+                    if guard.transition_lobby_to_running("lobbyTimeout") {
+                        let lobby_msg = guard.build_lobby_ws_message();
+                        let summary = guard.public_summary();
+                        let _ = ws_tx.send(lobby_msg);
+                        let _ = ws_tx.send(SpectatorWsMessage::Status { summary });
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+            }
+        } else {
+            tokio::select! {
+                _ = control_notify.notified() => {}
+                _ = barrier_notify.notified() => {}
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     loop {
         if *shutdown_rx.borrow() {
             break;
@@ -936,10 +1180,11 @@ async fn run_match_loop(
         // =====================================================================
         // MODE B: LockstepEpoch (deterministic turn-based barrier, exact ticks)
         // =====================================================================
-        // Phase A: Macro-Epoch Decision Barrier for external agent seats
+        // Phase A: Macro-Epoch Decision Barrier for active external agent seats
         let (has_agents, wait_indefinitely, timeout_ms) = {
             let mut guard = inner.write().await;
-            if !guard.agent_seats.is_empty() {
+            let barrier_seats = guard.active_lockstep_seats();
+            if !barrier_seats.is_empty() {
                 guard.status = MatchStatus::WaitingForAgents;
                 let timeout = guard.epoch_timeout_ms;
                 // Wait indefinitely on Epoch 0 OR whenever epoch_timeout_ms == 0
@@ -965,8 +1210,8 @@ async fn run_match_loop(
             loop {
                 let (all_submitted, mode_now) = {
                     let guard = inner.read().await;
-                    let all_sub = guard
-                        .agent_seats
+                    let barrier_seats = guard.active_lockstep_seats();
+                    let all_sub = barrier_seats
                         .iter()
                         .all(|s| guard.pending_submissions.contains_key(s));
                     (all_sub, guard.execution_mode)
@@ -1170,7 +1415,7 @@ async fn run_match_loop(
                 break;
             }
             guard.epoch += 1;
-            if !guard.agent_seats.is_empty() {
+            if !guard.active_lockstep_seats().is_empty() {
                 guard.status = MatchStatus::WaitingForAgents;
                 guard.epoch_deadline_ms = if guard.epoch_timeout_ms == 0 {
                     None

@@ -126,10 +126,10 @@
   <div class="field">
     <div class="field-header"><span>Initial server speed</span></div>
     <select id="arenaNewSpeed" class="select-input">
-      <option value="0" selected>⏸ Paused (Start manually)</option>
+      <option value="0">⏸ Paused (Start manually)</option>
       <option value="0.25">0.25x (Slow / Inspection)</option>
       <option value="0.5">0.5x</option>
-      <option value="1">1x (Normal Spectator)</option>
+      <option value="1" selected>1x (Normal Spectator — Auto-start)</option>
       <option value="5">5x (Fast)</option>
       <option value="20">20x (Max Speed)</option>
     </select>
@@ -139,12 +139,30 @@
     <span>Enable LiveAuditor (verify invariants &amp; log anomalies)</span>
   </label>
 
-  <h3>3. External AI Agent Seats</h3>
+  <h3>3. External AI Agent Seats &amp; Lobby</h3>
+  <div class="arena-lobby-config-row">
+    <label class="field" style="flex:1; margin:0;">
+      <div class="field-header"><span>Agent Seats</span></div>
+      <select id="arenaNewAgentCount" class="select-input">
+        <option value="0">0 (All Bots — Instant Start)</option>
+        <option value="1" selected>1 Agent + 5 Bots</option>
+        <option value="2">2 Agents + 4 Bots</option>
+        <option value="3">3 Agents + 3 Bots</option>
+        <option value="4">4 Agents + 2 Bots</option>
+        <option value="5">5 Agents + 1 Bot</option>
+        <option value="6">6 Agents (All Seats)</option>
+      </select>
+    </label>
+    <label class="field" style="width:110px; margin:0;">
+      <div class="field-header"><span>Lobby (s)</span></div>
+      <input type="number" id="arenaNewLobbyTimeout" class="text-input" min="0" max="600" value="60" title="0 = immediate start without lobby" />
+    </label>
+  </div>
   <div style="font-size:0.68rem; color:var(--muted); margin-bottom:2px;">
-    Unchecked seats run on the built-in Governor. Checked seats wait at the Macro-Epoch Barrier for external LLM / bot agents.
+    Checked seats are OPEN for external AI agents (and late-join). Unchecked seats are Bot-only.
   </div>
   <div class="arena-seats-grid" id="arenaNewSeatsGrid">
-    <label class="checkbox-row"><input type="checkbox" value="0" /><span>Seat 0 • Humanoids</span></label>
+    <label class="checkbox-row"><input type="checkbox" value="0" checked /><span>Seat 0 • Humanoids</span></label>
     <label class="checkbox-row"><input type="checkbox" value="1" /><span>Seat 1 • Rabbitoids</span></label>
     <label class="checkbox-row"><input type="checkbox" value="2" /><span>Seat 2 • Insectoids</span></label>
     <label class="checkbox-row"><input type="checkbox" value="3" /><span>Seat 3 • Nucleids</span></label>
@@ -160,6 +178,13 @@
   <div id="arenaCreatedBox" class="arena-created-box" style="display:none;">
     <div class="arena-created-head">
       <span id="arenaCreatedTitle">Match Ready</span>
+    </div>
+    <div id="arenaLobbyBox" class="arena-lobby-box" style="display:none;">
+      <div class="arena-lobby-top">
+        <span id="arenaLobbyCountdown" class="arena-lobby-countdown">WAITING FOR AGENTS · 0/1 JOINED · AUTO-START IN 60s</span>
+        <button class="hud-btn active" id="btnArenaForceStart" style="padding:2px 7px; font-size:0.6rem;">▶ Start Now</button>
+      </div>
+      <div id="arenaLobbySeatsList" class="arena-lobby-seats"></div>
     </div>
     <div id="arenaTokensList" class="arena-tokens-list"></div>
   </div>

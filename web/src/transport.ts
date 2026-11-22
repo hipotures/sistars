@@ -330,7 +330,26 @@ interface WsControlPayload {
   executionMode: 'realtimeAsync' | 'lockstepEpoch';
 }
 
-type WsMessage = WsInitPayload | WsFramePayload | WsFeedPayload | WsStatusPayload | WsControlPayload;
+interface WsLobbyStatePayload {
+  type: 'lobbyState';
+  status: ArenaMatchStatus;
+  lobbyTimeoutSec: number;
+  lobbyRemainingSec: number | null;
+  lobbyDeadlineMs: number | null;
+  requiredAgentCount: number;
+  joinedAgentCount: number;
+  openAgentSeats: number[];
+  startReason: string | null;
+  seats: import('./types').ArenaMatchSeatInfo[];
+}
+
+type WsMessage =
+  | WsInitPayload
+  | WsFramePayload
+  | WsFeedPayload
+  | WsStatusPayload
+  | WsControlPayload
+  | WsLobbyStatePayload;
 
 function toFloat32ArrayBuffer(arr: number[]): ArrayBuffer {
   const f32 = Float32Array.from(arr);
@@ -395,6 +414,16 @@ export async function deleteArenaMatch(serverUrl: string, matchId: string): Prom
   return resp.ok || resp.status === 204;
 }
 
+export async function forceStartArenaMatch(serverUrl: string, matchId: string): Promise<boolean> {
+  const base = normalizeServerUrl(serverUrl);
+  const resp = await fetch(`${base}/api/v1/matches/${encodeURIComponent(matchId)}/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ forceStart: true, paused: false }),
+  });
+  return resp.ok;
+}
+
 export async function createArenaMatch(
   serverUrl: string,
   options?: {
@@ -409,6 +438,9 @@ export async function createArenaMatch(
     ticksPerEpoch?: number;
     epochTimeoutMs?: number;
     agentSeats?: number[];
+    openAgentSeats?: number[];
+    openAgentCount?: number;
+    lobbyTimeoutSec?: number;
     debugAudit?: boolean;
     frameStrideTicks?: number;
     tickDelayMs?: number;
@@ -416,6 +448,7 @@ export async function createArenaMatch(
   },
 ): Promise<CreateArenaMatchResponse> {
   const base = normalizeServerUrl(serverUrl);
+  const openSeats = options?.openAgentSeats ?? options?.agentSeats ?? [];
   const body: Record<string, unknown> = {
     galaxySize: options?.galaxySize ?? 'small',
     galaxyShape: options?.galaxyShape ?? 'spiral',
@@ -423,10 +456,16 @@ export async function createArenaMatch(
     speedMult: options?.speedMult ?? 1.0,
     ticksPerEpoch: options?.ticksPerEpoch ?? 20,
     epochTimeoutMs: options?.epochTimeoutMs ?? 20000,
-    agentSeats: options?.agentSeats ?? [],
+    openAgentSeats: openSeats,
     debugAudit: options?.debugAudit ?? true,
     startPaused: options?.startPaused ?? false,
   };
+  if (options?.openAgentCount !== undefined) {
+    body.openAgentCount = options.openAgentCount;
+  }
+  if (options?.lobbyTimeoutSec !== undefined) {
+    body.lobbyTimeoutSec = options.lobbyTimeoutSec;
+  }
   if (options?.scenarioName) {
     body.scenarioName = options.scenarioName;
   }
@@ -654,6 +693,26 @@ export class RemoteArenaTransport implements SimTransport {
               paused: msg.paused,
               speedMult: msg.speedMult,
               executionMode: msg.executionMode,
+            };
+            this.statusHandler?.(this.lastSummary);
+          }
+          return;
+        }
+
+        if (msg.type === 'lobbyState') {
+          if (this.lastSummary) {
+            this.lastSummary = {
+              ...this.lastSummary,
+              status: msg.status,
+              lobbyTimeoutSec: msg.lobbyTimeoutSec,
+              lobbyRemainingSec: msg.lobbyRemainingSec,
+              lobbyDeadlineMs: msg.lobbyDeadlineMs,
+              requiredAgentCount: msg.requiredAgentCount,
+              joinedAgentCount: msg.joinedAgentCount,
+              openAgentSeats: msg.openAgentSeats,
+              agentSeats: msg.openAgentSeats,
+              startReason: msg.startReason,
+              seats: msg.seats,
             };
             this.statusHandler?.(this.lastSummary);
           }

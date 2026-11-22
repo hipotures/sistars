@@ -477,13 +477,15 @@ pub fn build_openapi_spec() -> Value {
                         "paused": { "type": "boolean", "nullable": true },
                         "speedMult": { "type": "number", "minimum": 0.05, "maximum": 20.0, "nullable": true },
                         "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
-                        "stepTicks": { "type": "integer", "minimum": 1, "maximum": 100, "nullable": true }
+                        "stepTicks": { "type": "integer", "minimum": 1, "maximum": 100, "nullable": true },
+                        "forceStart": { "type": "boolean", "nullable": true, "description": "Immediately transitions a WaitingForAgents lobby to Running (startReason='manualStart')." }
                     }
                 },
                 "CreateMatchRequest": {
                     "type": "object",
                     "properties": {
                         "seed": { "type": "integer", "nullable": true },
+                        "scenarioName": { "type": "string", "nullable": true },
                         "galaxySize": { "type": "string", "nullable": true },
                         "galaxyShape": { "type": "string", "nullable": true },
                         "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
@@ -491,9 +493,20 @@ pub fn build_openapi_spec() -> Value {
                         "startPaused": { "type": "boolean", "default": false },
                         "ticksPerEpoch": { "type": "integer", "default": 20 },
                         "epochTimeoutMs": { "type": "integer", "default": 20000, "description": "0 = wait indefinitely (no timeout) in LockstepEpoch mode." },
-                        "agentSeats": {
+                        "openAgentSeats": {
                             "type": "array",
-                            "items": { "type": "integer" }
+                            "items": { "type": "integer" },
+                            "description": "Empire indices open for external AI agents (alias: agentSeats). All other empires are bot-only."
+                        },
+                        "openAgentCount": {
+                            "type": "integer",
+                            "nullable": true,
+                            "description": "Shorthand: opens seats 0..openAgentCount when openAgentSeats is omitted."
+                        },
+                        "lobbyTimeoutSec": {
+                            "type": "integer",
+                            "default": 60,
+                            "description": "Seconds to wait in WaitingForAgents lobby before auto-starting (0 = immediate start)."
                         },
                         "debugAudit": { "type": "boolean", "default": false },
                         "frameStrideTicks": { "type": "integer", "default": 1 },
@@ -504,6 +517,7 @@ pub fn build_openapi_spec() -> Value {
                     "type": "object",
                     "properties": {
                         "matchId": { "type": "string" },
+                        "scenarioName": { "type": "string" },
                         "year": { "type": "number" },
                         "tick": { "type": "integer" },
                         "epoch": { "type": "integer" },
@@ -515,6 +529,13 @@ pub fn build_openapi_spec() -> Value {
                         "planetCount": { "type": "integer" },
                         "empireCount": { "type": "integer" },
                         "agentSeats": { "type": "array", "items": { "type": "integer" } },
+                        "openAgentSeats": { "type": "array", "items": { "type": "integer" } },
+                        "lobbyTimeoutSec": { "type": "integer" },
+                        "lobbyRemainingSec": { "type": "integer", "nullable": true },
+                        "lobbyDeadlineMs": { "type": "integer", "nullable": true },
+                        "requiredAgentCount": { "type": "integer" },
+                        "joinedAgentCount": { "type": "integer" },
+                        "startReason": { "type": "string", "nullable": true },
                         "submittedSeats": { "type": "array", "items": { "type": "integer" } },
                         "waitingForSeats": { "type": "array", "items": { "type": "integer" } },
                         "ticksPerEpoch": { "type": "integer" },
@@ -523,7 +544,7 @@ pub fn build_openapi_spec() -> Value {
                         "debugAudit": { "type": "boolean" },
                         "anomaliesCount": { "type": "integer" }
                     },
-                    "required": ["matchId", "year", "tick", "epoch", "status", "planetCount", "empireCount", "agentSeats"]
+                    "required": ["matchId", "year", "tick", "epoch", "status", "planetCount", "empireCount", "openAgentSeats"]
                 }
             }
         },

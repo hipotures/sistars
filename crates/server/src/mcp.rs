@@ -199,7 +199,7 @@ fn build_tools_list() -> Value {
         "tools": [
             {
                 "name": "list_matches",
-                "description": "Lists available SI-Stars Arena matches with public metadata (scenarioName, galaxySize, totalPlanets, numEmpires, executionMode, year, victoryGoal) and empire seats with availability ('open_agent_seat' = reserved by host for an external AI agent and waiting for you to join | 'free' = currently Governor-run, also joinable | 'occupied' = already controlled by another connected agent | 'yours'). Zero Fog-of-War leaks.",
+                "description": "Lists available SI-Stars Arena matches with public metadata (scenarioName, galaxySize, totalPlanets, numEmpires, executionMode, year, victoryGoal, lobbyTimeoutSec, lobbyRemainingSec, requiredAgentCount, joinedAgentCount, openAgentSeats, startReason) and empire seats with seatRole ('agent' | 'bot') and joinState ('open' = open for join/late-join | 'bot' = bot-only seat | 'occupied' = controlled by another agent | 'yours'). Zero Fog-of-War leaks.",
                 "inputSchema": {
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
@@ -685,17 +685,10 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
                     .as_ref()
                     .is_some_and(|(bm, be)| bm == &summary.match_id && *be == s.empire_idx);
                 let bound_seat = all_bindings.get(&(summary.match_id.clone(), s.empire_idx));
-                let occupied_by_other = bound_seat
-                    .filter(|other| seat_name.as_deref() != Some(other.as_str()));
-                let reserved_for_agent = summary.agent_seats.contains(&s.empire_idx);
-                let availability = if is_yours {
+                let join_state = if is_yours {
                     "yours"
-                } else if occupied_by_other.is_some() {
-                    "occupied"
-                } else if reserved_for_agent {
-                    "open_agent_seat"
                 } else {
-                    "free"
+                    s.join_state.as_str()
                 };
                 json!({
                     "empireIdx": s.empire_idx,
@@ -704,10 +697,11 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
                     "prt": s.prt,
                     "prtSummary": s.prt_summary,
                     "alive": s.alive,
-                    "status": availability,
-                    "reservedForAgent": reserved_for_agent,
-                    "occupiedBy": bound_seat,
-                    "controlledBy": if bound_seat.is_some() { "agent" } else { "governor" },
+                    "seatRole": s.seat_role,
+                    "joinState": join_state,
+                    "status": join_state,
+                    "joinedBy": s.joined_by.as_ref().or(bound_seat),
+                    "controlledBy": s.controlled_by,
                 })
             })
             .collect();
@@ -725,6 +719,13 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
             "totalPlanets": summary.total_planets,
             "numEmpires": summary.num_empires,
             "victoryGoal": summary.victory_goal,
+            "lobbyTimeoutSec": summary.lobby_timeout_sec,
+            "lobbyRemainingSec": summary.lobby_remaining_sec,
+            "lobbyDeadlineMs": summary.lobby_deadline_ms,
+            "requiredAgentCount": summary.required_agent_count,
+            "joinedAgentCount": summary.joined_agent_count,
+            "openAgentSeats": summary.open_agent_seats,
+            "startReason": summary.start_reason,
             "seats": seats_json,
         }));
     }
@@ -808,7 +809,8 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         }
     }
 
-    let (emp_name, emp_prt) = {
+    let player_id = format!("mcp:{seat_name}");
+    let (emp_name, emp_prt, match_status, start_reason, joined_cnt, req_cnt, lobby_rem, autostarted) = {
         let mut guard = handle.inner.write().await;
         if guard.status == MatchStatus::Finished {
             return tool_text_result(
@@ -835,14 +837,29 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
                 true,
             );
         }
-        if !guard.agent_seats.contains(&parsed.empire_idx) {
-            guard.agent_seats.push(parsed.empire_idx);
-            guard.agent_seats.sort_unstable();
-        }
+        let autostarted = match guard.register_player_join(parsed.empire_idx, player_id) {
+            Ok(started) => started,
+            Err(err_msg) => return tool_text_result(err_msg, true),
+        };
         let emp = &guard.sim.empires[parsed.empire_idx];
+        let emp_name = emp.race.name.clone();
+        let emp_prt = emp.race.prt.clone();
+        let lobby_msg = guard.build_lobby_ws_message();
         let summary = guard.public_summary();
-        let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
-        (emp.race.name.clone(), emp.race.prt.clone())
+        let _ = handle.ws_tx.send(lobby_msg);
+        let _ = handle.ws_tx.send(SpectatorWsMessage::Status {
+            summary: summary.clone(),
+        });
+        (
+            emp_name,
+            emp_prt,
+            summary.status,
+            summary.start_reason,
+            summary.joined_agent_count,
+            summary.required_agent_count,
+            summary.lobby_remaining_sec,
+            autostarted,
+        )
     };
 
     {
@@ -854,6 +871,11 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         history.insert((seat_name.clone(), parsed.match_id.clone()), parsed.empire_idx);
     }
 
+    if autostarted {
+        handle.control_notify.notify_waiters();
+        handle.barrier_notify.notify_waiters();
+    }
+
     let ack = json!({
         "joined": true,
         "seatName": seat_name,
@@ -863,6 +885,11 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         "empireName": emp_name,
         "prt": emp_prt,
         "prtSummary": prt_short_summary(&emp_prt),
+        "matchStatus": match_status,
+        "startReason": start_reason,
+        "joinedAgentCount": joined_cnt,
+        "requiredAgentCount": req_cnt,
+        "lobbyRemainingSec": lobby_rem,
         "nextStep": "Call get_briefing once, then get_observation and submit_orders."
     });
     tool_text_result(
@@ -887,6 +914,22 @@ async fn handle_tool_leave_match(state: &AppState, identity: &McpIdentity) -> Va
         let mut bindings = state.persistent_seat_bindings.write().await;
         bindings.remove(&seat_name)
     };
+
+    if let Some((ref prev_mid, _)) = prev {
+        let handle_opt = {
+            let matches = state.matches.read().await;
+            matches.get(prev_mid).cloned()
+        };
+        if let Some(handle) = handle_opt {
+            let mut guard = handle.inner.write().await;
+            let player_id = format!("mcp:{seat_name}");
+            if guard.unregister_player(&player_id) {
+                let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
+                let summary = guard.public_summary();
+                let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
+            }
+        }
+    }
 
     // Note: keep entry in `seat_match_history` so Anti-Spy FoW Lock remains active!
     let ack = json!({
@@ -1023,6 +1066,11 @@ async fn handle_tool_observation(state: &AppState, match_id: &str, empire_idx: u
         "executionMode": guard.execution_mode,
         "paused": guard.paused,
         "speedMult": guard.speed_mult,
+        "lobbyRemainingSec": guard.lobby_remaining_sec(),
+        "lobbyDeadlineMs": guard.lobby_deadline_ms,
+        "requiredAgentCount": guard.open_agent_seats.len(),
+        "joinedAgentCount": guard.distinct_joined_count(),
+        "startReason": guard.start_reason,
         "alreadySubmitted": already_submitted,
         "previousStrategy": previous_strategy,
         "delta": delta,
@@ -1218,9 +1266,23 @@ pub async fn bind_persistent_seat(
 
     // matchId: null -> unbind seat to idle
     let Some(match_id) = req.match_id.filter(|m| !m.trim().is_empty()) else {
-        {
+        let prev = {
             let mut bindings = state.persistent_seat_bindings.write().await;
-            bindings.remove(&seat_name);
+            bindings.remove(&seat_name)
+        };
+        if let Some((prev_mid, _)) = prev {
+            let handle_opt = {
+                let matches = state.matches.read().await;
+                matches.get(&prev_mid).cloned()
+            };
+            if let Some(handle) = handle_opt {
+                let mut guard = handle.inner.write().await;
+                if guard.unregister_player(&format!("mcp:{seat_name}")) {
+                    let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
+                    let summary = guard.public_summary();
+                    let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
+                }
+            }
         }
         return Ok(Json(json!({
             "bound": false,
@@ -1244,7 +1306,7 @@ pub async fn bind_persistent_seat(
         ));
     };
 
-    {
+    let autostarted = {
         let mut guard = handle.inner.write().await;
         let empire_count = guard.sim.empires.len();
         if empire_idx >= empire_count {
@@ -1256,13 +1318,27 @@ pub async fn bind_persistent_seat(
                 }),
             ));
         }
-        if !guard.agent_seats.contains(&empire_idx) {
-            guard.agent_seats.push(empire_idx);
-            guard.agent_seats.sort_unstable();
+        if !guard.open_agent_seats.contains(&empire_idx) {
+            guard.open_agent_seats.push(empire_idx);
+            guard.open_agent_seats.sort_unstable();
         }
+        let started = match guard.register_player_join(empire_idx, format!("mcp:{seat_name}")) {
+            Ok(s) => s,
+            Err(err_msg) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ApiErrorBody {
+                        error: "seat_conflict".to_string(),
+                        message: err_msg,
+                    }),
+                ));
+            }
+        };
+        let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
         let summary = guard.public_summary();
         let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
-    }
+        started
+    };
 
     {
         let mut bindings = state.persistent_seat_bindings.write().await;
@@ -1271,6 +1347,11 @@ pub async fn bind_persistent_seat(
     {
         let mut history = state.seat_match_history.write().await;
         history.insert((seat_name.clone(), match_id.clone()), empire_idx);
+    }
+
+    if autostarted {
+        handle.control_notify.notify_waiters();
+        handle.barrier_notify.notify_waiters();
     }
 
     Ok(Json(json!({
