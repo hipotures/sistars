@@ -2515,7 +2515,10 @@ impl Simulation {
         while i > 0 {
             i -= 1;
             self.debris_fields[i].ttl -= DT;
-            if self.debris_fields[i].ttl <= 0.0 {
+            let total = self.debris_fields[i].iron
+                + self.debris_fields[i].bora
+                + self.debris_fields[i].germ;
+            if self.debris_fields[i].ttl <= 0.0 || total <= 0.5 {
                 self.debris_fields.swap_remove(i);
             }
         }
@@ -2723,11 +2726,13 @@ impl Simulation {
             count: 1,
         };
         let (iron, bora, germ) = if dead_fleet.fleet_type == FleetClass::Freight {
+            let e = (dead_fleet.emp - 1) as usize;
+            let (hi, hb, hg) = self.empires[e].ship_mineral_cost(FleetClass::Freight);
             if dead_fleet.salvage_mode != 0 {
                 (
-                    dead_fleet.cargo_iron * self.cfg.salvage_rate,
-                    dead_fleet.cargo_bora * self.cfg.salvage_rate,
-                    dead_fleet.cargo_germ * self.cfg.salvage_rate,
+                    (dead_fleet.cargo_iron + hi * 0.5) * self.cfg.salvage_rate,
+                    (dead_fleet.cargo_bora + hb * 0.5) * self.cfg.salvage_rate,
+                    (dead_fleet.cargo_germ + hg * 0.5) * self.cfg.salvage_rate,
                 )
             } else {
                 let mut m = [0.0f32; 3];
@@ -2743,12 +2748,18 @@ impl Simulation {
                 cg * self.cfg.salvage_rate,
             )
         };
+        if iron + bora + germ <= 0.5 {
+            return;
+        }
 
         // Merge nearby battle wreckage within 10 ly into a single debris field
         let persistent_mode = !self.cfg.scenario_modifiers.auto_salvage || ttl > 50.0;
         if persistent_mode {
             const MERGE_RAD_SQ: f32 = 10.0 * 10.0;
             for existing in &mut self.debris_fields {
+                if existing.ttl <= 0.0 || (existing.iron + existing.bora + existing.germ) <= 0.5 {
+                    continue;
+                }
                 let dx = existing.x - x;
                 let dy = existing.y - y;
                 if dx * dx + dy * dy <= MERGE_RAD_SQ {
