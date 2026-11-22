@@ -322,7 +322,7 @@ def main() -> int:
             )
             return 0
 
-        if match_status != "WaitingForAgents" or already_submitted or last_submitted_epoch == epoch:
+        if match_status not in ("WaitingForAgents", "Running") or already_submitted or last_submitted_epoch == epoch:
             time.sleep(args.poll_interval)
             continue
 
