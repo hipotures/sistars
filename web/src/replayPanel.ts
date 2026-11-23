@@ -100,7 +100,7 @@ export class ReplayPanel {
   }
 
   public setListMessage(msg: string): void {
-    el('replayListBody').innerHTML = `<tr><td colspan="9" class="replay-empty">${escapeHtml(msg)}</td></tr>`;
+    el('replayListBody').innerHTML = `<div class="replay-empty">${escapeHtml(msg)}</div>`;
   }
 
   public setReplays(list: ReplayFileInfo[]): void {
@@ -111,23 +111,20 @@ export class ReplayPanel {
     el('replayListBody').innerHTML = list
       .map((r) => {
         const id = escapeHtml(r.matchId);
+        const head = `<div class="replay-item-head">
+            <span class="replay-item-title" title="seed ${r.seed ?? '?'} · engine ${escapeHtml(r.engineCommit ?? '?')}">${formatDate(r.modifiedMs)} · ${id}</span>
+            ${r.error ? '' : `<button class="hud-btn" data-replay-action="play" data-match-id="${id}" title="Play this match on the server">▶</button>`}
+            <button class="hud-btn" data-replay-action="download" data-match-id="${id}" title="Download .replay.jsonl.gz">⬇</button>
+          </div>`;
         if (r.error) {
-          return `<tr><td>${formatDate(r.modifiedMs)}</td><td>${id}</td><td colspan="5" class="replay-error">⚠ ${escapeHtml(r.error)}</td><td>${formatSize(r.fileSize)}</td><td></td></tr>`;
+          return `<div class="replay-item">${head}<div class="replay-error">⚠ ${escapeHtml(r.error)}</div></div>`;
         }
-        const winner = r.winnerName ? escapeHtml(r.winnerName) : r.winner != null ? `#${r.winner + 1}` : '—';
-        const ticks = r.finalTick != null ? `${r.finalTick} / ${(r.finalYear ?? 0).toFixed(1)}` : '—';
-        const scen = `${escapeHtml(r.scenarioName ?? '?')} · ${escapeHtml(r.galaxySize ?? '?')} · ${r.numEmpires ?? '?'} races`;
-        return `<tr>
-          <td>${formatDate(r.modifiedMs)}</td>
-          <td title="seed ${r.seed ?? '?'} · engine ${escapeHtml(r.engineCommit ?? '?')}">${id}</td>
-          <td class="replay-left">${scen}</td>
-          <td>${escapeHtml(r.endReason ?? '?')}</td>
-          <td>${ticks}</td>
-          <td>${winner}</td>
-          <td>${formatSize(r.fileSize)}</td>
-          <td><button class="hud-btn" data-replay-action="play" data-match-id="${id}" title="Play this match on the server">▶ Play</button></td>
-          <td><button class="hud-btn" data-replay-action="download" data-match-id="${id}" title="Download .replay.jsonl.gz">⬇</button></td>
-        </tr>`;
+        const winner = r.winnerName ? escapeHtml(r.winnerName) : r.winner != null ? `#${r.winner + 1}` : 'no winner';
+        const ticks = r.finalTick != null ? `tick ${r.finalTick} · yr ${(r.finalYear ?? 0).toFixed(1)}` : '';
+        return `<div class="replay-item">${head}
+          <div class="replay-item-meta">${escapeHtml(r.scenarioName ?? '?')} · ${escapeHtml(r.galaxySize ?? '?')} · ${r.numEmpires ?? '?'} races</div>
+          <div class="replay-item-meta">${escapeHtml(r.endReason ?? '?')} · ${winner} · ${ticks} · ${formatSize(r.fileSize)}</div>
+        </div>`;
       })
       .join('');
   }

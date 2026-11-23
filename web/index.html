@@ -70,7 +70,7 @@
 </div>
 
 <!-- DRAWER: RECORDED MATCH REPLAYS -->
-<div class="drawer wide" id="drawerReplay">
+<div class="drawer" id="drawerReplay">
   <div class="drawer-head">
     <div class="drawer-title">🎬 Replays</div>
     <button class="insp-close" data-close-drawer="drawerReplay">✕</button>
@@ -78,20 +78,10 @@
 
   <h3>Recorded matches</h3>
   <div class="replay-server-row">
-    <label class="arena-field">
-      <span>SERVER</span>
-      <input type="text" id="replayServerInput" class="text-input arena-input" value="http://localhost:8080" />
-    </label>
-    <button class="hud-btn" id="btnReplayRefresh" title="Reload the replay list">↻ Refresh</button>
+    <input type="text" id="replayServerInput" class="text-input replay-server-input" value="http://localhost:8080" title="Arena server" />
+    <button class="hud-btn" id="btnReplayRefresh" title="Reload the replay list">↻</button>
   </div>
-  <div class="replay-list-wrap">
-    <table class="replay-table">
-      <thead>
-        <tr><th>Date</th><th>Match</th><th class="replay-left">Scenario</th><th>End</th><th>Ticks / Year</th><th>Winner</th><th>Size</th><th></th><th></th></tr>
-      </thead>
-      <tbody id="replayListBody"></tbody>
-    </table>
-  </div>
+  <div class="replay-list-wrap" id="replayListBody"></div>
 
   <h3>Playback</h3>
   <div id="replayIdleHint" class="replay-muted">Press ▶ Play on a recorded match. The server re-simulates it with the current game code and you watch it here like an arena match.</div>
