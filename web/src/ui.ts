@@ -3175,11 +3175,13 @@ export class UiController {
   private userEditedAgentSeats = false;
 
   private applyDefaultAgentSeatCount(count: number): void {
+    const raceCountSel = document.getElementById('arenaNewRaceCount') as HTMLSelectElement | null;
+    const raceCount = Math.max(2, Math.min(6, Number(raceCountSel?.value ?? 6) || 6));
     const agentCountSel = document.getElementById('arenaNewAgentCount') as HTMLSelectElement | null;
     const seatCheckboxes = Array.from(
       document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
     );
-    const maxSeats = seatCheckboxes.length || 6;
+    const maxSeats = Math.min(raceCount, seatCheckboxes.length || 6);
     const clamped = Math.max(0, Math.min(maxSeats, count));
     if (agentCountSel) {
       agentCountSel.value = String(clamped);
@@ -3187,6 +3189,50 @@ export class UiController {
     seatCheckboxes.forEach((cb, idx) => {
       cb.checked = idx < clamped;
     });
+  }
+
+  private syncArenaRaceCountUi(): void {
+    const raceCountSel = document.getElementById('arenaNewRaceCount') as HTMLSelectElement | null;
+    const agentCountSel = document.getElementById('arenaNewAgentCount') as HTMLSelectElement | null;
+    const seatLabels = Array.from(
+      document.querySelectorAll<HTMLLabelElement>('#arenaNewSeatsGrid label'),
+    );
+    const seatCheckboxes = Array.from(
+      document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
+    );
+    const raceCount = Math.max(2, Math.min(6, Number(raceCountSel?.value ?? 6) || 6));
+
+    seatLabels.forEach((lbl, idx) => {
+      lbl.style.display = idx < raceCount ? '' : 'none';
+    });
+    seatCheckboxes.forEach((cb, idx) => {
+      if (idx >= raceCount) {
+        cb.checked = false;
+      }
+    });
+
+    if (agentCountSel) {
+      const prevVal = Number(agentCountSel.value ?? 1);
+      const nextVal = Math.max(0, Math.min(raceCount, Number.isFinite(prevVal) ? prevVal : 1));
+      agentCountSel.innerHTML = Array.from({ length: raceCount + 1 }, (_, n) => {
+        const bots = raceCount - n;
+        const label =
+          n === 0
+            ? `0 (All ${raceCount} Bots — Instant Start)`
+            : n === raceCount
+              ? `${n} Agents (All Seats)`
+              : `${n} ${n === 1 ? 'Agent' : 'Agents'} + ${bots} ${bots === 1 ? 'Bot' : 'Bots'}`;
+        return `<option value="${n}">${label}</option>`;
+      }).join('');
+      agentCountSel.value = String(nextVal);
+      if (!this.userEditedAgentSeats && this.configuredMcpSeatCount !== null && this.configuredMcpSeatCount > 0) {
+        this.applyDefaultAgentSeatCount(this.configuredMcpSeatCount);
+      } else {
+        seatCheckboxes.forEach((cb, idx) => {
+          cb.checked = idx < nextVal;
+        });
+      }
+    }
   }
 
   private bindArenaEvents(): void {
@@ -3321,6 +3367,12 @@ export class UiController {
       }
     });
 
+    const raceCountSel = document.getElementById('arenaNewRaceCount') as HTMLSelectElement | null;
+    raceCountSel?.addEventListener('change', () => {
+      this.syncArenaRaceCountUi();
+    });
+    this.syncArenaRaceCountUi();
+
     const agentCountSel = document.getElementById('arenaNewAgentCount') as HTMLSelectElement | null;
     const seatCheckboxes = Array.from(
       document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
@@ -3404,12 +3456,21 @@ export class UiController {
         scenarioModifiers: scen.modifiers,
       };
 
+      const raceCountRaw = Number(
+        (document.getElementById('arenaNewRaceCount') as HTMLSelectElement | null)?.value ?? 6,
+      );
+      const raceCount = Math.max(2, Math.min(6, Number.isFinite(raceCountRaw) ? raceCountRaw : 6));
+      const races =
+        raceCount < this.catalog.classicRaces.length
+          ? this.catalog.classicRaces.slice(0, raceCount)
+          : undefined;
+
       const agentSeats: number[] = [];
       document
         .querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]:checked')
         .forEach((cb) => {
           const seat = Number(cb.value);
-          if (Number.isInteger(seat)) agentSeats.push(seat);
+          if (Number.isInteger(seat) && seat < raceCount) agentSeats.push(seat);
         });
 
       const startPaused = speedSel <= 0;
@@ -3438,6 +3499,7 @@ export class UiController {
             lobbyTimeoutSec,
             debugAudit,
             startPaused,
+            races,
           },
           speedSel,
         );

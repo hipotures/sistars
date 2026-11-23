@@ -556,6 +556,7 @@ export interface CreateArenaMatchOptions {
   frameStrideTicks?: number;
   tickDelayMs?: number;
   startPaused?: boolean;
+  races?: RaceDef[];
 }
 
 export interface CreateArenaMatchResponse {
