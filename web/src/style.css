@@ -1766,8 +1766,169 @@ tr.rep-row-selected:hover {
   max-height: 36px;
 }
 
-#arenaFeedPanel.collapsed .arena-feed-body {
+#arenaFeedPanel.collapsed .arena-feed-body,
+#arenaFeedPanel.collapsed .dip-matrix-section {
   display: none;
+}
+
+.dip-matrix-section {
+  border-bottom: 1px solid var(--border);
+  background: rgba(8, 13, 23, 0.92);
+  padding: 5px 8px;
+}
+
+.dip-matrix-section.collapsed .dip-matrix-body {
+  display: none;
+}
+
+.dip-matrix-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.dip-matrix-title {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #93c5fd;
+}
+
+.dip-matrix-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dip-alive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.58rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.dip-alive-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.dip-matrix-body {
+  margin-top: 5px;
+  overflow-x: auto;
+}
+
+.dip-matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: monospace;
+  font-size: 0.6rem;
+}
+
+.dip-matrix-table th,
+.dip-matrix-table td {
+  text-align: center;
+  padding: 2px 3px;
+  border: 1px solid rgba(30, 41, 59, 0.65);
+}
+
+.dip-matrix-table th {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background: rgba(15, 23, 38, 0.8);
+}
+
+.dip-matrix-table th.extinct,
+.dip-matrix-table td.extinct {
+  opacity: 0.35;
+}
+
+.dip-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.dip-dot.war {
+  background: #f87171;
+  box-shadow: 0 0 4px rgba(248, 113, 113, 0.55);
+}
+
+.dip-dot.ceasefire {
+  background: #fbbf24;
+  box-shadow: 0 0 4px rgba(251, 191, 36, 0.45);
+}
+
+.dip-dot.alliance {
+  background: #34d399;
+  box-shadow: 0 0 4px rgba(52, 211, 153, 0.5);
+}
+
+.dip-dot.neutral {
+  background: #94a3b8;
+}
+
+.dip-self {
+  color: #475569;
+  font-weight: 700;
+}
+
+.dip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 0.56rem;
+  color: var(--muted);
+}
+
+.dip-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.emp-dip-badge {
+  display: none;
+  font-family: monospace;
+  font-size: 0.55rem;
+  font-weight: 800;
+  padding: 0 4px;
+  border-radius: 2px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.emp-dip-badge.visible {
+  display: inline-block;
+}
+
+.emp-dip-badge.war {
+  color: #fecaca;
+  background: rgba(185, 28, 28, 0.55);
+  border: 1px solid #f87171;
+}
+
+.emp-dip-badge.ceasefire {
+  color: #fef3c7;
+  background: rgba(180, 83, 9, 0.5);
+  border: 1px solid #fbbf24;
+}
+
+.emp-dip-badge.alliance {
+  color: #d1fae5;
+  background: rgba(4, 120, 87, 0.55);
+  border: 1px solid #34d399;
+}
+
+.emp-dip-badge.neutral {
+  color: #e2e8f0;
+  background: rgba(71, 85, 105, 0.55);
+  border: 1px solid #94a3b8;
 }
 
 .arena-feed-head {

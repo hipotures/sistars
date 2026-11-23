@@ -319,6 +319,7 @@ export interface HudSnapshot {
   invasionsCount: number;
   totalSalvaged: number;
   gateJumpsCount: number;
+  diplomacyMatrix?: string[][];
   stepProfile?: StepProfile;
 }
 
@@ -533,6 +534,7 @@ export interface ArenaMatchSummary {
   epochDeadlineMs: number | null;
   debugAudit: boolean;
   anomaliesCount: number;
+  diplomacyMatrix?: string[][];
 }
 
 export interface CreateArenaMatchOptions {

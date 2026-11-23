@@ -1412,6 +1412,8 @@ pub struct HudSnapshot {
     pub invasions_count: u32,
     pub total_salvaged: u32,
     pub gate_jumps_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diplomacy_matrix: Vec<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_profile: Option<StepProfile>,
 }

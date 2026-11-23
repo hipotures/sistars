@@ -2442,3 +2442,53 @@ fn scenario_garrison_reallocates_to_fortify_front_and_gate_distance() {
         "Excess rear garrison must reallocate to under-defended Fortify front planet"
     );
 }
+
+#[test]
+fn scenario_galactic_dominance_early_warning_alert() {
+    let races = classic_races().into_iter().take(2).collect();
+    // 10 planets total: 5 owned by Humanoids (50% of inhabited, 50% of total >= 35%),
+    // 3 owned by Rabbitoids, 2 neutral -> total inhabited = 8, Humanoids = 5/8 = 62.5%
+    // Use 12 planets total: 5 Humanoids, 4 Rabbitoids, 3 neutral -> 9/12 = 75% settled,
+    // Humanoids = 5/9 = 55.6% (>= 50%, < 60% victory threshold!)
+    let mut planets = Vec::new();
+    for i in 0..12 {
+        let owner = if i < 5 {
+            1
+        } else if i < 9 {
+            2
+        } else {
+            0
+        };
+        planets.push(SandboxPlanet {
+            x: 100.0 + (i as f32) * 80.0,
+            y: 100.0 + (i as f32) * 40.0,
+            owner,
+            pop: if owner > 0 { 40.0 } else { 0.0 },
+            factories: if owner > 0 { 20.0 } else { 0.0 },
+            ..Default::default()
+        });
+    }
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), true);
+    // Keep victory threshold at 0.65 so 55.6% triggers early warning without ending the game
+    sim.victory_cfg.planet_share_threshold = 0.65;
+    sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
+
+    sim.step_tick(true);
+
+    assert!(sim.winner.is_none());
+    assert!(
+        sim.empires[1]
+            .recent_alerts
+            .iter()
+            .any(|a| a.contains("GALACTIC ALERT") && a.contains("Humanoids")),
+        "Living rivals must receive GALACTIC ALERT when Humanoids cross 50% inhabited worlds: {:?}",
+        sim.empires[1].recent_alerts
+    );
+    assert!(
+        sim.pending_public_alerts
+            .iter()
+            .any(|(_, msg)| msg.contains("GALACTIC ALERT")),
+        "pending_public_alerts must queue the galactic alert for ArenaFeedEvent"
+    );
+}

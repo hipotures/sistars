@@ -178,6 +178,8 @@ pub struct MatchPublicSummary {
     pub epoch_deadline_ms: Option<u64>,
     pub debug_audit: bool,
     pub anomalies_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diplomacy_matrix: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

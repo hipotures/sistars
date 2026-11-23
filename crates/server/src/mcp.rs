@@ -1016,11 +1016,11 @@ async fn handle_tool_briefing(state: &AppState, match_id: &str, empire_idx: usiz
     let max_yr = guard.sim.victory_cfg.max_year.unwrap_or(0.0);
     let victory_text = if max_yr > 0.0 {
         format!(
-            "Control >= {p_dom}% of INHABITED planets (activates once >= 50% of total galaxy planets are colonized) OR >= {r_dom}% of galaxy resources (with >= 50% of inhabited planets), eliminate all rivals, or lead at year {}.",
+            "PlanetDominance activates once >= 50% of all galaxy planets are colonized, and awards victory to the empire controlling >= {p_dom}% of INHABITED planets (or >= {r_dom}% of total galaxy resources while holding >= 50% of inhabited planets). You can also win by eliminating all rivals or leading at year {}.",
             round1(max_yr)
         )
     } else {
-        format!("Control >= {p_dom}% of INHABITED planets (activates once >= 50% of total galaxy planets are colonized) OR >= {r_dom}% of galaxy resources (with >= 50% of inhabited planets), or eliminate all rivals.")
+        format!("PlanetDominance activates once >= 50% of all galaxy planets are colonized, and awards victory to the empire controlling >= {p_dom}% of INHABITED planets (or >= {r_dom}% of total galaxy resources while holding >= 50% of inhabited planets), or by eliminating all rivals.")
     };
 
     let clock_text = match guard.execution_mode {
@@ -1064,7 +1064,7 @@ async fn handle_tool_briefing(state: &AppState, match_id: &str, empire_idx: usiz
           * cruiserShare, bshipShare, bomberShare: warship mix (Cruiser counters Bomber & intercepts; Battleship counters Cruiser; Bomber destroys planetary bunkers).\n\
           * techAlloc {{ene, wep, pro, con, ele, bio}} & mineralWeights {{iron, bora, germ}}.\n\
           * maxUpkeepRatio: above this threshold Governor pauses shipbuilding and scraps obsolete ships.\n\
-        - Diplomacy (`setDiplomacy` / `sendDipMessage`): stances War, Neutral, Ceasefire, Alliance. CRITICAL: `targetEmp` and `toEmp` are strictly 1-based `empireId` (1..=N), matching `knownEmpires[].empId`, `enemyPlanets[].ownerEmp`, and diplomacy tables (unlike 0-based `empireIdx` used in lobby `join_match`). Note: AI bots will break `Ceasefire`/`Neutral` if you approach galactic dominance (>= 40% inhabited planets) or if a `PRT_WM` War Monger builds a strong fleet.\n\
+        - Diplomacy (`setDiplomacy` / `sendDipMessage`): stances War, Neutral, Ceasefire, Alliance. CRITICAL: `targetEmp` and `toEmp` are strictly 1-based `empireId` (1..=N), matching `knownEmpires[].empId`, `enemyPlanets[].ownerEmp`, and diplomacy tables (unlike 0-based `empireIdx` used in lobby `join_match`). Note: AI bots (`seatRole == \"bot\"`) react to formal `setDiplomacy` stance changes (and will break `Ceasefire`/`Neutral` if you approach >= 40% inhabited planets or if a `PRT_WM` War Monger builds a strong fleet), but bots do NOT read text `sendDipMessage` cables — text cables are only meaningful when communicating with other LLM agents.\n\
         - Always inspect `commandFeedback` returned by `submit_orders` to confirm whether each command was `applied`, `queued`, or `rejected` (with exact reason).",
         guard.scenario_name,
         emp.race.name,
@@ -1097,7 +1097,13 @@ async fn handle_tool_observation(state: &AppState, match_id: &str, empire_idx: u
     let previous_strategy = guard.latest_strategy.get(&empire_idx).cloned();
     let delta = guard.compute_epoch_delta(empire_idx, &obs);
 
-    let payload = json!({
+    let hint = if guard.status == MatchStatus::Finished {
+        Some("Match finished. Call list_matches and join_match to enter a new match directly.")
+    } else {
+        None
+    };
+
+    let mut payload = json!({
         "matchId": guard.match_id,
         "epoch": guard.epoch,
         "tick": guard.sim.ticks,
@@ -1116,6 +1122,9 @@ async fn handle_tool_observation(state: &AppState, match_id: &str, empire_idx: u
         "delta": delta,
         "state": obs,
     });
+    if let Some(h) = hint {
+        payload["hint"] = json!(h);
+    }
 
     tool_text_result(
         serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()),

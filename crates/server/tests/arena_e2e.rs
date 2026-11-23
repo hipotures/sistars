@@ -2195,3 +2195,195 @@ async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
         known_n
     );
 }
+
+#[tokio::test]
+async fn e2e_hud_diplomacy_matrix_and_mcp_transition_from_finished() {
+    let secret = "seat_secret_transition_test_0123";
+    let logs_dir =
+        std::env::temp_dir().join(format!("sistars_e2e_matrix_{}", uuid::Uuid::new_v4()));
+    let state = AppState::new_with_mcp(
+        None,
+        logs_dir,
+        None,
+        Some(&format!("claude-1:{secret}")),
+    );
+    let router = build_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let ws_base_url = format!("ws://{addr}");
+    let client = reqwest::Client::new();
+    let mcp_url = format!("{base_url}/mcp");
+
+    // 1. Create Match A (maxYear=2400.2 so it finishes quickly) and connect Spectator WS
+    let created_a: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 920001,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "openAgentSeats": [0, 1],
+            "lobbyTimeoutSec": 0,
+            "speedMult": 5.0,
+            "tickDelayMs": 10
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_a = created_a["matchId"].as_str().unwrap().to_string();
+    let tok1 = created_a["empireTokens"]["1"].as_str().unwrap().to_string();
+
+    // Connect Spectator WS and check init.hud.diplomacyMatrix
+    let (mut ws_stream, _) = connect_async(format!("{ws_base_url}/ws/matches/{match_a}/spectate"))
+        .await
+        .expect("WS connect failed");
+    let first_msg = ws_stream.next().await.unwrap().unwrap();
+    let init_json: Value = serde_json::from_str(first_msg.to_text().unwrap()).unwrap();
+    assert_eq!(init_json["type"].as_str(), Some("init"));
+    let init_matrix = init_json["hud"]["diplomacyMatrix"].as_array().unwrap();
+    assert_eq!(init_matrix.len(), 6);
+    assert_eq!(init_matrix[1][1].as_str(), Some("Self"));
+    assert_eq!(init_matrix[1][2].as_str(), Some("War"));
+
+    // Submit SetDiplomacy(targetEmp=3, Ceasefire) from seat 1 and verify diplomacyMatrix updates
+    let sub_res = client
+        .post(format!("{base_url}/api/v1/matches/{match_a}/commands"))
+        .bearer_auth(&tok1)
+        .json(&json!({
+            "commands": [
+                { "setDiplomacy": { "targetEmp": 3, "stance": "Ceasefire" } }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sub_res.status(), StatusCode::OK);
+
+    let summary_a: Value = client
+        .get(format!("{base_url}/api/v1/matches/{match_a}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        summary_a["diplomacyMatrix"][1][2].as_str(),
+        Some("Ceasefire")
+    );
+    assert_eq!(
+        summary_a["diplomacyMatrix"][2][1].as_str(),
+        Some("Ceasefire")
+    );
+
+    // Join Match A with persistent MCP seat
+    let join_a: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "join_match",
+                "arguments": { "matchId": match_a, "empireIdx": 0 }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(join_a["result"]["isError"].as_bool(), Some(false));
+
+    // Mark Match A as Finished directly on the server handle to simulate match end
+    {
+        let matches = state.matches.read().await;
+        let handle_a = matches.get(&match_a).unwrap().clone();
+        let mut guard = handle_a.inner.write().await;
+        guard.status = sistars_server::models::MatchStatus::Finished;
+        guard.sim.winner = Some(0);
+        guard.sim.victory_reason = Some("PlanetDominance(62% of inhabited planets)".to_string());
+    }
+
+    // Verify get_observation on Finished match returns helpful `hint`
+    let obs_finished: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "get_observation", "arguments": {} }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let obs_fin_json: Value =
+        serde_json::from_str(obs_finished["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(obs_fin_json["status"].as_str(), Some("Finished"));
+    assert!(
+        obs_fin_json["hint"]
+            .as_str()
+            .unwrap_or("")
+            .contains("join_match"),
+        "Finished observation must include transition hint, got: {}",
+        obs_fin_json
+    );
+
+    // 2. Create Match B and call join_match WITHOUT calling leave_match first!
+    let created_b: Value = client
+        .post(format!("{base_url}/api/v1/matches"))
+        .json(&json!({
+            "seed": 920002,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "openAgentSeats": [0],
+            "lobbyTimeoutSec": 60,
+            "speedMult": 1.0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_b = created_b["matchId"].as_str().unwrap().to_string();
+
+    let join_b: Value = client
+        .post(&mcp_url)
+        .header("Authorization", format!("Bearer {secret}"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "join_match",
+                "arguments": { "matchId": match_b, "empireIdx": 0 }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(join_b["result"]["isError"].as_bool(), Some(false));
+    let join_b_json: Value =
+        serde_json::from_str(join_b["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(join_b_json["joined"].as_bool(), Some(true));
+    assert_eq!(join_b_json["matchId"].as_str(), Some(match_b.as_str()));
+
+    state.shutdown_all().await;
+}

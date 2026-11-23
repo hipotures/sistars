@@ -480,6 +480,10 @@ pub struct Simulation {
     pub victory_reason: Option<String>,
     /// Bitmask of 0-based empire indices currently controlled by external agents (non-bot).
     pub external_agent_mask: u16,
+    /// Bitmask of 0-based empire indices that have already triggered a galactic dominance warning.
+    pub dominance_alert_mask: u16,
+    /// Public dominance/diplomacy alerts queued for server `ArenaFeedEvent` emission.
+    pub pending_public_alerts: Vec<(Option<usize>, String)>,
 
     // Telemetry
     pub space_battles_count: u32,
@@ -589,6 +593,8 @@ impl Simulation {
             winner: None,
             victory_reason: None,
             external_agent_mask: 0,
+            dominance_alert_mask: 0,
+            pending_public_alerts: Vec::new(),
             space_battles_count: 0,
             invasions_count: 0,
             total_salvaged: 0,
@@ -1284,6 +1290,8 @@ impl Simulation {
         self.next_fleet_id = 1;
         self.winner = None;
         self.victory_reason = None;
+        self.dominance_alert_mask = 0;
+        self.pending_public_alerts.clear();
         self.relations = Self::default_relations();
         self.events.clear();
         self.anomalies.clear();
@@ -5708,6 +5716,50 @@ impl Simulation {
             }
         }
 
+        // 2b. Galactic Dominance Early-Warning Alert (>= 50% inhabited planets at >= 35% settled galaxy, or >= 55% resources)
+        if total_planets >= 10 && (inhabited as usize) * 100 >= total_planets * 35 {
+            let denom_i = (inhabited as f32).max(1.0);
+            for e in 0..num_emp {
+                if emp_planets[e] == 0 || (self.dominance_alert_mask & (1u16 << e)) != 0 {
+                    continue;
+                }
+                let p_share = emp_planets[e] as f32 / denom_i;
+                let r_share = if total_res > 1.0 {
+                    self.tick_stats[e].res / total_res
+                } else {
+                    0.0
+                };
+                let alert_msg = if p_share >= 0.50 {
+                    Some(format!(
+                        "GALACTIC ALERT: {} control {:.0}% of inhabited worlds — approaching {:.0}% Planet Dominance!",
+                        self.empires[e].race.name,
+                        p_share * 100.0,
+                        p_thresh * 100.0
+                    ))
+                } else if r_share >= 0.55 {
+                    Some(format!(
+                        "GALACTIC ALERT: {} control {:.0}% of galaxy resources — approaching {:.0}% Resource Dominance!",
+                        self.empires[e].race.name,
+                        r_share * 100.0,
+                        r_thresh * 100.0
+                    ))
+                } else {
+                    None
+                };
+                if let Some(msg) = alert_msg {
+                    self.dominance_alert_mask |= 1u16 << e;
+                    for target_e in 0..num_emp {
+                        if self.is_empire_alive(target_e) {
+                            self.push_empire_alert(target_e, msg.clone());
+                        }
+                    }
+                    let col = self.empires[e].race.color.clone();
+                    self.push_event(msg.clone(), &col);
+                    self.pending_public_alerts.push((Some(e), msg));
+                }
+            }
+        }
+
         // 3. Optional Max Year Time Limit Victory
         if let Some(max_yr) = self.victory_cfg.max_year {
             if self.year >= max_yr {
@@ -6216,6 +6268,25 @@ impl Simulation {
         Some(generate_star_system(&input))
     }
 
+    /// Returns the N x N diplomacy matrix indexed by 0-based `empireIdx`
+    /// (`"War" | "Neutral" | "Ceasefire" | "Alliance"`, with `"Self"` on the diagonal).
+    pub fn diplomacy_matrix_strings(&self) -> Vec<Vec<String>> {
+        let num_emp = self.empires.len();
+        (0..num_emp)
+            .map(|i| {
+                (0..num_emp)
+                    .map(|j| {
+                        if i == j {
+                            "Self".to_string()
+                        } else {
+                            format!("{:?}", self.relations[i][j])
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     pub fn take_hud_snapshot(&mut self) -> HudSnapshot {
         self.fill_render_buffers();
         let empires = self
@@ -6257,6 +6328,7 @@ impl Simulation {
             invasions_count: self.invasions_count,
             total_salvaged: self.total_salvaged,
             gate_jumps_count: self.gate_jumps_count,
+            diplomacy_matrix: self.diplomacy_matrix_strings(),
             step_profile: if self.profile_enabled {
                 Some(self.last_profile)
             } else {

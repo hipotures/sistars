@@ -593,8 +593,10 @@ export class UiController {
 
     if (forceDrawers || now - this.lastHudUpdateMs >= 100) {
       this.lastHudUpdateMs = now;
+      this.latestHud = hud;
       getEl('hudYear').textContent = hud.year.toFixed(1);
       this.updateEmpireHud(hud);
+      this.renderDiplomacyMatrix(hud);
       this.renderEvents(hud);
       if (this.selection !== null) {
         void this.updateInspector(hud);
@@ -735,13 +737,29 @@ export class UiController {
 
     getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
 
-    // Interactive HUD empire lens multi-select
-    getEl('empiresBar').addEventListener('click', (e) => {
+    // Interactive HUD empire lens multi-select & diplomacy relation hover
+    const empiresBar = getEl('empiresBar');
+    empiresBar.addEventListener('click', (e) => {
       const pill = (e.target as HTMLElement).closest<HTMLElement>('.emp-pill');
       if (!pill || pill.dataset.empIdx === undefined) return;
       const idx = Number(pill.dataset.empIdx);
       if (!Number.isNaN(idx)) {
         this.callbacks.onToggleEmpireLens(idx);
+      }
+    });
+    empiresBar.addEventListener('mouseover', (e) => {
+      const pill = (e.target as HTMLElement).closest<HTMLElement>('.emp-pill');
+      if (!pill || pill.dataset.empIdx === undefined) return;
+      const idx = Number(pill.dataset.empIdx);
+      if (!Number.isNaN(idx) && this.hoveredEmpireIdx !== idx) {
+        this.hoveredEmpireIdx = idx;
+        this.updateHoveredEmpireRelations(this.latestHud);
+      }
+    });
+    empiresBar.addEventListener('mouseleave', () => {
+      if (this.hoveredEmpireIdx !== null) {
+        this.hoveredEmpireIdx = null;
+        this.updateHoveredEmpireRelations(this.latestHud);
       }
     });
 
@@ -1400,7 +1418,10 @@ export class UiController {
           (emp, idx) => `<div class="emp-pill" id="hudPill_${idx}" data-emp-idx="${idx}" style="border-top-color:${emp.color};--emp-color:${emp.color};">
             <div class="emp-row1">
               <span style="color:${emp.color};">■ ${emp.name}</span>
-              <span id="hudTechB_${idx}"></span>
+              <span style="display:inline-flex;align-items:center;gap:3px;">
+                <span class="emp-dip-badge" id="hudDip_${idx}"></span>
+                <span id="hudTechB_${idx}"></span>
+              </span>
             </div>
             <div class="emp-row2">
               <span id="hudStat_${idx}">1p · 25R</span>
@@ -1437,6 +1458,107 @@ export class UiController {
         pillEl.title = `${prefix}${emp.name}: ${emp.stats.planets.toLocaleString()} planets · ${Math.round(emp.stats.res).toLocaleString()} Res/yr · Upkeep ${upkeep.toFixed(1)} Res/yr (${upkeepPct}%) · Fleets ${fCount} (${orbCount} orbiting) · ${emp.doctrine.kills.toLocaleString()} kills · ${emp.stats.gates.toLocaleString()} stargates | EW: ${ewTxt}`;
       }
     }
+    this.updateHoveredEmpireRelations(hud);
+  }
+
+  private latestHud: HudSnapshot | null = null;
+  private dipMatrixAliveOnly = false;
+  private lastDipMatrixSig = '';
+  private hoveredEmpireIdx: number | null = null;
+
+  private updateHoveredEmpireRelations(hud: HudSnapshot | null): void {
+    const matrix = hud?.diplomacyMatrix;
+    const count = hud?.empires.length ?? 0;
+    for (let i = 0; i < count; i++) {
+      const badge = document.getElementById(`hudDip_${i}`);
+      if (!badge) continue;
+      if (
+        this.hoveredEmpireIdx === null ||
+        !matrix ||
+        this.hoveredEmpireIdx === i ||
+        (hud && hud.empires[i].stats.planets === 0)
+      ) {
+        badge.className = 'emp-dip-badge';
+        badge.textContent = '';
+        continue;
+      }
+      const stance = matrix[this.hoveredEmpireIdx]?.[i] ?? 'Neutral';
+      const cls = stance.toLowerCase();
+      const short =
+        stance === 'War'
+          ? 'WAR'
+          : stance === 'Ceasefire'
+            ? 'CEASE'
+            : stance === 'Alliance'
+              ? 'ALLY'
+              : 'NEUT';
+      badge.className = `emp-dip-badge visible ${cls}`;
+      badge.textContent = short;
+    }
+  }
+
+  private renderDiplomacyMatrix(hud: HudSnapshot | null): void {
+    const body = document.getElementById('diplomacyMatrixBody');
+    if (!body || !hud) return;
+    const matrix = hud.diplomacyMatrix;
+    if (!matrix || matrix.length === 0) {
+      body.innerHTML = '<div style="font-size:0.6rem;color:var(--muted);">No diplomacy data yet.</div>';
+      return;
+    }
+    const indices = hud.empires
+      .map((emp, idx) => ({ emp, idx, alive: emp.stats.planets > 0 }))
+      .filter((item) => !this.dipMatrixAliveOnly || item.alive);
+    const sig = `${this.dipMatrixAliveOnly}|${indices.map((x) => `${x.idx}:${x.alive ? 1 : 0}`).join(',')}|${matrix.map((r) => r.join(',')).join(';')}`;
+    if (sig === this.lastDipMatrixSig) return;
+    this.lastDipMatrixSig = sig;
+
+    if (indices.length === 0) {
+      body.innerHTML = '<div style="font-size:0.6rem;color:var(--muted);">No living empires.</div>';
+      return;
+    }
+
+    const codeFor = (name: string): string => name.slice(0, 3).toUpperCase();
+    const headerCols = indices
+      .map(
+        ({ emp, alive }) =>
+          `<th class="${alive ? '' : 'extinct'}" style="color:${emp.color};" title="${emp.name}">${codeFor(emp.name)}</th>`,
+      )
+      .join('');
+
+    const rowsHtml = indices
+      .map(({ emp: rowEmp, idx: i, alive: rowAlive }) => {
+        const cells = indices
+          .map(({ emp: colEmp, idx: j, alive: colAlive }) => {
+            const extinctCls = rowAlive && colAlive ? '' : 'extinct';
+            if (i === j) {
+              return `<td class="${extinctCls}" title="${rowEmp.name} (Self)"><span class="dip-self">·</span></td>`;
+            }
+            const stance = matrix[i]?.[j] ?? 'Neutral';
+            const reverseStance = matrix[j]?.[i] ?? stance;
+            const tip =
+              stance === reverseStance
+                ? `${rowEmp.name} ↔ ${colEmp.name}: ${stance}`
+                : `${rowEmp.name} → ${colEmp.name}: ${stance}`;
+            const cls = stance.toLowerCase();
+            return `<td class="${extinctCls}" title="${tip}"><span class="dip-dot ${cls}"></span></td>`;
+          })
+          .join('');
+        return `<tr><th class="${rowAlive ? '' : 'extinct'}" style="color:${rowEmp.color};" title="${rowEmp.name}">${codeFor(rowEmp.name)}</th>${cells}</tr>`;
+      })
+      .join('');
+
+    body.innerHTML = `
+      <table class="dip-matrix-table">
+        <thead><tr><th></th>${headerCols}</tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <div class="dip-legend">
+        <span class="dip-legend-item"><span class="dip-dot war"></span>War</span>
+        <span class="dip-legend-item"><span class="dip-dot ceasefire"></span>Ceasefire</span>
+        <span class="dip-legend-item"><span class="dip-dot alliance"></span>Alliance</span>
+        <span class="dip-legend-item"><span class="dip-dot neutral"></span>Neutral</span>
+      </div>
+    `;
   }
 
   private renderEvents(hud: HudSnapshot): void {
@@ -3130,6 +3252,20 @@ export class UiController {
       if (!feedPanel || !btnToggleFeed) return;
       const collapsed = feedPanel.classList.toggle('collapsed');
       btnToggleFeed.textContent = collapsed ? '▸ Show' : '▾ Hide';
+    });
+
+    const dipSection = document.getElementById('diplomacyMatrixSection');
+    const btnToggleDip = document.getElementById('btnToggleDipMatrix');
+    const dipAliveCb = document.getElementById('diplomacyAliveOnly') as HTMLInputElement | null;
+    btnToggleDip?.addEventListener('click', () => {
+      if (!dipSection || !btnToggleDip) return;
+      const collapsed = dipSection.classList.toggle('collapsed');
+      btnToggleDip.textContent = collapsed ? '▸' : '▾';
+    });
+    dipAliveCb?.addEventListener('change', () => {
+      this.dipMatrixAliveOnly = dipAliveCb.checked;
+      this.lastDipMatrixSig = '';
+      this.renderDiplomacyMatrix(this.latestHud);
     });
 
     const scenSel = document.getElementById('arenaNewScenario') as HTMLSelectElement | null;

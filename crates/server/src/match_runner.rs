@@ -386,6 +386,7 @@ impl MatchInner {
             epoch_deadline_ms: self.epoch_deadline_ms,
             debug_audit: self.debug_audit,
             anomalies_count: self.sim.anomalies.len(),
+            diplomacy_matrix: self.sim.diplomacy_matrix_strings(),
         }
     }
 
@@ -1088,7 +1089,7 @@ async fn run_match_loop(
                 guard.status = MatchStatus::Running;
                 guard.epoch_deadline_ms = None;
 
-                let feed_events = if !guard.pending_submissions.is_empty() {
+                let mut feed_events = if !guard.pending_submissions.is_empty() {
                     apply_submissions_locked(&mut guard, true).0
                 } else {
                     Vec::new()
@@ -1104,6 +1105,13 @@ async fn run_match_loop(
                 guard.sim.step_tick(false);
                 tps_window_ticks += 1;
 
+                let public_alerts: Vec<(Option<usize>, String)> =
+                    guard.sim.pending_public_alerts.drain(..).collect();
+                for (emp_opt, msg) in public_alerts {
+                    let ev = guard.push_feed_event(emp_opt, ArenaFeedKind::EpochStatus, msg, None);
+                    feed_events.push(ev);
+                }
+
                 let tpe = guard.ticks_per_epoch.max(1) as u64;
                 let new_epoch = guard.sim.ticks / tpe;
                 let epoch_advanced = new_epoch > guard.epoch;
@@ -1114,6 +1122,13 @@ async fn run_match_loop(
 
                 let is_victory = guard.sim.winner.is_some();
                 let mut victory_feed = None;
+                let public_alerts: Vec<(Option<usize>, String)> =
+                    guard.sim.pending_public_alerts.drain(..).collect();
+                for (emp_opt, msg) in public_alerts {
+                    let ev = guard.push_feed_event(emp_opt, ArenaFeedKind::EpochStatus, msg, None);
+                    let _ = ws_tx.send(SpectatorWsMessage::Feed { event: ev });
+                }
+
                 if is_victory {
                     guard.status = MatchStatus::Finished;
                     guard.flush_live_auditor();
@@ -1378,6 +1393,13 @@ async fn run_match_loop(
                 let should_broadcast = was_stepped
                     || is_victory
                     || (ws_due && (is_last || ((step_i + 1) % cur_stride == 0)));
+
+                let public_alerts: Vec<(Option<usize>, String)> =
+                    guard.sim.pending_public_alerts.drain(..).collect();
+                for (emp_opt, msg) in public_alerts {
+                    let ev = guard.push_feed_event(emp_opt, ArenaFeedKind::EpochStatus, msg, None);
+                    let _ = ws_tx.send(SpectatorWsMessage::Feed { event: ev });
+                }
 
                 if is_victory {
                     finished = true;

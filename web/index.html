@@ -199,6 +199,19 @@
     </div>
     <button class="hud-btn" id="btnToggleArenaFeed" style="padding:2px 6px;font-size:0.62rem;">▾ Hide</button>
   </div>
+  <div id="diplomacyMatrixSection" class="dip-matrix-section">
+    <div class="dip-matrix-head">
+      <span class="dip-matrix-title">⚔ DIPLOMACY MATRIX</span>
+      <div class="dip-matrix-controls">
+        <label class="dip-alive-toggle" title="Hide eliminated empires">
+          <input type="checkbox" id="diplomacyAliveOnly" />
+          <span>Alive only</span>
+        </label>
+        <button class="hud-btn" id="btnToggleDipMatrix" style="padding:1px 5px;font-size:0.58rem;">▾</button>
+      </div>
+    </div>
+    <div id="diplomacyMatrixBody" class="dip-matrix-body"></div>
+  </div>
   <div class="arena-feed-body" id="arenaFeedBody">
     <div class="arena-feed-empty">Connect to an Arena match to stream LLM reasoning, diplomacy cables &amp; sector directives.</div>
   </div>
