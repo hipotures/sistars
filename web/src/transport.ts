@@ -445,6 +445,7 @@ export async function createArenaMatch(
     frameStrideTicks?: number;
     tickDelayMs?: number;
     startPaused?: boolean;
+    races?: import('./types').RaceDef[];
   },
 ): Promise<CreateArenaMatchResponse> {
   const base = normalizeServerUrl(serverUrl);
@@ -483,6 +484,9 @@ export async function createArenaMatch(
   }
   if (options?.seed !== undefined && Number.isFinite(options.seed)) {
     body.seed = Math.floor(options.seed);
+  }
+  if (options?.races && options.races.length >= 2) {
+    body.races = options.races;
   }
   const resp = await fetch(`${base}/api/v1/matches`, {
     method: 'POST',
