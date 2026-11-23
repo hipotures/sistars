@@ -3663,12 +3663,17 @@ export class UiController {
       btnGroup.style.display = 'flex';
       btnGroup.style.gap = '4px';
 
+      const maskedMcpUrl = mcpUrl.replace(
+        /(\/mcp\/)[^/?#]+$/,
+        '$1••••••••••••••••••••••••',
+      );
+
       const copyMcpBtn = document.createElement('button');
       copyMcpBtn.className = 'hud-btn active';
       copyMcpBtn.style.padding = '2px 6px';
       copyMcpBtn.style.fontSize = '0.6rem';
       copyMcpBtn.textContent = '🔌 Copy MCP URL';
-      copyMcpBtn.title = mcpUrl;
+      copyMcpBtn.title = 'Copy full MCP URL to clipboard';
       copyMcpBtn.addEventListener('click', () => copyText(mcpUrl, copyMcpBtn, '🔌 Copy MCP URL'));
 
       const copyCliBtn = document.createElement('button');
@@ -3676,17 +3681,43 @@ export class UiController {
       copyCliBtn.style.padding = '2px 6px';
       copyCliBtn.style.fontSize = '0.6rem';
       copyCliBtn.textContent = '📋 Copy CLI';
+      copyCliBtn.title = 'Copy CLI agent command to clipboard';
       copyCliBtn.addEventListener('click', () => copyText(cmd, copyCliBtn, '📋 Copy CLI'));
 
+      const revealBtn = document.createElement('button');
+      revealBtn.className = 'hud-btn';
+      revealBtn.style.padding = '2px 5px';
+      revealBtn.style.fontSize = '0.6rem';
+      revealBtn.textContent = '👁';
+      revealBtn.title = 'Temporarily reveal MCP URL (auto-hides in 8s)';
+
+      const mcpDiv = document.createElement('div');
+      mcpDiv.className = 'arena-token-cmd';
+      mcpDiv.textContent = maskedMcpUrl;
+
+      let revealed = false;
+      let hideTimer: number | null = null;
+      const setRevealed = (show: boolean) => {
+        revealed = show;
+        mcpDiv.textContent = show ? mcpUrl : maskedMcpUrl;
+        revealBtn.textContent = show ? '🙈' : '👁';
+        revealBtn.classList.toggle('active', show);
+        if (hideTimer !== null) {
+          window.clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        if (show) {
+          hideTimer = window.setTimeout(() => setRevealed(false), 8000);
+        }
+      };
+      revealBtn.addEventListener('click', () => setRevealed(!revealed));
+
+      btnGroup.appendChild(revealBtn);
       btnGroup.appendChild(copyMcpBtn);
       btnGroup.appendChild(copyCliBtn);
 
       top.appendChild(label);
       top.appendChild(btnGroup);
-
-      const mcpDiv = document.createElement('div');
-      mcpDiv.className = 'arena-token-cmd';
-      mcpDiv.textContent = mcpUrl;
 
       row.appendChild(top);
       row.appendChild(mcpDiv);
