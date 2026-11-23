@@ -2018,6 +2018,35 @@ tr.rep-row-selected:hover {
   gap: 5px;
 }
 
+.arena-seat-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  background: rgba(10, 17, 29, 0.72);
+  font-size: 0.7rem;
+}
+
+.arena-seat-row input[type='checkbox'] {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.arena-seat-row span {
+  font-family: monospace;
+  color: var(--muted);
+  font-size: 0.65rem;
+  flex: 0 0 auto;
+}
+
+.arena-seat-race {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 0.68rem;
+}
+
 .arena-created-box {
   margin-top: 4px;
   border: 1px solid #1e3a5f;

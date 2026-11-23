@@ -3194,16 +3194,31 @@ export class UiController {
   private syncArenaRaceCountUi(): void {
     const raceCountSel = document.getElementById('arenaNewRaceCount') as HTMLSelectElement | null;
     const agentCountSel = document.getElementById('arenaNewAgentCount') as HTMLSelectElement | null;
-    const seatLabels = Array.from(
-      document.querySelectorAll<HTMLLabelElement>('#arenaNewSeatsGrid label'),
+    const seatRows = Array.from(
+      document.querySelectorAll<HTMLElement>('#arenaNewSeatsGrid .arena-seat-row'),
     );
     const seatCheckboxes = Array.from(
       document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
     );
+    const seatRaceSelects = Array.from(
+      document.querySelectorAll<HTMLSelectElement>('#arenaNewSeatsGrid .arena-seat-race'),
+    );
+    const availRaces = this.allAvailableRaces();
+    seatRaceSelects.forEach((sel, idx) => {
+      const prev = sel.value;
+      sel.innerHTML = availRaces
+        .map((r) => `<option value="${r.id}">${r.name} (${r.prt.replace('PRT_', '')})</option>`)
+        .join('');
+      if (prev && availRaces.some((r) => r.id === prev)) {
+        sel.value = prev;
+      } else if (availRaces[idx]) {
+        sel.value = availRaces[idx].id;
+      }
+    });
     const raceCount = Math.max(2, Math.min(6, Number(raceCountSel?.value ?? 6) || 6));
 
-    seatLabels.forEach((lbl, idx) => {
-      lbl.style.display = idx < raceCount ? '' : 'none';
+    seatRows.forEach((row, idx) => {
+      row.style.display = idx < raceCount ? 'flex' : 'none';
     });
     seatCheckboxes.forEach((cb, idx) => {
       if (idx >= raceCount) {
@@ -3460,10 +3475,17 @@ export class UiController {
         (document.getElementById('arenaNewRaceCount') as HTMLSelectElement | null)?.value ?? 6,
       );
       const raceCount = Math.max(2, Math.min(6, Number.isFinite(raceCountRaw) ? raceCountRaw : 6));
-      const races =
-        raceCount < this.catalog.classicRaces.length
-          ? this.catalog.classicRaces.slice(0, raceCount)
-          : undefined;
+      const availRaces = this.allAvailableRaces();
+      const seatRaceSelects = Array.from(
+        document.querySelectorAll<HTMLSelectElement>('#arenaNewSeatsGrid .arena-seat-race'),
+      );
+      const selectedRaces: RaceDef[] = [];
+      for (let i = 0; i < raceCount; i++) {
+        const rid = seatRaceSelects[i]?.value;
+        const found = availRaces.find((r) => r.id === rid) ?? this.catalog.classicRaces[i];
+        if (found) selectedRaces.push(found);
+      }
+      const races = selectedRaces.length >= 2 ? selectedRaces : undefined;
 
       const agentSeats: number[] = [];
       document
