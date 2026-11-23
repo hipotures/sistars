@@ -1000,11 +1000,11 @@ async fn handle_tool_briefing(state: &AppState, match_id: &str, empire_idx: usiz
     let max_yr = guard.sim.victory_cfg.max_year.unwrap_or(0.0);
     let victory_text = if max_yr > 0.0 {
         format!(
-            "Control >= {p_dom}% of galaxy planets OR >= {r_dom}% of galaxy resources (or lead at year {}).",
+            "Control >= {p_dom}% of INHABITED planets (activates once >= 50% of total galaxy planets are colonized) OR >= {r_dom}% of galaxy resources (with >= 50% of inhabited planets), eliminate all rivals, or lead at year {}.",
             round1(max_yr)
         )
     } else {
-        format!("Control >= {p_dom}% of galaxy planets OR >= {r_dom}% of galaxy resources.")
+        format!("Control >= {p_dom}% of INHABITED planets (activates once >= 50% of total galaxy planets are colonized) OR >= {r_dom}% of galaxy resources (with >= 50% of inhabited planets), or eliminate all rivals.")
     };
 
     let clock_text = match guard.execution_mode {
@@ -1036,8 +1036,8 @@ async fn handle_tool_briefing(state: &AppState, match_id: &str, empire_idx: usiz
         - Explicit exploration commands: `scoutSector {{sectorId}}` (priority scout mission into a sector) and `probeWormhole {{wormholeId}}` (priority ship transit through a discovered wormhole to reveal `toSector`).\n\n\
         === OBSERVATION & POLICY GLOSSARY ===\n\
         - galaxyOverview: totalPlanets, gridRows x gridCols, explored/unexplored counts, victoryGoal.\n\
-        - empire: resPerYear, minerals {{iron, bora, germ}}, upkeepRatio, planetCount, fleetCount, techLevels {{ene, wep, pro, con, ele, bio}}, policy.\n\
-        - ownHubs: top 10 own worlds with planetId, sectorId, pop, maxPop, factories, defense, starbaseTier, hasGate, shipProdBuf, minerals.\n\
+        - empire: resPerYear, minerals {{iron, bora, germ}}, upkeepRatio, planetCount, fleetCount, techLevels {{ene, wep, pro, con, ele, bio}}, policy, winnerEmp, victoryReason.\n\
+        - ownHubs: top 8 own worlds with planetId, sectorId, pop, maxPop, factories, defense, starbaseTier, hasGate, nearestOwnGateLy (distance to closest existing own Stargate when hasGate=false), shipProdBuf, minerals.\n\
         - ownFleetsSummary: total, orbiting, inTransit, byClass, bySector (with activeMissionSummary).\n\
         - pendingHubOrders & activeExplorationOrders: live queues so you never duplicate orders.\n\
         - enemyPlanets: strictly foreign worlds (never neutrals) with intelAgeYears & penScanned (true reveals popEst/facEst/defEst).\n\
@@ -1048,7 +1048,7 @@ async fn handle_tool_briefing(state: &AppState, match_id: &str, empire_idx: usiz
           * cruiserShare, bshipShare, bomberShare: warship mix (Cruiser counters Bomber & intercepts; Battleship counters Cruiser; Bomber destroys planetary bunkers).\n\
           * techAlloc {{ene, wep, pro, con, ele, bio}} & mineralWeights {{iron, bora, germ}}.\n\
           * maxUpkeepRatio: above this threshold Governor pauses shipbuilding and scraps obsolete ships.\n\
-        - Diplomacy (`setDiplomacy` / `sendDipMessage`): stances War, Neutral, Ceasefire, Alliance. CRITICAL: `targetEmp` and `toEmp` are strictly 1-based `empireId` (1..=N), matching `knownEmpires[].empId`, `enemyPlanets[].ownerEmp`, and diplomacy tables (unlike 0-based `empireIdx` used in lobby `join_match`).\n\
+        - Diplomacy (`setDiplomacy` / `sendDipMessage`): stances War, Neutral, Ceasefire, Alliance. CRITICAL: `targetEmp` and `toEmp` are strictly 1-based `empireId` (1..=N), matching `knownEmpires[].empId`, `enemyPlanets[].ownerEmp`, and diplomacy tables (unlike 0-based `empireIdx` used in lobby `join_match`). Note: AI bots will break `Ceasefire`/`Neutral` if you approach galactic dominance (>= 40% inhabited planets) or if a `PRT_WM` War Monger builds a strong fleet.\n\
         - Always inspect `commandFeedback` returned by `submit_orders` to confirm whether each command was `applied`, `queued`, or `rejected` (with exact reason).",
         guard.scenario_name,
         emp.race.name,

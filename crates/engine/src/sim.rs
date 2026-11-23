@@ -477,6 +477,9 @@ pub struct Simulation {
     pub relations: [[DiplomaticStance; MAX_EMPIRES]; MAX_EMPIRES],
     pub victory_cfg: VictoryConfig,
     pub winner: Option<usize>,
+    pub victory_reason: Option<String>,
+    /// Bitmask of 0-based empire indices currently controlled by external agents (non-bot).
+    pub external_agent_mask: u16,
 
     // Telemetry
     pub space_battles_count: u32,
@@ -584,6 +587,8 @@ impl Simulation {
             relations: Self::default_relations(),
             victory_cfg: VictoryConfig::default(),
             winner: None,
+            victory_reason: None,
+            external_agent_mask: 0,
             space_battles_count: 0,
             invasions_count: 0,
             total_salvaged: 0,
@@ -789,6 +794,12 @@ impl Simulation {
             sim.min_crust[i * 3 + 2] = p.germ_crust.max(0.0);
             sim.ship_prod_buf[i] = p.ship_prod_buf.max(0.0);
             sim.has_gate[i] = if p.has_gate { 1 } else { 0 };
+            if p.has_gate && p.owner > 0 {
+                let oe = (p.owner - 1) as usize;
+                if oe < sim.gate_lists.len() {
+                    sim.gate_lists[oe].push(i);
+                }
+            }
             sim.starbase_tier[i] = p.starbase_tier;
             let sb_hp = p
                 .starbase_hp
@@ -1272,6 +1283,7 @@ impl Simulation {
         self.gate_jumps_count = 0;
         self.next_fleet_id = 1;
         self.winner = None;
+        self.victory_reason = None;
         self.relations = Self::default_relations();
         self.events.clear();
         self.anomalies.clear();
@@ -2992,6 +3004,10 @@ impl Simulation {
         self.year += DT;
         self.ticks += 1;
 
+        if self.ticks % 20 == 0 && self.year >= 2405.0 && self.winner.is_none() {
+            self.step_bot_diplomacy(silent);
+        }
+
         self.check_victory_conditions();
         if self.trace_enabled {
             self.audit_tick_invariants();
@@ -4578,6 +4594,9 @@ impl Simulation {
                             let px = self.pos_x[planet_idx];
                             let py = self.pos_y[planet_idx];
                             for &g in &self.gate_lists[empire_idx] {
+                                if g == planet_idx {
+                                    continue;
+                                }
                                 let dist = (self.pos_x[g] - px).hypot(self.pos_y[g] - py);
                                 if dist < min_hub_dist {
                                     reasons.push(format!(
@@ -4887,6 +4906,20 @@ impl Simulation {
 
                 let eff_hab = (self.hab[i] + terra_bonus).min(1.15);
                 let max_pop_here = eff_hab * lv5_pop_mult;
+                let nearest_own_gate_ly = if self.has_gate[i] == 0 && !self.gate_lists[e].is_empty()
+                {
+                    let min_d = self.gate_lists[e]
+                        .iter()
+                        .map(|&g| (self.pos_x[g] - px).hypot(self.pos_y[g] - py))
+                        .fold(f32::INFINITY, f32::min);
+                    if min_d.is_finite() {
+                        Some(min_d.round() as u32)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 own_hubs.push(OwnHubBrief {
                     planet_id: i,
                     sector_id: sec_id as u16,
@@ -4896,6 +4929,7 @@ impl Simulation {
                     defense: round1(self.defense[i]),
                     starbase_tier: self.starbase_tier[i],
                     has_gate: self.has_gate[i] != 0,
+                    nearest_own_gate_ly,
                     ship_prod_buf: round1(self.ship_prod_buf[i]),
                     minerals: NamedMinerals::from_array([
                         self.min_surf[b],
@@ -4989,14 +5023,14 @@ impl Simulation {
             let sb = b.factories + b.pop * 0.3 + (b.starbase_tier as f32) * 15.0 + if b.has_gate { 20.0 } else { 0.0 };
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
-        own_hubs.truncate(10);
+        own_hubs.truncate(8);
         stargates.truncate(12);
 
-        // Most recent strictly foreign enemy planets (max 12)
+        // Most recent strictly foreign enemy planets (max 10)
         enemy_planets_raw.sort_by(|a, b| b.0.cmp(&a.0));
         let enemy_planets: Vec<EnemyPlanetBrief> = enemy_planets_raw
             .into_iter()
-            .take(12)
+            .take(10)
             .map(|(_, brief)| brief)
             .collect();
 
@@ -5166,7 +5200,7 @@ impl Simulation {
         });
         let detected_enemy_fleets: Vec<AgentEnemyFleetBrief> = raw_enemy_fleets
             .iter()
-            .take(16)
+            .take(12)
             .map(|ef| {
                 let nearest_sq = own_coords
                     .iter()
@@ -5321,6 +5355,7 @@ impl Simulation {
                 tech_levels: NamedTechLevels::from_array(emp.tech_lv).round1(),
                 policy: AgentPolicyView::from(&emp.race.doctrine),
                 winner_emp: self.winner.map(|w| (w + 1) as u8),
+                victory_reason: self.victory_reason.clone(),
             },
             sectors,
             own_hubs,
@@ -5458,6 +5493,118 @@ impl Simulation {
         }
     }
 
+    /// Autonomous diplomacy AI for non-agent (Governor/Bot) empires.
+    /// Prevents unilateral permanent-Ceasefire exploits against bots:
+    /// - Breaks treaties when a rival approaches galactic dominance (>= 40% inhabited planets or >= 45% galaxy GDP),
+    /// - War Monger (`PRT_WM`) bots refuse indefinite ceasefires once they build a combat fleet,
+    /// - Overwhelmingly stronger bots (>= 2.0x fleet power) break Ceasefire/Neutral in mid/late game.
+    fn step_bot_diplomacy(&mut self, silent: bool) {
+        let num_emp = self.empires.len();
+        if num_emp < 2 {
+            return;
+        }
+        let mut emp_planets = [0u32; MAX_EMPIRES];
+        let mut inhabited = 0u32;
+        for &o in &self.owner {
+            if o > 0 {
+                let e = (o - 1) as usize;
+                if e < num_emp {
+                    emp_planets[e] += 1;
+                    inhabited += 1;
+                }
+            }
+        }
+        let total_res: f32 = self.tick_stats.iter().take(num_emp).map(|s| s.res).sum();
+        let mut emp_war_power = [0.0f32; MAX_EMPIRES];
+        for fl in &self.fleets {
+            if fl.emp > 0 && fl.power > 0.0 && fl.fleet_type.is_combat() {
+                let e = (fl.emp - 1) as usize;
+                if e < num_emp {
+                    emp_war_power[e] += fl.power;
+                }
+            }
+        }
+
+        let mut declarations: Vec<(usize, usize, DiplomaticStance, &'static str)> = Vec::new();
+        for b in 0..num_emp {
+            // Only bot-controlled empires act autonomously here
+            if (self.external_agent_mask & (1u16 << b)) != 0 || emp_planets[b] == 0 {
+                continue;
+            }
+            let is_wm = !self.cfg.ignore_racial_traits && self.empires[b].race.prt == "PRT_WM";
+            let b_pow = emp_war_power[b];
+            for o in 0..num_emp {
+                if o == b || emp_planets[o] == 0 {
+                    continue;
+                }
+                let cur = self.relations[b][o];
+                if cur == DiplomaticStance::War {
+                    continue;
+                }
+                let has_contact = (self.empires[b].contact_mask & (1u16 << o)) != 0
+                    || (self.empires[o].contact_mask & (1u16 << b)) != 0;
+                if !has_contact {
+                    continue;
+                }
+                let o_p_share = if inhabited >= 10 {
+                    emp_planets[o] as f32 / inhabited as f32
+                } else {
+                    0.0
+                };
+                let o_r_share = if total_res > 10.0 {
+                    self.tick_stats[o].res / total_res
+                } else {
+                    0.0
+                };
+
+                let break_reason = if o_p_share >= 0.40 || o_r_share >= 0.45 {
+                    Some("to halt your galactic dominance")
+                } else if is_wm
+                    && cur != DiplomaticStance::Alliance
+                    && self.year >= 2425.0
+                    && b_pow >= 150.0
+                {
+                    Some("as a War Monger refusing an indefinite truce")
+                } else if cur != DiplomaticStance::Alliance
+                    && self.year >= 2440.0
+                    && b_pow >= 250.0
+                    && b_pow >= emp_war_power[o].max(100.0) * 2.0
+                {
+                    Some("sensing overwhelming military superiority")
+                } else {
+                    None
+                };
+
+                if let Some(reason) = break_reason {
+                    declarations.push((b, o, cur, reason));
+                }
+            }
+        }
+
+        for (b, o, prev, reason) in declarations {
+            if self.relations[b][o] == DiplomaticStance::War {
+                continue;
+            }
+            self.set_relation(b, o, DiplomaticStance::War);
+            let bot_name = self.empires[b].race.name.clone();
+            let bot_col = self.empires[b].race.color.clone();
+            let target_name = self.empires[o].race.name.clone();
+            self.push_empire_alert(
+                o,
+                format!(
+                    "{bot_name} (empireId={}) broke {prev:?} and declared War {reason}!",
+                    b + 1
+                ),
+            );
+            if !silent {
+                self.push_event(
+                    format!("{bot_name} broke {prev:?} and declared War on {target_name}!"),
+                    &bot_col,
+                );
+            }
+        }
+    }
+
     fn check_victory_conditions(&mut self) {
         if !self.victory_cfg.enabled || self.winner.is_some() {
             return;
@@ -5496,10 +5643,12 @@ impl Simulation {
                 }
             }
             if alive_count == 1 {
+                let reason = "EliminationVictory".to_string();
                 self.winner = Some(last_alive);
+                self.victory_reason = Some(reason.clone());
                 self.record_trace_event(SimEvent::VictoryTriggered {
                     winner_emp: (last_alive + 1) as u8,
-                    reason: "EliminationVictory".to_string(),
+                    reason,
                     year: self.year,
                 });
                 return;
@@ -5526,10 +5675,15 @@ impl Simulation {
                 }
                 let p_share = emp_planets[e] as f32 / denom_planets;
                 if p_share >= p_thresh {
+                    let reason = format!(
+                        "PlanetDominance({:.0}% of inhabited planets)",
+                        p_share * 100.0
+                    );
                     self.winner = Some(e);
+                    self.victory_reason = Some(reason.clone());
                     self.record_trace_event(SimEvent::VictoryTriggered {
                         winner_emp: (e + 1) as u8,
-                        reason: format!("PlanetDominance({:.0}%)", p_share * 100.0),
+                        reason,
                         year: self.year,
                     });
                     return;
@@ -5537,10 +5691,15 @@ impl Simulation {
                 if total_res > 1.0 {
                     let r_share = self.tick_stats[e].res / total_res;
                     if r_share >= r_thresh && emp_planets[e] * 2 >= inhabited {
+                        let reason = format!(
+                            "ResourceDominance({:.0}% of galaxy resources)",
+                            r_share * 100.0
+                        );
                         self.winner = Some(e);
+                        self.victory_reason = Some(reason.clone());
                         self.record_trace_event(SimEvent::VictoryTriggered {
                             winner_emp: (e + 1) as u8,
-                            reason: format!("ResourceDominance({:.0}%)", r_share * 100.0),
+                            reason,
                             year: self.year,
                         });
                         return;
@@ -5561,10 +5720,12 @@ impl Simulation {
                         best_e = e;
                     }
                 }
+                let reason = format!("MaxYearReached({max_yr:.0})");
                 self.winner = Some(best_e);
+                self.victory_reason = Some(reason.clone());
                 self.record_trace_event(SimEvent::VictoryTriggered {
                     winner_emp: (best_e + 1) as u8,
-                    reason: format!("MaxYearReached({max_yr:.0})"),
+                    reason,
                     year: self.year,
                 });
             }

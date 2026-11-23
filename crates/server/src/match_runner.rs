@@ -200,13 +200,28 @@ impl MatchInner {
             ));
         }
         self.joined_players.insert(empire_idx, player_id);
+        self.sync_external_agent_mask();
         Ok(self.try_autostart_if_ready())
     }
 
     pub fn unregister_player(&mut self, player_id: &str) -> bool {
         let before = self.joined_players.len();
         self.joined_players.retain(|_, pid| pid != player_id);
-        self.joined_players.len() != before
+        let changed = self.joined_players.len() != before;
+        if changed {
+            self.sync_external_agent_mask();
+        }
+        changed
+    }
+
+    fn sync_external_agent_mask(&mut self) {
+        let mut mask = 0u16;
+        for &eidx in self.joined_players.keys() {
+            if eidx < 16 {
+                mask |= 1u16 << eidx;
+            }
+        }
+        self.sim.external_agent_mask = mask;
     }
 
     pub fn transition_lobby_to_running(&mut self, reason: &str) -> bool {

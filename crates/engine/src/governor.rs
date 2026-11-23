@@ -1338,7 +1338,79 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     docked_fleet_idx: None,
                 });
             } else if !dispatched_exploration && !saving_for_early_col {
-                // Build or reinforce standing orbital garrison (for Starbase assaults or draining large shipProdBuf)
+                // 4e-1. Reallocate excess rear-sector orbital garrison to under-defended Fortify/Attack sectors
+                // (via Stargate relay or direct flight) so homeworld reserves don't stagnate while fronts starve.
+                let mut reallocated_garrison = false;
+                let excess_threshold: u16 =
+                    if matches!(my_sector_mode, SectorMode::Fortify | SectorMode::Attack) {
+                        u16::MAX
+                    } else {
+                        policy.min_garrison_count.max(4)
+                    };
+                if op.orbit_warship >= 0 && op.orbit_count >= excess_threshold {
+                    let orb_cls = op.orbit_warship_class.unwrap_or(FleetClass::Cruiser);
+                    let orb_range = match orb_cls {
+                        FleetClass::Cruiser => view.range_cruiser,
+                        FleetClass::Battleship => view.range_bship,
+                        FleetClass::Bomber => view.range_bomber,
+                        _ => view.range_cruiser,
+                    };
+                    let mut best_dest: Option<usize> = None;
+                    let mut best_dest_score = -1.0f32;
+                    for cand in view.own_planets {
+                        if cand.planet_idx == i {
+                            continue;
+                        }
+                        let c_sec = sector_for_xy(
+                            cand.x,
+                            cand.y,
+                            view.world_w,
+                            view.world_h,
+                            view.sector_cols,
+                            view.sector_rows,
+                        );
+                        let c_mode = view
+                            .sector_directives
+                            .get(c_sec as usize)
+                            .copied()
+                            .unwrap_or(SectorMode::Balanced);
+                        if !matches!(c_mode, SectorMode::Fortify | SectorMode::Attack) {
+                            continue;
+                        }
+                        if cand.orbit_count.saturating_mul(2).saturating_add(2) >= op.orbit_count {
+                            continue;
+                        }
+                        let dx = cand.x - op.x;
+                        let dy = cand.y - op.y;
+                        let d_sq = dx * dx + dy * dy;
+                        let via_gate = has_gate && cand.has_gate && d_sq <= view.gate_range_sq;
+                        if !via_gate && d_sq > orb_range * orb_range {
+                            continue;
+                        }
+                        let deficit = (op.orbit_count.saturating_sub(cand.orbit_count)) as f32;
+                        let mode_bonus = if c_mode == SectorMode::Fortify { 1.3 } else { 1.0 };
+                        let gate_bonus = if via_gate { 2.5 } else { 1.0 };
+                        let score = (deficit * mode_bonus * gate_bonus) / (d_sq.sqrt().max(40.0));
+                        if score > best_dest_score {
+                            best_dest_score = score;
+                            best_dest = Some(cand.planet_idx);
+                        }
+                    }
+                    if let Some(dest_idx) = best_dest {
+                        actions.push(GovernorAction::LaunchFleet {
+                            from: i,
+                            target: dest_idx,
+                            class: orb_cls,
+                            ship_count: 0,
+                            wh_route: -1,
+                            docked_fleet_idx: Some(op.orbit_warship as usize),
+                        });
+                        reallocated_garrison = true;
+                    }
+                }
+
+                // 4e-2. Build or reinforce standing orbital garrison (for Starbase assaults or draining large shipProdBuf)
+                if !reallocated_garrison {
                 let has_pending_hub_here = view.pending_hub_orders.iter().any(|&(p, _)| p == i);
                 let high_buf_drain = !has_pending_hub_here
                     && rem_prod_buf >= view.effective_ship_cost * 3.0
@@ -1413,6 +1485,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                             ship_count: build_cnt,
                         });
                     }
+                }
                 }
             }
         }

@@ -1633,6 +1633,8 @@ pub struct AgentEmpireSummary {
     pub policy: AgentPolicyView,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub winner_emp: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub victory_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1673,6 +1675,8 @@ pub struct OwnHubBrief {
     pub defense: f32,
     pub starbase_tier: u8,
     pub has_gate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest_own_gate_ly: Option<u32>,
     pub ship_prod_buf: f32,
     pub minerals: NamedMinerals,
 }

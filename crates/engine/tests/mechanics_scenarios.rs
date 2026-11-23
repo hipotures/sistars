@@ -1959,7 +1959,7 @@ fn scenario_build_hub_deterministic_and_validation_feedback() {
         0,
         vec![StrategicCommand::BuildHub {
             planet_idx: 0,
-            kind: HubKind::Stargate,
+            kind: sistars_engine::types::HubKind::Stargate,
         }],
     );
     assert_eq!(fb_reject[0].status, "rejected");
@@ -2232,5 +2232,213 @@ fn scenario_early_colonizer_before_cruiser_spam_and_buffer_drain() {
     assert!(
         final_buf < initial_buf * 0.85 && total_ships >= 6,
         "Large shipProdBuf ({initial_buf:.1}) must drain into ships when upkeep is low and minerals are available (final_buf={final_buf:.1}, total_ships={total_ships})"
+    );
+}
+
+#[test]
+fn scenario_bot_breaks_ceasefire_on_dominance_or_warmonger() {
+    let races = classic_races();
+    // Empire 0 = Humanoids (external agent), Empire 2 = Insectoids (PRT_WM bot)
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 80.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 500.0,
+            y: 500.0,
+            owner: 2,
+            pop: 50.0,
+            factories: 20.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 250.0,
+            y: 100.0,
+            owner: 3,
+            pop: 80.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+    ];
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 250.0,
+        y: 100.0,
+        from: 2,
+        target: 2,
+        emp: 3, // Insectoids (PRT_WM)
+        fleet_type: FleetClass::Battleship,
+        min_type: 0,
+        power: 350.0,
+        max_power: 350.0,
+        hunting: false,
+        used_wh: false,
+        steer_x: 250.0,
+        steer_y: 100.0,
+        wh_route: -1,
+        salvage_mode: 0,
+        cargo_iron: 0.0,
+        cargo_bora: 0.0,
+        cargo_germ: 0.0,
+        orbiting: true,
+        upkeep: FleetClass::Battleship.upkeep() * 4.0,
+        ship_count: 4,
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    sim.external_agent_mask = 1u16 << 0; // Seat 0 is external agent; Insectoids (idx 2) is a Bot
+    sim.set_relation(0, 2, DiplomaticStance::Ceasefire);
+    sim.empires[2].contact_mask |= 1u16 << 0;
+    sim.year = 2426.0;
+    sim.ticks = 19; // next step_tick will hit ticks % 20 == 0
+
+    sim.step_tick(true);
+
+    assert_eq!(
+        sim.get_relation(0, 2),
+        DiplomaticStance::War,
+        "PRT_WM bot with a strong fleet must break indefinite Ceasefire into War"
+    );
+    assert!(
+        sim.empires[0]
+            .recent_alerts
+            .iter()
+            .any(|a| a.contains("Insectoids") && a.contains("declared War")),
+        "Agent empire must receive an alert when a bot breaks Ceasefire"
+    );
+}
+
+#[test]
+fn scenario_garrison_reallocates_to_fortify_front_and_gate_distance() {
+    let races = classic_races().into_iter().take(2).collect();
+    let planets = vec![
+        // Rear planet (sector 0) with Stargate and 6 orbiting Battleships
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 90.0,
+            factories: 70.0,
+            has_gate: true,
+            ..Default::default()
+        },
+        // Front planet (far sector) with Stargate, 0 orbiting ships, 260 ly away
+        SandboxPlanet {
+            x: 360.0,
+            y: 100.0,
+            owner: 1,
+            pop: 70.0,
+            factories: 65.0,
+            has_gate: true,
+            ..Default::default()
+        },
+        // Third own planet without gate, 200 ly from planet 0
+        SandboxPlanet {
+            x: 100.0,
+            y: 300.0,
+            owner: 1,
+            pop: 60.0,
+            factories: 60.0,
+            has_gate: false,
+            ..Default::default()
+        },
+        // Enemy planet far away
+        SandboxPlanet {
+            x: 900.0,
+            y: 900.0,
+            owner: 2,
+            pop: 60.0,
+            factories: 30.0,
+            ..Default::default()
+        },
+    ];
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 100.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Battleship,
+        min_type: 0,
+        power: 600.0,
+        max_power: 600.0,
+        hunting: false,
+        used_wh: false,
+        steer_x: 100.0,
+        steer_y: 100.0,
+        wh_route: -1,
+        salvage_mode: 0,
+        cargo_iron: 0.0,
+        cargo_bora: 0.0,
+        cargo_germ: 0.0,
+        orbiting: true,
+        upkeep: FleetClass::Battleship.upkeep() * 6.0,
+        ship_count: 6,
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    sim.empires[0].tech_cache.stargate_max_range = 400.0;
+    sim.empires[0].tech_cache.stargate_name = Some("Stargate 100/400".to_string());
+    sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
+
+    // Verify nearestOwnGateLy on planet 2 (200 ly from planet 0)
+    let obs = sim.take_agent_observation(0);
+    let hub2 = obs
+        .own_hubs
+        .iter()
+        .find(|h| h.planet_id == 2)
+        .expect("Planet 2 should appear in ownHubs");
+    assert_eq!(hub2.nearest_own_gate_ly, Some(200));
+
+    // Verify buildHub(Stargate) on planet 0 (which already has a gate) does NOT complain about 0 ly from itself
+    let fb_dup = sim.submit_commands(
+        0,
+        vec![StrategicCommand::BuildHub {
+            planet_idx: 0,
+            kind: sistars_engine::types::HubKind::Stargate,
+        }],
+    );
+    assert_eq!(fb_dup[0].status, "rejected");
+    let dup_reason = fb_dup[0].reason.as_deref().unwrap_or("");
+    assert!(dup_reason.contains("already has a Stargate"));
+    assert!(
+        !dup_reason.contains("0 ly from existing Stargate on planet 0"),
+        "Must not report 0 ly self-distance, got: {dup_reason}"
+    );
+
+    // Mark planet 1's sector as Fortify and step: rear fleet at planet 0 must reallocate to planet 1!
+    let front_sec = (100.0f32 / sim.world_h * 4.0).floor() as usize * 4
+        + (360.0f32 / sim.world_w * 4.0).floor() as usize;
+    sim.submit_commands(
+        0,
+        vec![StrategicCommand::SetSectorDirective {
+            sector_id: front_sec as u16,
+            mode: SectorMode::Fortify,
+        }],
+    );
+
+    let mut reinforced_front = false;
+    for _ in 0..8 {
+        sim.step_tick(true);
+        if sim
+            .fleets
+            .iter()
+            .any(|fl| fl.emp == 1 && fl.fleet_type == FleetClass::Battleship && fl.target == 1)
+        {
+            reinforced_front = true;
+            break;
+        }
+    }
+    assert!(
+        reinforced_front,
+        "Excess rear garrison must reallocate to under-defended Fortify front planet"
     );
 }
