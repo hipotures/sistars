@@ -105,7 +105,8 @@ pub struct EmpireView<'a> {
     pub active_exploration_orders: &'a [ExplorationOrder],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum GovernorAction {
     BuildStargate {
         planet_idx: usize,

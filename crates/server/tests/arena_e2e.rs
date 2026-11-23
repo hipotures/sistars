@@ -2730,3 +2730,199 @@ async fn e2e_abort_and_delete_require_admin_token() {
         .unwrap();
     assert_eq!(del.status(), StatusCode::NO_CONTENT);
 }
+
+async fn wait_for_replay_file(srv: &TestServer, match_id: &str) -> std::path::PathBuf {
+    let path = srv
+        .state
+        .replays_dir
+        .join(format!("match_{match_id}.replay.jsonl.gz"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "replay file {} was not written",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    path
+}
+
+#[tokio::test]
+async fn e2e_replay_recorded_and_reproduces_realtime_match() {
+    use sistars_engine::replay::{read_file, verify, ReplayLine};
+
+    let srv = spawn_test_server().await;
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 910301,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "openAgentSeats": [0, 1],
+            "lobbyTimeoutSec": 0,
+            "speedMult": 20.0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tokens = [
+        created["empireTokens"]["0"].as_str().unwrap().to_string(),
+        created["empireTokens"]["1"].as_str().unwrap().to_string(),
+    ];
+
+    // Agents join (observation auto-joins), read state and send orders while the match runs.
+    for round in 0..4 {
+        for (seat, tok) in tokens.iter().enumerate() {
+            let obs = srv
+                .client
+                .get(format!(
+                    "{}/api/v1/matches/{match_id}/observation",
+                    srv.base_url
+                ))
+                .bearer_auth(tok)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(obs.status(), StatusCode::OK);
+            let bias = 0.1 + 0.2 * round as f32 + 0.05 * seat as f32;
+            let resp = srv
+                .client
+                .post(format!(
+                    "{}/api/v1/matches/{match_id}/commands",
+                    srv.base_url
+                ))
+                .bearer_auth(tok)
+                .json(&json!({
+                    "reasoningNote": format!("round {round}"),
+                    "commands": [
+                        { "setPolicy": { "colonizeVsAttackBias": bias, "techShare": 0.3 } }
+                    ]
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+
+    let aborted: Value = srv
+        .client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
+        .json(&json!({ "abort": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(aborted["status"].as_str(), Some("Aborted"));
+
+    let path = wait_for_replay_file(&srv, &match_id).await;
+    let lines = read_file(&path).expect("replay must parse");
+
+    let commands = lines
+        .iter()
+        .filter(|l| matches!(l, ReplayLine::Commands { .. }))
+        .count();
+    assert_eq!(commands, 8, "every applied agent order is recorded");
+    assert!(lines
+        .iter()
+        .any(|l| matches!(l, ReplayLine::AgentMask { mask: 3, .. })));
+    assert!(lines.iter().any(|l| matches!(l, ReplayLine::Note { .. })));
+
+    let report = verify(&lines, None, false).expect("verify");
+    assert_eq!(
+        report.divergence, None,
+        "server match must replay identically"
+    );
+    let footer = report.footer.expect("footer");
+    assert_eq!(footer.end_reason, "aborted");
+    assert_eq!(footer.winner, None);
+    assert!(footer.final_tick > 0);
+    assert_eq!(report.ticks_run, footer.final_tick);
+
+    // The replay is downloadable over HTTP, also after the match is deleted.
+    let del = srv
+        .client
+        .delete(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), StatusCode::NO_CONTENT);
+    let dl = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/replay", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dl.status(), StatusCode::OK);
+    assert_eq!(
+        dl.headers().get("content-type").unwrap().to_str().unwrap(),
+        "application/gzip"
+    );
+    let bytes = dl.bytes().await.unwrap();
+    assert_eq!(&bytes[..2], &[0x1f, 0x8b]);
+}
+
+#[tokio::test]
+async fn e2e_delete_writes_replay_with_deleted_reason() {
+    use sistars_engine::replay::{read_file, ReplayLine};
+
+    let srv = spawn_test_server().await;
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({ "seed": 910302, "galaxySize": "small", "speedMult": 20.0 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let del = srv
+        .client
+        .delete(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), StatusCode::NO_CONTENT);
+
+    // DELETE waits for the replay to be written.
+    let path = srv
+        .state
+        .replays_dir
+        .join(format!("match_{match_id}.replay.jsonl.gz"));
+    assert!(
+        path.exists(),
+        "replay must exist right after DELETE returns"
+    );
+    let lines = read_file(&path).unwrap();
+    match lines.last() {
+        Some(ReplayLine::Footer(f)) => assert_eq!(f.end_reason, "deleted"),
+        other => panic!("expected footer, got {other:?}"),
+    }
+
+    let missing = srv
+        .client
+        .get(format!(
+            "{}/api/v1/matches/nosuchmatch/replay",
+            srv.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}

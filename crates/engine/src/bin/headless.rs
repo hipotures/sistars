@@ -221,7 +221,164 @@ fn run_phase_bench(
     );
 }
 
+/// `headless --replay <file.replay.jsonl[.gz]> [--until-tick N] [--audit] [--dump-state out.json]`
+///
+/// Re-simulates a recorded arena match with the current engine and reports whether it matches
+/// the recording, or the first divergent governor action / state hash.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_replay(args: &[String]) -> i32 {
+    use sistars_engine::replay::{read_file, verify, Divergence};
+
+    let Some(path) = args.get(2).filter(|a| !a.starts_with("--")) else {
+        eprintln!(
+            "usage: headless --replay <file.replay.jsonl[.gz]> [--until-tick N] [--audit] [--dump-state out.json]"
+        );
+        return 2;
+    };
+    let flag_value = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let until_tick = match flag_value("--until-tick").map(|v| v.parse::<u64>()) {
+        Some(Ok(t)) => Some(t),
+        Some(Err(_)) => {
+            eprintln!("--until-tick expects a number");
+            return 2;
+        }
+        None => None,
+    };
+    let audit = args.iter().any(|a| a == "--audit");
+    let dump = flag_value("--dump-state");
+
+    let lines = match read_file(std::path::Path::new(path)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to read replay: {e}");
+            return 1;
+        }
+    };
+    let started = Instant::now();
+    let report = match verify(&lines, until_tick, audit) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Invalid replay: {e}");
+            return 1;
+        }
+    };
+    let h = &report.header;
+    println!(
+        "Replay {} | recorded with {} | seed {} | {} empires | scenario '{}'",
+        h.match_id,
+        h.engine_commit,
+        h.seed,
+        h.races.len(),
+        h.scenario_name
+    );
+    if let Some(f) = &report.footer {
+        println!(
+            "Recorded end: {} at tick {} (year {:.1}), winner {:?}, {} actions",
+            f.end_reason, f.final_tick, f.final_year, f.winner, f.action_count
+        );
+    } else {
+        println!("Recorded end: <no footer, replay truncated>");
+    }
+    if audit && !h.debug_audit {
+        println!(
+            "NOTE: --audit enables tracing, which changes scan cadence vs. the original run; \
+             governor/hash comparison is skipped."
+        );
+    }
+    println!(
+        "Re-simulated {} ticks in {:.2}s; checked {} governor actions and {} state hashes.",
+        report.ticks_run,
+        started.elapsed().as_secs_f64(),
+        report.governor_actions_checked,
+        report.hashes_checked
+    );
+    if audit {
+        println!(
+            "LiveAuditor anomalies: {}\n{}",
+            report.sim.anomalies.len(),
+            report.sim.export_anomalies_json()
+        );
+    }
+    if let Some(out) = dump {
+        let sim = &report.sim;
+        let state = serde_json::json!({
+            "tick": sim.ticks,
+            "year": sim.year,
+            "winner": sim.winner,
+            "victoryReason": sim.victory_reason,
+            "stateHash": sistars_engine::replay::format_hash(sim.state_hash()),
+            "planets": {
+                "owner": sim.owner,
+                "pop": sim.pop,
+                "mines": sim.mines,
+                "factories": sim.factories,
+                "defense": sim.defense,
+                "hasGate": sim.has_gate,
+                "starbaseTier": sim.starbase_tier,
+            },
+            "fleets": sim.fleets,
+            "debris": sim.debris_fields,
+            "empireResTotal": sim.empires.iter().map(|e| e.res_total).collect::<Vec<_>>(),
+        });
+        match std::fs::write(
+            &out,
+            serde_json::to_string_pretty(&state).unwrap_or_default(),
+        ) {
+            Ok(()) => println!("State at tick {} written to {out}", sim.ticks),
+            Err(e) => eprintln!("Failed to write {out}: {e}"),
+        }
+    }
+    match &report.divergence {
+        None => {
+            println!(
+                "OK: identical to the recording up to tick {}.",
+                report.ticks_run
+            );
+            0
+        }
+        Some(Divergence::GovernorAction {
+            t,
+            emp,
+            expected,
+            actual,
+        }) => {
+            println!(
+                "DIVERGED at tick {t}, empire #{}: governor action differs\n  recorded: {expected:?}\n  replayed: {actual:?}",
+                emp + 1
+            );
+            3
+        }
+        Some(Divergence::Hash {
+            t,
+            expected,
+            actual,
+        }) => {
+            println!("DIVERGED: state hash differs after tick {t} (recorded {expected}, replayed {actual})");
+            3
+        }
+        Some(Divergence::FinalHash {
+            t,
+            expected,
+            actual,
+        }) => {
+            println!("DIVERGED: final state hash differs at tick {t} (recorded {expected}, replayed {actual})");
+            3
+        }
+    }
+}
+
 fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let args: Vec<String> = std::env::args().collect();
+    #[cfg(not(target_arch = "wasm32"))]
+    if args.get(1).map(String::as_str) == Some("--replay") {
+        std::process::exit(run_replay(&args));
+    }
     if std::env::args().any(|a| a == "--trace-scenario") {
         run_trace_scenarios();
         return;

@@ -2816,3 +2816,117 @@ fn scenario_salvage_dispatch_capped_by_debris_mass() {
         "For 100 kT debris and 40 kT cargo cap, governor must dispatch between 1 and 3 freighters, got {max_concurrent_outbound}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Replay determinism
+// ---------------------------------------------------------------------------
+
+/// Plays a seeded match the way the arena server does (agent orders injected between ticks,
+/// governor actions and hashes recorded after each tick) and returns the replay lines.
+fn record_replay_match(ticks: u64) -> Vec<sistars_engine::replay::ReplayLine> {
+    use sistars_engine::replay::{
+        build_simulation, ReplayHeader, ReplayLine, ReplayRecorder, ReplaySrc,
+        REPLAY_FORMAT_VERSION,
+    };
+    use sistars_engine::types::AgentPolicyPatch;
+
+    let header = ReplayHeader {
+        format: REPLAY_FORMAT_VERSION,
+        match_id: "test".to_string(),
+        engine_commit: "test".to_string(),
+        created_at_ms: 0,
+        seed: 424242,
+        sim_config: SimConfig::default(),
+        races: classic_races(),
+        galaxy_size: Some("small".to_string()),
+        galaxy_shape: None,
+        victory_config: VictoryConfig::default(),
+        debug_audit: false,
+        scenario_name: "test".to_string(),
+        execution_mode: "realtimeAsync".to_string(),
+        ticks_per_epoch: 20,
+        open_agent_seats: vec![0],
+    };
+    let mut sim = build_simulation(&header);
+    sim.action_log = Some(Vec::new());
+    let mut rec = ReplayRecorder::new(header);
+
+    sim.external_agent_mask = 1;
+    rec.push(ReplayLine::AgentMask {
+        t: 0,
+        src: ReplaySrc::System,
+        mask: 1,
+    });
+
+    while sim.ticks < ticks {
+        if sim.ticks % 50 == 10 {
+            let share = 0.2 + (sim.ticks % 200) as f32 / 400.0;
+            let cmds = vec![StrategicCommand::SetPolicy(AgentPolicyPatch {
+                tech_share: Some(share),
+                ship_share: Some(0.6 - share / 2.0),
+                ..Default::default()
+            })];
+            let t = sim.ticks;
+            let fb = sim.submit_commands(0, cmds.clone());
+            rec.push(ReplayLine::Commands {
+                t,
+                src: ReplaySrc::Agent,
+                emp: 0,
+                cmds,
+                fb,
+            });
+        }
+        sim.step_tick(false);
+        rec.after_tick(&mut sim);
+    }
+    rec.finish(&sim, "aborted");
+    sistars_engine::replay::parse_jsonl(&rec.to_jsonl()).expect("replay JSONL must parse back")
+}
+
+#[test]
+fn replay_reproduces_recorded_match_exactly() {
+    use sistars_engine::replay::{verify, ReplayLine};
+    let lines = record_replay_match(400);
+    let governor_lines = lines
+        .iter()
+        .filter(|l| matches!(l, ReplayLine::Governor { .. }))
+        .count();
+    assert!(
+        governor_lines > 0,
+        "the governor should act within 400 ticks"
+    );
+
+    let report = verify(&lines, None, false).expect("verify");
+    assert_eq!(report.divergence, None);
+    assert_eq!(report.ticks_run, 400);
+    assert_eq!(report.hashes_checked, 4);
+    assert_eq!(report.governor_actions_checked as usize, governor_lines);
+    let footer = report.footer.expect("footer");
+    assert_eq!(footer.end_reason, "aborted");
+    assert_eq!(footer.winner, None);
+}
+
+#[test]
+fn replay_reports_first_divergence_when_an_input_changes() {
+    use sistars_engine::replay::{verify, Divergence, ReplayLine};
+    let mut lines = record_replay_match(400);
+    // Tamper with the agent order applied at tick 110: the replay must diverge at or after it.
+    for line in lines.iter_mut() {
+        if let ReplayLine::Commands { t: 110, cmds, .. } = line {
+            *cmds = vec![StrategicCommand::SetPolicy(
+                sistars_engine::types::AgentPolicyPatch {
+                    tech_share: Some(0.0),
+                    ship_share: Some(1.0),
+                    ..Default::default()
+                },
+            )];
+        }
+    }
+    let report = verify(&lines, None, false).expect("verify");
+    let t = match report.divergence {
+        Some(Divergence::GovernorAction { t, .. }) => t,
+        Some(Divergence::Hash { t, .. }) | Some(Divergence::FinalHash { t, .. }) => t,
+        None => panic!("tampered replay must diverge"),
+    };
+    assert!(t >= 110, "divergence at {t} precedes the tampered input");
+}

@@ -15,7 +15,7 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::match_runner::{
-    speed_to_frame_stride, speed_to_tick_delay_ms, MatchHandle, QueuedDecision,
+    replay_file_name, speed_to_frame_stride, speed_to_tick_delay_ms, MatchHandle, QueuedDecision,
 };
 use crate::mcp;
 use crate::models::{
@@ -38,6 +38,8 @@ pub struct AppState {
     pub public_url: Option<String>,
     pub admin_token: Option<String>,
     pub logs_dir: PathBuf,
+    /// Where finished-match replays are written (`SISTARS_REPLAYS_DIR`, default `<logs_dir>/replays`).
+    pub replays_dir: PathBuf,
 }
 
 impl AppState {
@@ -77,6 +79,9 @@ impl AppState {
             seat_match_history: RwLock::new(HashMap::new()),
             public_url: cleaned_public,
             admin_token: admin_token.filter(|s| !s.trim().is_empty()),
+            replays_dir: std::env::var("SISTARS_REPLAYS_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| logs_dir.join("replays")),
             logs_dir,
         })
     }
@@ -86,6 +91,18 @@ impl AppState {
         for handle in matches.values() {
             let _ = handle.shutdown_tx.send(true);
         }
+    }
+
+    /// Graceful server shutdown: stops every match and waits until its replay is written.
+    pub async fn shutdown_all_and_save(&self) {
+        let handles: Vec<Arc<MatchHandle>> = {
+            let matches = self.matches.read().await;
+            matches.values().cloned().collect()
+        };
+        let waits = handles
+            .iter()
+            .map(|h| h.stop_and_wait("shutdown", std::time::Duration::from_secs(10)));
+        futures_util::future::join_all(waits).await;
     }
 }
 
@@ -185,6 +202,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/matches/{id}/power-history", get(get_power_history))
         .route("/api/v1/matches/{id}/export-state", get(get_export_state))
         .route("/api/v1/matches/{id}/anomalies", get(get_anomalies))
+        .route("/api/v1/matches/{id}/replay", get(get_replay))
         .route("/ws/matches/{id}/spectate", get(ws_spectate))
         .layer(cors)
         .with_state(state)
@@ -294,8 +312,12 @@ async fn create_match(
     let req = payload.map(|Json(r)| r).unwrap_or_default();
     let match_id = Uuid::new_v4().simple().to_string()[..12].to_string();
     let auto_bind = req.auto_bind_seats.unwrap_or(false);
-    let (handle, empire_tokens, mut open_agent_seats) =
-        MatchHandle::spawn(match_id.clone(), req, state.logs_dir.clone());
+    let (handle, empire_tokens, mut open_agent_seats) = MatchHandle::spawn(
+        match_id.clone(),
+        req,
+        state.logs_dir.clone(),
+        state.replays_dir.clone(),
+    );
 
     if auto_bind {
         let mut seat_names: Vec<String> = {
@@ -419,7 +441,9 @@ async fn delete_match(
             format!("Match '{id}' not found"),
         ));
     };
-    let _ = handle.shutdown_tx.send(true);
+    handle
+        .stop_and_wait("deleted", std::time::Duration::from_secs(10))
+        .await;
     {
         let mut tok_idx = state.token_index.write().await;
         tok_idx.retain(|_, (mid, _)| mid != &id);
@@ -839,6 +863,43 @@ async fn get_export_state(
 
     let guard = handle.inner.read().await;
     Ok(guard.sim.export_state_json())
+}
+
+/// Serves the gzip-compressed JSONL replay of an ended match (also after it was deleted).
+async fn get_replay(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiErrorBody>)> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_match_id",
+            "Invalid match id",
+        ));
+    }
+    let name = replay_file_name(&id);
+    let bytes = tokio::fs::read(state.replays_dir.join(&name))
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "replay_not_found",
+                "No replay for this match yet (it is written when the match ends)",
+            )
+        })?;
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/gzip".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        bytes,
+    ))
 }
 
 async fn get_anomalies(

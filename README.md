@@ -135,6 +135,20 @@ cd web
 npm run build
 ```
 
+### 3. Arena Match Replays
+The arena server records every match as a replay: the initial state (seed, config, races, engine commit), every action (agent orders and notes, agent join/leave, governor decisions) and a state hash every 100 ticks. Positions or per-tick state are not stored; the deterministic engine reproduces them.
+
+- Written once when the match ends (victory, admin abort, `DELETE`, or server Ctrl+C / SIGTERM) to `$SISTARS_REPLAYS_DIR` (default `$SISTARS_LOGS_DIR/replays`, i.e. `logs/replays`) as `match_<id>.replay.jsonl.gz` (gzip JSONL, ~40–50 KB per full match).
+- Download: `GET /api/v1/matches/{id}/replay` (also after the match was deleted).
+- Verify / analyse with the current engine:
+  ```bash
+  cargo run --release --bin headless -- --replay logs/replays/match_<id>.replay.jsonl.gz \
+      [--until-tick N] [--audit] [--dump-state state.json]
+  ```
+  It reports `OK` or the first divergence (tick, empire, recorded vs replayed governor action, or state hash). Replays always run on the current code; for a bit-exact rerun of an old match, check out the `engineCommit` from its header.
+
+An admin can end a stuck match with `POST /api/v1/matches/{id}/control {"abort": true}` (or the **⏹ Abort** button in the arena bar): status becomes `Aborted` with no winner. Abort and `DELETE` require `SISTARS_ADMIN_TOKEN` when it is set; agents cannot trigger them.
+
 ## External Data & Attribution
 
 ### 1. Game Data (`data/craig-stars/`)

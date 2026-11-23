@@ -61,7 +61,37 @@ async fn main() {
         println!("Admin auth: OPEN (localhost mode)");
     }
 
-    axum::serve(listener, app)
-        .await
-        .expect("SI-Stars Arena server exited with error");
+    println!("Replays directory: {}", state.replays_dir.display());
+
+    // Not axum's graceful shutdown: it would wait forever on open spectator WebSockets.
+    // On Ctrl+C / SIGTERM we stop every match, save its replay, then exit.
+    tokio::select! {
+        res = axum::serve(listener, app) => {
+            res.expect("SI-Stars Arena server exited with error");
+        }
+        _ = shutdown_signal() => {
+            println!("Shutting down: stopping matches and saving replays...");
+            state.shutdown_all_and_save().await;
+        }
+    }
+}
+
+/// Resolves on Ctrl+C or SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            s.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = term => {},
+    }
 }

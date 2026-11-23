@@ -480,6 +480,8 @@ pub struct Simulation {
     pub victory_reason: Option<String>,
     /// Bitmask of 0-based empire indices currently controlled by external agents (non-bot).
     pub external_agent_mask: u16,
+    /// When `Some`, every governor action is appended as `(tick, empire_idx, action)` for replay recording.
+    pub action_log: Option<Vec<(u64, usize, GovernorAction)>>,
     /// Bitmask of 0-based empire indices that have already triggered a galactic dominance warning.
     pub dominance_alert_mask: u16,
     /// Public dominance/diplomacy alerts queued for server `ArenaFeedEvent` emission.
@@ -593,6 +595,7 @@ impl Simulation {
             winner: None,
             victory_reason: None,
             external_agent_mask: 0,
+            action_log: None,
             dominance_alert_mask: 0,
             pending_public_alerts: Vec::new(),
             space_battles_count: 0,
@@ -4000,6 +4003,10 @@ impl Simulation {
         let emp_u8 = (e + 1) as u8;
         let my_bit = 1u16 << e;
 
+        if let Some(log) = self.action_log.as_mut() {
+            log.extend(actions.iter().map(|a| (self.ticks, e, a.clone())));
+        }
+
         for action in actions {
             match action {
                 GovernorAction::BuildStargate { planet_idx } => {
@@ -6555,6 +6562,94 @@ impl Simulation {
             total_salvaged: hud.total_salvaged,
             gate_jumps_count: hud.gate_jumps_count,
         }
+    }
+
+    /// Deterministic FNV-1a fingerprint of the gameplay state, used by replays to detect divergence.
+    /// Covers only ordered data (no HashMaps, render buffers or caches).
+    pub fn state_hash(&self) -> u64 {
+        struct Fnv(u64);
+        impl Fnv {
+            fn bytes(&mut self, b: &[u8]) {
+                for &x in b {
+                    self.0 ^= x as u64;
+                    self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            fn u64(&mut self, v: u64) {
+                self.bytes(&v.to_le_bytes());
+            }
+            fn f32(&mut self, v: f32) {
+                self.bytes(&v.to_bits().to_le_bytes());
+            }
+            fn f32s(&mut self, v: &[f32]) {
+                self.u64(v.len() as u64);
+                for &x in v {
+                    self.f32(x);
+                }
+            }
+        }
+        let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+        h.u64(self.ticks);
+        h.u64(self.rng_seed as u64);
+        h.f32(self.year);
+        for buf in [
+            &self.pop,
+            &self.hab,
+            &self.mines,
+            &self.factories,
+            &self.min_surf,
+            &self.min_crust,
+            &self.defense,
+            &self.starbase_hp,
+        ] {
+            h.f32s(buf);
+        }
+        h.bytes(&self.owner);
+        h.bytes(&self.has_gate);
+        h.bytes(&self.starbase_tier);
+        for &m in self.claim_mask.iter().chain(self.explored_mask.iter()) {
+            h.u64(m as u64);
+        }
+        h.u64(self.fleets.len() as u64);
+        for f in &self.fleets {
+            h.u64(f.id as u64);
+            h.u64(f.emp as u64);
+            h.u64(f.fleet_type as u64);
+            h.u64(f.target as u64);
+            h.u64(f.ship_count as u64);
+            h.u64(f.salvage_mode as u64);
+            h.u64(f.orbiting as u64);
+            for v in [
+                f.x,
+                f.y,
+                f.power,
+                f.max_power,
+                f.cargo_iron,
+                f.cargo_bora,
+                f.cargo_germ,
+            ] {
+                h.f32(v);
+            }
+        }
+        h.u64(self.debris_fields.len() as u64);
+        for d in &self.debris_fields {
+            for v in [d.x, d.y, d.iron, d.bora, d.germ, d.ttl] {
+                h.f32(v);
+            }
+        }
+        for emp in &self.empires {
+            h.f32(emp.res_total);
+            h.f32s(&emp.tech_pts);
+            h.f32s(&emp.tech_lv);
+            h.u64(emp.contact_mask as u64);
+        }
+        for row in &self.relations {
+            for &st in row {
+                h.u64(st as u64);
+            }
+        }
+        h.u64(self.winner.map_or(u64::MAX, |w| w as u64));
+        h.0
     }
 
     pub fn export_state_json(&self) -> String {

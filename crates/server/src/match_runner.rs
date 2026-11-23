@@ -7,6 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
 use sistars_engine::config::SimConfig;
+use sistars_engine::replay::{
+    self, build_simulation, ReplayHeader, ReplayLine, ReplayRecorder, ReplaySrc,
+    REPLAY_FORMAT_VERSION,
+};
 use sistars_engine::sim::Simulation;
 use sistars_engine::tech::{classic_races, tech_store, LRT_LIST, PRT_LIST};
 use sistars_engine::types::{
@@ -119,6 +123,9 @@ pub struct MatchInner {
     pub last_written_anomaly_idx: usize,
     /// Set when the match ends for a reason other than a natural victory (e.g. `"aborted"`).
     pub end_reason: Option<String>,
+    /// In-memory replay log, written once to `replay_path` when the match ends.
+    pub replay: ReplayRecorder,
+    pub replay_path: PathBuf,
 }
 
 impl MatchInner {
@@ -223,7 +230,14 @@ impl MatchInner {
                 mask |= 1u16 << eidx;
             }
         }
-        self.sim.external_agent_mask = mask;
+        if self.sim.external_agent_mask != mask {
+            self.sim.external_agent_mask = mask;
+            self.replay.push(ReplayLine::AgentMask {
+                t: self.sim.ticks,
+                src: ReplaySrc::System,
+                mask,
+            });
+        }
     }
 
     pub fn transition_lobby_to_running(&mut self, reason: &str) -> bool {
@@ -519,6 +533,12 @@ impl MatchInner {
         })
     }
 
+    /// Moves this tick's governor actions and periodic state hash into the replay log.
+    pub fn record_tick_for_replay(&mut self) {
+        let Self { replay, sim, .. } = self;
+        replay.after_tick(sim);
+    }
+
     /// Admin abort: ends the match immediately with status `Aborted` and no winner.
     /// Returns the feed event to broadcast, or `None` if the match was already over.
     pub fn abort(&mut self) -> Option<ArenaFeedEvent> {
@@ -654,6 +674,24 @@ pub struct MatchHandle {
     pub control_notify: Arc<Notify>,
     pub ws_tx: broadcast::Sender<SpectatorWsMessage>,
     pub shutdown_tx: watch::Sender<bool>,
+    /// Becomes `true` once the match task has finished and its replay file is written.
+    pub done_rx: watch::Receiver<bool>,
+}
+
+impl MatchHandle {
+    /// Stops the match loop (recording `end_reason` unless one is already set) and waits until
+    /// the replay file has been written, up to `timeout`.
+    pub async fn stop_and_wait(&self, end_reason: &str, timeout: Duration) {
+        {
+            let mut guard = self.inner.write().await;
+            if guard.end_reason.is_none() && !guard.status.is_over() {
+                guard.end_reason = Some(end_reason.to_string());
+            }
+        }
+        let _ = self.shutdown_tx.send(true);
+        let mut done = self.done_rx.clone();
+        let _ = tokio::time::timeout(timeout, done.wait_for(|d| *d)).await;
+    }
 }
 
 impl MatchHandle {
@@ -661,33 +699,40 @@ impl MatchHandle {
         match_id: String,
         req: CreateMatchRequest,
         logs_dir: PathBuf,
+        replays_dir: PathBuf,
     ) -> (Arc<Self>, HashMap<usize, String>, Vec<usize>) {
-        let mut cfg = req.sim_config.unwrap_or_else(SimConfig::default);
+        let mut cfg = req.sim_config.clone().unwrap_or_else(SimConfig::default);
         if let Some(mods) = req.scenario_modifiers {
             cfg.scenario_modifiers = mods;
         }
-        let races = req.races.unwrap_or_else(classic_races);
-        let mut sim = Simulation::new(cfg, races);
-
-        if req.galaxy_size.is_some() || req.galaxy_shape.is_some() {
-            let cur_size = format!("{:?}", sim.cfg.galaxy_size).to_lowercase();
-            let cur_shape = format!("{:?}", sim.cfg.galaxy_shape).to_lowercase();
-            let size_str = req.galaxy_size.as_deref().unwrap_or(&cur_size);
-            let shape_str = req.galaxy_shape.as_deref().unwrap_or(&cur_shape);
-            sim.set_galaxy_options(size_str, shape_str);
-        }
-
         let seed = req
             .seed
             .unwrap_or_else(|| rand::thread_rng().gen_range(100_000..999_999));
-        sim.init(seed, false);
-
-        sim.victory_cfg = req.victory_config.unwrap_or_else(VictoryConfig::default);
-
         let debug_audit = req.debug_audit.unwrap_or(false);
+
+        // The replay header holds every input that shapes the initial state; the simulation is
+        // built from it so a replay reconstructs exactly the same world.
+        let mut header = ReplayHeader {
+            format: REPLAY_FORMAT_VERSION,
+            match_id: match_id.clone(),
+            engine_commit: env!("SISTARS_GIT_COMMIT").to_string(),
+            created_at_ms: now_unix_ms(),
+            seed,
+            sim_config: cfg,
+            races: req.races.clone().unwrap_or_else(classic_races),
+            galaxy_size: req.galaxy_size.clone(),
+            galaxy_shape: req.galaxy_shape.clone(),
+            victory_config: req.victory_config.unwrap_or_else(VictoryConfig::default),
+            debug_audit,
+            scenario_name: String::new(),
+            execution_mode: String::new(),
+            ticks_per_epoch: 0,
+            open_agent_seats: Vec::new(),
+        };
+        let mut sim = build_simulation(&header);
+        sim.action_log = Some(Vec::new());
+
         let audit_log_path = if debug_audit {
-            sim.trace_enabled = true;
-            sim.auditor.prune_valid_events = true;
             Some(logs_dir.join(format!("match_{match_id}_anomalies.jsonl")))
         } else {
             None
@@ -762,6 +807,16 @@ impl MatchHandle {
             .unwrap_or("Balanced Standard")
             .to_string();
 
+        header.scenario_name = scenario_name.clone();
+        header.execution_mode = match execution_mode {
+            ExecutionMode::RealtimeAsync => "realtimeAsync",
+            ExecutionMode::LockstepEpoch => "lockstepEpoch",
+        }
+        .to_string();
+        header.ticks_per_epoch = ticks_per_epoch;
+        header.open_agent_seats = open_agent_seats.clone();
+        let replay_path = replays_dir.join(replay_file_name(&match_id));
+
         let mut match_inner = MatchInner {
             match_id,
             scenario_name,
@@ -793,6 +848,8 @@ impl MatchHandle {
             audit_log_path,
             last_written_anomaly_idx: 0,
             end_reason: None,
+            replay: ReplayRecorder::new(header),
+            replay_path,
         };
         // Seed initial baseline snapshots at tick 0 so RealtimeAsync agents get an accurate delta immediately
         for emp_i in 0..num_empires {
@@ -805,6 +862,7 @@ impl MatchHandle {
         let control_notify = Arc::new(Notify::new());
         let (ws_tx, _) = broadcast::channel(256);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (done_tx, done_rx) = watch::channel(false);
 
         let handle = Arc::new(Self {
             inner: inner.clone(),
@@ -812,6 +870,7 @@ impl MatchHandle {
             control_notify: control_notify.clone(),
             ws_tx: ws_tx.clone(),
             shutdown_tx,
+            done_rx,
         });
 
         tokio::spawn(async move {
@@ -824,6 +883,7 @@ impl MatchHandle {
             )
             .await;
             finalize_match(&inner, &ws_tx).await;
+            let _ = done_tx.send(true);
         });
 
         (handle, empire_tokens, open_agent_seats)
@@ -854,6 +914,22 @@ pub(crate) fn apply_submissions_locked(
     let mut new_feed_events = Vec::new();
     let mut all_feedback: HashMap<usize, Vec<CommandFeedback>> = HashMap::new();
     for (emp_idx, decision) in submissions {
+        let note_text = decision
+            .reasoning_note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string);
+        if note_text.is_some() || decision.strategy_memory.is_some() {
+            let t = guard.sim.ticks;
+            guard.replay.push(ReplayLine::Note {
+                t,
+                src: ReplaySrc::Agent,
+                emp: emp_idx,
+                text: note_text,
+                strategy: decision.strategy_memory.clone(),
+            });
+        }
         if let Some(mem) = decision.strategy_memory {
             guard.latest_strategy.insert(emp_idx, mem.clone());
             let summary = if mem.phase.is_empty() {
@@ -885,7 +961,15 @@ pub(crate) fn apply_submissions_locked(
         }
 
         let cmds_for_feed = decision.commands.clone();
+        let t = guard.sim.ticks;
         let feedback = guard.sim.submit_commands(emp_idx, decision.commands);
+        guard.replay.push(ReplayLine::Commands {
+            t,
+            src: ReplaySrc::Agent,
+            emp: emp_idx,
+            cmds: cmds_for_feed.clone(),
+            fb: feedback.clone(),
+        });
 
         for (cmd, fb) in cmds_for_feed.iter().zip(feedback.iter()) {
             let ev = match cmd {
@@ -1018,14 +1102,35 @@ async fn finalize_match(
     inner: &Arc<RwLock<MatchInner>>,
     ws_tx: &broadcast::Sender<SpectatorWsMessage>,
 ) {
-    let mut guard = inner.write().await;
-    if guard.end_reason.as_deref() == Some("aborted") && guard.status != MatchStatus::Aborted {
-        guard.status = MatchStatus::Aborted;
-        guard.sim.winner = None;
-        let _ = ws_tx.send(SpectatorWsMessage::Status {
-            summary: guard.public_summary(),
-        });
+    let (recorder, path) = {
+        let mut guard = inner.write().await;
+        if guard.end_reason.as_deref() == Some("aborted") && guard.status != MatchStatus::Aborted {
+            guard.status = MatchStatus::Aborted;
+            guard.sim.winner = None;
+            let _ = ws_tx.send(SpectatorWsMessage::Status {
+                summary: guard.public_summary(),
+            });
+        }
+        let reason = match (guard.end_reason.as_deref(), guard.status) {
+            (Some(r), _) => r.to_string(),
+            (None, MatchStatus::Finished) => "victory".to_string(),
+            (None, _) => "shutdown".to_string(),
+        };
+        let g = &mut *guard;
+        g.replay.finish(&g.sim, &reason);
+        (std::mem::take(&mut g.replay), g.replay_path.clone())
+    };
+    let written =
+        tokio::task::spawn_blocking(move || replay::write_gz(&path, &recorder).map(|_| path)).await;
+    match written {
+        Ok(Ok(path)) => println!("Replay saved: {}", path.display()),
+        Ok(Err(e)) => eprintln!("Failed to write replay: {e}"),
+        Err(e) => eprintln!("Replay writer task failed: {e}"),
     }
+}
+
+pub fn replay_file_name(match_id: &str) -> String {
+    format!("match_{match_id}.replay.jsonl.gz")
 }
 
 async fn run_match_loop(
@@ -1153,6 +1258,7 @@ async fn run_match_loop(
                 };
 
                 guard.sim.step_tick(false);
+                guard.record_tick_for_replay();
                 tps_window_ticks += 1;
 
                 let public_alerts: Vec<(Option<usize>, String)> =
@@ -1421,6 +1527,7 @@ async fn run_match_loop(
                     false
                 };
                 guard.sim.step_tick(false);
+                guard.record_tick_for_replay();
                 ticks_done += 1;
 
                 let cur_stride = guard.frame_stride_ticks.max(1);

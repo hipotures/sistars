@@ -19,3 +19,6 @@ Cargo.lock
 # Python
 __pycache__/
 *.pyc
+
+# Arena server runtime output (anomaly logs, match replays)
+/logs
