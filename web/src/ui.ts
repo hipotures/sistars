@@ -3518,23 +3518,45 @@ export class UiController {
       'http://localhost:8080';
     bar.innerHTML = '<span class="arena-mcp-label">MCP SEATS</span>';
     for (const seat of seats) {
+      const isBoundHere =
+        seat.status === 'bound' && !!activeMatchId && seat.matchId === activeMatchId;
+      const isBoundElsewhere =
+        seat.status === 'bound' && (!activeMatchId || seat.matchId !== activeMatchId);
+      const empLabel = seat.empireName ?? `Emp#${(seat.empireIdx ?? 0) + 1}`;
+
       const chip = document.createElement('span');
-      chip.className = `arena-mcp-chip ${seat.status === 'bound' ? 'bound' : 'idle'}`;
+      chip.className = `arena-mcp-chip ${isBoundHere ? 'bound' : 'idle'}`;
       const txt = document.createElement('span');
-      txt.textContent =
-        seat.status === 'bound'
-          ? `${seat.seatName} → ${seat.empireName ?? `Emp#${(seat.empireIdx ?? 0) + 1}`}`
-          : `${seat.seatName}: IDLE`;
+      if (isBoundHere) {
+        txt.textContent = `${seat.seatName} → ${empLabel}`;
+        chip.title = `${seat.seatName} is playing as ${empLabel} in this match (${seat.matchId})`;
+      } else if (isBoundElsewhere) {
+        const shortMid = seat.matchId ? seat.matchId.slice(0, 6) : '?';
+        txt.textContent = `${seat.seatName}: in ${shortMid} (${empLabel})`;
+        chip.title = `${seat.seatName} is currently bound in another match (${seat.matchId}) as ${empLabel}`;
+      } else {
+        txt.textContent = `${seat.seatName}: IDLE`;
+        chip.title = `${seat.seatName} is idle in the lobby`;
+      }
       chip.appendChild(txt);
 
       const actBtn = document.createElement('button');
       actBtn.className = 'hud-btn';
       actBtn.style.padding = '1px 5px';
       actBtn.style.fontSize = '0.58rem';
-      if (seat.status === 'bound') {
+      if (isBoundHere) {
         actBtn.textContent = 'Unbind';
         actBtn.addEventListener('click', () => {
           this.callbacks.onArenaBindMcpSeat?.(srv, seat.seatName, null);
+        });
+      } else if (isBoundElsewhere) {
+        actBtn.textContent = activeMatchId ? 'Bind here' : 'Unbind';
+        actBtn.addEventListener('click', () => {
+          if (activeMatchId) {
+            this.callbacks.onArenaBindMcpSeat?.(srv, seat.seatName, activeMatchId, 0);
+          } else {
+            this.callbacks.onArenaBindMcpSeat?.(srv, seat.seatName, null);
+          }
         });
       } else {
         actBtn.textContent = 'Bind';

@@ -870,9 +870,25 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         )
     };
 
-    {
+    let prev_binding = {
         let mut bindings = state.persistent_seat_bindings.write().await;
-        bindings.insert(seat_name.clone(), (parsed.match_id.clone(), parsed.empire_idx));
+        bindings.insert(seat_name.clone(), (parsed.match_id.clone(), parsed.empire_idx))
+    };
+    if let Some((prev_mid, _)) = prev_binding {
+        if prev_mid != parsed.match_id {
+            let prev_handle = {
+                let matches = state.matches.read().await;
+                matches.get(&prev_mid).cloned()
+            };
+            if let Some(ph) = prev_handle {
+                let mut pguard = ph.inner.write().await;
+                if pguard.unregister_player(&format!("mcp:{seat_name}")) {
+                    let _ = ph.ws_tx.send(pguard.build_lobby_ws_message());
+                    let summary = pguard.public_summary();
+                    let _ = ph.ws_tx.send(SpectatorWsMessage::Status { summary });
+                }
+            }
+        }
     }
     {
         let mut history = state.seat_match_history.write().await;
@@ -1348,9 +1364,25 @@ pub async fn bind_persistent_seat(
         started
     };
 
-    {
+    let prev_binding = {
         let mut bindings = state.persistent_seat_bindings.write().await;
-        bindings.insert(seat_name.clone(), (match_id.clone(), empire_idx));
+        bindings.insert(seat_name.clone(), (match_id.clone(), empire_idx))
+    };
+    if let Some((prev_mid, _)) = prev_binding {
+        if prev_mid != match_id {
+            let prev_handle = {
+                let matches = state.matches.read().await;
+                matches.get(&prev_mid).cloned()
+            };
+            if let Some(ph) = prev_handle {
+                let mut pguard = ph.inner.write().await;
+                if pguard.unregister_player(&format!("mcp:{seat_name}")) {
+                    let _ = ph.ws_tx.send(pguard.build_lobby_ws_message());
+                    let summary = pguard.public_summary();
+                    let _ = ph.ws_tx.send(SpectatorWsMessage::Status { summary });
+                }
+            }
+        }
     }
     {
         let mut history = state.seat_match_history.write().await;
