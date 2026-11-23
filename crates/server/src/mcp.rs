@@ -621,10 +621,9 @@ async fn handle_mcp_post_inner(
                         false,
                     ),
                 },
-                other => tool_text_result(
-                    format!("Validation error: unknown tool '{other}'"),
-                    true,
-                ),
+                other => {
+                    tool_text_result(format!("Validation error: unknown tool '{other}'"), true)
+                }
             };
             jsonrpc_ok(id, result, client_session)
         }
@@ -645,7 +644,9 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
     let (seat_name, current_binding, restrict_match_id) = match identity {
         McpIdentity::PersistentSeat { seat_name, bound } => (
             Some(seat_name.clone()),
-            bound.as_ref().map(|(m, e)| json!({ "matchId": m, "empireIdx": e })),
+            bound
+                .as_ref()
+                .map(|(m, e)| json!({ "matchId": m, "empireIdx": e })),
             None,
         ),
         McpIdentity::MatchToken {
@@ -803,10 +804,9 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
     // Check if another persistent seat is currently bound to (match_id, empire_idx)
     {
         let bindings = state.persistent_seat_bindings.read().await;
-        if let Some((other_seat, _)) = bindings
-            .iter()
-            .find(|(s, (m, e))| *s != &seat_name && m == &parsed.match_id && *e == parsed.empire_idx)
-        {
+        if let Some((other_seat, _)) = bindings.iter().find(|(s, (m, e))| {
+            *s != &seat_name && m == &parsed.match_id && *e == parsed.empire_idx
+        }) {
             return tool_text_result(
                 format!(
                     "Seat occupied: empireIdx {} in match '{}' is already controlled by '{other_seat}'.",
@@ -833,7 +833,10 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         let mut guard = handle.inner.write().await;
         if guard.status == MatchStatus::Finished {
             return tool_text_result(
-                format!("Validation error: match '{}' has already finished.", parsed.match_id),
+                format!(
+                    "Validation error: match '{}' has already finished.",
+                    parsed.match_id
+                ),
                 true,
             );
         }
@@ -849,10 +852,17 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         }
         let emp_u8 = (parsed.empire_idx + 1) as u8;
         let alive = guard.sim.owner.iter().any(|&o| o == emp_u8)
-            || guard.sim.fleets.iter().any(|f| f.emp == emp_u8 && f.power > 0.0);
+            || guard
+                .sim
+                .fleets
+                .iter()
+                .any(|f| f.emp == emp_u8 && f.power > 0.0);
         if !alive {
             return tool_text_result(
-                format!("Validation error: empireIdx {} has been eliminated.", parsed.empire_idx),
+                format!(
+                    "Validation error: empireIdx {} has been eliminated.",
+                    parsed.empire_idx
+                ),
                 true,
             );
         }
@@ -881,7 +891,10 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
 
     let prev_binding = {
         let mut bindings = state.persistent_seat_bindings.write().await;
-        bindings.insert(seat_name.clone(), (parsed.match_id.clone(), parsed.empire_idx))
+        bindings.insert(
+            seat_name.clone(),
+            (parsed.match_id.clone(), parsed.empire_idx),
+        )
     };
     if let Some((prev_mid, _)) = prev_binding {
         if prev_mid != parsed.match_id {
@@ -901,7 +914,10 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
     }
     {
         let mut history = state.seat_match_history.write().await;
-        history.insert((seat_name.clone(), parsed.match_id.clone()), parsed.empire_idx);
+        history.insert(
+            (seat_name.clone(), parsed.match_id.clone()),
+            parsed.empire_idx,
+        );
     }
 
     // Broadcast WS updates AFTER `persistent_seat_bindings` is updated so UI `/api/v1/mcp/seats`
@@ -943,7 +959,8 @@ async fn handle_tool_leave_match(state: &AppState, identity: &McpIdentity) -> Va
         McpIdentity::PersistentSeat { seat_name, .. } => seat_name.clone(),
         McpIdentity::MatchToken { .. } => {
             return tool_text_result(
-                "Validation error: leave_match is only available for persistent MCP seats.".to_string(),
+                "Validation error: leave_match is only available for persistent MCP seats."
+                    .to_string(),
                 true,
             );
         }
@@ -1241,11 +1258,7 @@ pub async fn list_persistent_seats(
             if let Some(handle) = matches.get(mid) {
                 let emp_name = {
                     let guard = handle.inner.read().await;
-                    guard
-                        .sim
-                        .empires
-                        .get(*eidx)
-                        .map(|e| e.race.name.clone())
+                    guard.sim.empires.get(*eidx).map(|e| e.race.name.clone())
                 };
                 out.push(McpSeatPublicInfo {
                     seat_name,

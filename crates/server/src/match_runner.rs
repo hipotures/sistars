@@ -312,14 +312,15 @@ impl MatchInner {
             .map(|(idx, emp)| {
                 let emp_u8 = (idx + 1) as u8;
                 let alive = self.sim.owner.iter().any(|&o| o == emp_u8)
-                    || self.sim.fleets.iter().any(|f| f.emp == emp_u8 && f.power > 0.0);
+                    || self
+                        .sim
+                        .fleets
+                        .iter()
+                        .any(|f| f.emp == emp_u8 && f.power > 0.0);
                 let is_open_role = self.open_agent_seats.contains(&idx);
                 let joined_raw = self.joined_players.get(&idx);
-                let joined_display = joined_raw.map(|pid| {
-                    pid.strip_prefix("mcp:")
-                        .unwrap_or(pid.as_str())
-                        .to_string()
-                });
+                let joined_display = joined_raw
+                    .map(|pid| pid.strip_prefix("mcp:").unwrap_or(pid.as_str()).to_string());
                 let occupied = joined_raw.is_some();
                 let (seat_role, join_state, controlled_by) = if !is_open_role {
                     ("bot".to_string(), "bot".to_string(), "governor".to_string())
@@ -447,9 +448,11 @@ impl MatchInner {
             .enumerate()
             .filter_map(|(idx, &o)| if o == emp_u8 { Some(idx) } else { None })
             .collect();
-        let mut planets_gained: Vec<usize> = cur_owned.difference(&prev.owned_planets).copied().collect();
+        let mut planets_gained: Vec<usize> =
+            cur_owned.difference(&prev.owned_planets).copied().collect();
         planets_gained.sort_unstable();
-        let mut planets_lost: Vec<usize> = prev.owned_planets.difference(&cur_owned).copied().collect();
+        let mut planets_lost: Vec<usize> =
+            prev.owned_planets.difference(&cur_owned).copied().collect();
         planets_lost.sort_unstable();
 
         let mut new_contacts: Vec<usize> = cur_obs
@@ -910,14 +913,12 @@ pub(crate) fn apply_submissions_locked(
                         fb.reason.clone(),
                     )
                 }
-                StrategicCommand::SetSectorDirective { sector_id, mode } => {
-                    guard.push_feed_event(
-                        Some(emp_idx),
-                        ArenaFeedKind::SectorDirective,
-                        format!("Sector #{sector_id} directive -> {mode:?}"),
-                        None,
-                    )
-                }
+                StrategicCommand::SetSectorDirective { sector_id, mode } => guard.push_feed_event(
+                    Some(emp_idx),
+                    ArenaFeedKind::SectorDirective,
+                    format!("Sector #{sector_id} directive -> {mode:?}"),
+                    None,
+                ),
                 StrategicCommand::BuildHub { planet_idx, kind } => {
                     let suffix = match fb.reason.as_deref() {
                         Some(r) => format!(" [{}]: {r}", fb.status),
@@ -1160,9 +1161,8 @@ async fn run_match_loop(
                 };
                 let ws_due = min_ws_interval_ms == 0
                     || last_ws_broadcast.elapsed() >= Duration::from_millis(min_ws_interval_ms);
-                let should_broadcast = was_stepped
-                    || is_victory
-                    || (ws_due && (guard.sim.ticks % cur_stride == 0));
+                let should_broadcast =
+                    was_stepped || is_victory || (ws_due && (guard.sim.ticks % cur_stride == 0));
 
                 let frame = if should_broadcast && ws_tx.receiver_count() > 0 {
                     last_ws_broadcast = Instant::now();

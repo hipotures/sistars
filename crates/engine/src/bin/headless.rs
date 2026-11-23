@@ -15,7 +15,9 @@ fn run_trace_scenarios() {
     races[0].lrt_mask |= LRT_UR; // Enable Ultimate Recycling on Empire 1
 
     // 1. Salvage Cargo Cap & Conservation Trace
-    println!("\n--- Scenario 1: Salvage Cargo Cap (220 kT hold vs 500 kT debris, LRT_UR active) ---");
+    println!(
+        "\n--- Scenario 1: Salvage Cargo Cap (220 kT hold vs 500 kT debris, LRT_UR active) ---"
+    );
     let planets = vec![SandboxPlanet {
         x: 100.0,
         y: 100.0,
@@ -143,7 +145,14 @@ fn run_trace_scenarios() {
     println!("  Anomalies JSON:\n{}", sim2.export_anomalies_json());
 }
 
-fn run_phase_bench(label: &str, size: GalaxySize, shape: GalaxyShape, seed: u32, total_ticks: usize, chunk_size: usize) {
+fn run_phase_bench(
+    label: &str,
+    size: GalaxySize,
+    shape: GalaxyShape,
+    seed: u32,
+    total_ticks: usize,
+    chunk_size: usize,
+) {
     let races = classic_races();
     let mut cfg = SimConfig::default();
     cfg.galaxy_size = size;
@@ -222,8 +231,22 @@ fn main() {
     let races = classic_races();
 
     // 1. Phase-profiled late-game benchmarks (Huge 1,000 planets & Colossal 10,000 planets)
-    run_phase_bench("Huge Phase Benchmark", GalaxySize::Huge, GalaxyShape::Random, 592144, 4000, 1000);
-    run_phase_bench("Colossal Phase Benchmark", GalaxySize::Colossal, GalaxyShape::Spiral, 592144, 3000, 500);
+    run_phase_bench(
+        "Huge Phase Benchmark",
+        GalaxySize::Huge,
+        GalaxyShape::Random,
+        592144,
+        4000,
+        1000,
+    );
+    run_phase_bench(
+        "Colossal Phase Benchmark",
+        GalaxySize::Colossal,
+        GalaxyShape::Spiral,
+        592144,
+        3000,
+        500,
+    );
 
     // 2. Small galaxy tournament (30 games x 1200 ticks)
     let num_games = 30u32;

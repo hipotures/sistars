@@ -391,8 +391,7 @@ pub fn generate_galaxy(
     for i in 0..n {
         hab[i] = (0.25 + next_rand(rng_seed).powf(1.3) * 0.75).clamp(0.25, 1.0);
         for m in 0..3 {
-            min_crust[i * 3 + m] =
-                crust_richness * (0.2 + next_rand(rng_seed).powf(1.4) * 1.5);
+            min_crust[i * 3 + m] = crust_richness * (0.2 + next_rand(rng_seed).powf(1.4) * 1.5);
         }
     }
 
@@ -400,7 +399,11 @@ pub fn generate_galaxy(
     //    bridging distant regions (e.g. opposite spiral arms / clusters) so AI fleets can use them!
     let mut wormholes = Vec::with_capacity(wormhole_pairs);
     let min_span = world_w.min(world_h) * 0.42;
-    let min_wh_sep = if wormhole_pairs > 25 { 36.0f32 } else { 110.0f32 };
+    let min_wh_sep = if wormhole_pairs > 25 {
+        36.0f32
+    } else {
+        110.0f32
+    };
     let min_wh_sep_sq = min_wh_sep * min_wh_sep;
     let pool_len = candidates.len().max(1);
     for _ in 0..wormhole_pairs {
@@ -492,7 +495,11 @@ mod tests {
     #[test]
     fn homeworlds_spawn_inside_structure_with_neighbors() {
         for size in [GalaxySize::Huge, GalaxySize::Colossal] {
-            for shape in [GalaxyShape::Spiral, GalaxyShape::Ring, GalaxyShape::Clusters] {
+            for shape in [
+                GalaxyShape::Spiral,
+                GalaxyShape::Ring,
+                GalaxyShape::Clusters,
+            ] {
                 for seed_init in [42u32, 1337, 99999] {
                     let mut seed = seed_init;
                     let num_empires = 6;
@@ -502,8 +509,7 @@ mod tests {
                         let hy = g.pos_y[e];
                         let nearby = (0..g.pos_x.len())
                             .filter(|&j| {
-                                j != e
-                                    && (g.pos_x[j] - hx).hypot(g.pos_y[j] - hy) <= 115.0
+                                j != e && (g.pos_x[j] - hx).hypot(g.pos_y[j] - hy) <= 115.0
                             })
                             .count();
                         assert!(

@@ -17,9 +17,9 @@ pub const SHIP_COST_SCALE: f32 = 0.25;
 /// Cumulative research points required to reach each integer tech level 0..=26
 /// (Stars! progressive curve scaled for continuous-time SI-Stars pacing).
 pub const TECH_LEVEL_COSTS: [f32; MAX_TECH_LEVEL + 1] = [
-    0.0, 20.0, 45.0, 80.0, 130.0, 200.0, 290.0, 410.0, 560.0, 750.0, 990.0, 1290.0, 1660.0,
-    2120.0, 2680.0, 3360.0, 4180.0, 5170.0, 6360.0, 7790.0, 9500.0, 11540.0, 13980.0, 16890.0,
-    20360.0, 24500.0, 29450.0,
+    0.0, 20.0, 45.0, 80.0, 130.0, 200.0, 290.0, 410.0, 560.0, 750.0, 990.0, 1290.0, 1660.0, 2120.0,
+    2680.0, 3360.0, 4180.0, 5170.0, 6360.0, 7790.0, 9500.0, 11540.0, 13980.0, 16890.0, 20360.0,
+    24500.0, 29450.0,
 ];
 
 /// Converts accumulated research points into a continuous tech level `0.0..=26.0`.

@@ -13,7 +13,12 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("logs"));
 
-    let state = AppState::new_with_mcp(admin_token.clone(), logs_dir, public_url.clone(), mcp_seats_raw.as_deref());
+    let state = AppState::new_with_mcp(
+        admin_token.clone(),
+        logs_dir,
+        public_url.clone(),
+        mcp_seats_raw.as_deref(),
+    );
     let app = build_router(state.clone());
 
     let addr: SocketAddr = bind_addr

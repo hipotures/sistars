@@ -126,7 +126,10 @@ async fn e2e_token_isolation_and_fow() {
     // 1. Missing token -> 401
     let r_missing = srv
         .client
-        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match1_id}/observation",
+            srv.base_url
+        ))
         .send()
         .await
         .unwrap();
@@ -135,7 +138,10 @@ async fn e2e_token_isolation_and_fow() {
     // 2. Bogus token -> 401
     let r_bad = srv
         .client
-        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match1_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth("invalid_token_12345")
         .send()
         .await
@@ -145,7 +151,10 @@ async fn e2e_token_isolation_and_fow() {
     // 3. Valid token from Match 2 used against Match 1 -> 403 Forbidden
     let r_cross = srv
         .client
-        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match1_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&m2_tok0)
         .send()
         .await
@@ -155,7 +164,10 @@ async fn e2e_token_isolation_and_fow() {
     // 4. Token 0 returns strictly Empire 1 (seat 0) FoW; Token 1 returns strictly Empire 2 (seat 1) FoW
     let obs0: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match1_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .send()
         .await
@@ -165,7 +177,10 @@ async fn e2e_token_isolation_and_fow() {
         .unwrap();
     let obs1: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match1_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok1)
         .send()
         .await
@@ -183,15 +198,24 @@ async fn e2e_token_isolation_and_fow() {
     let p1_idx = obs1["observation"]["ownHubs"][0]["planetId"]
         .as_u64()
         .unwrap();
-    assert_ne!(p0_idx, p1_idx, "Empires 0 and 1 must see their own distinct homeworlds");
-    assert!(obs0["previousStrategy"].is_null(), "Epoch 0 previousStrategy must be null");
+    assert_ne!(
+        p0_idx, p1_idx,
+        "Empires 0 and 1 must see their own distinct homeworlds"
+    );
+    assert!(
+        obs0["previousStrategy"].is_null(),
+        "Epoch 0 previousStrategy must be null"
+    );
     assert!(obs0["delta"].is_null(), "Epoch 0 delta must be null");
 
     // 5. Private reasoning_note from Empire 0 MUST NEVER leak to Empire 1's observation
     let secret_note = "SECRET_OMEGA_BACKSTAB_PLAN_999";
     let sub0 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match1_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match1_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({
             "epoch": 0,
@@ -205,7 +229,10 @@ async fn e2e_token_isolation_and_fow() {
 
     let sub1 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match1_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match1_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok1)
         .json(&json!({
             "epoch": 0,
@@ -220,7 +247,10 @@ async fn e2e_token_isolation_and_fow() {
 
     let obs1_after_text = srv
         .client
-        .get(format!("{}/api/v1/matches/{match1_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match1_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok1)
         .send()
         .await
@@ -277,7 +307,10 @@ async fn e2e_epoch_barrier_and_timeout() {
     // 1. Submit ONLY Seat 0 -> barrier must still wait for Seat 1
     let r0 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({ "epoch": 0, "commands": [] }))
         .send()
@@ -302,7 +335,10 @@ async fn e2e_epoch_barrier_and_timeout() {
     // 2. Submit Seat 1 -> barrier immediately advances epoch 0 -> 1 (10 ticks)
     let r1 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok1)
         .json(&json!({ "epoch": 0, "commands": [] }))
         .send()
@@ -317,7 +353,10 @@ async fn e2e_epoch_barrier_and_timeout() {
     // 3. On epoch 1, only Seat 0 responds while Seat 1 times out (> 450 ms) -> epoch MUST still advance to 2
     let r0_ep1 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({ "epoch": 1, "commands": [] }))
         .send()
@@ -378,7 +417,10 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
     let secret_rationale = "SECRET_STRATEGY_RATIONALE_SECURE_NORTH";
     let res0 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({
             "epoch": 0,
@@ -402,7 +444,10 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
     // Seat 1 sets a SectorDirective (camelCase)
     let res1 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok1)
         .json(&json!({
             "epoch": 0,
@@ -421,7 +466,10 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
     // Verify Seat 0 gets its own previousStrategy & non-null EpochDelta at Epoch 1
     let obs0_ep1: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .send()
         .await
@@ -449,7 +497,10 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
     // and NEVER sees Seat 0's private strategyMemory!
     let obs1: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok1)
         .send()
         .await
@@ -469,7 +520,9 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
         "Expected diplomatic message in Seat 1 inbox, got {inbox:?}"
     );
     assert!(
-        !serde_json::to_string(&obs1).unwrap().contains(secret_rationale),
+        !serde_json::to_string(&obs1)
+            .unwrap()
+            .contains(secret_rationale),
         "Private strategyMemory must NEVER leak to Seat 1 observation"
     );
     assert!(obs1["previousStrategy"].is_null());
@@ -500,7 +553,8 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
                         let ev = &v["event"];
                         match ev["kind"].as_str() {
                             Some("StrategyUpdate")
-                                if ev["strategy"]["rationale"].as_str() == Some(secret_rationale) =>
+                                if ev["strategy"]["rationale"].as_str()
+                                    == Some(secret_rationale) =>
                             {
                                 saw_strategy = true;
                             }
@@ -523,12 +577,18 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
         }
     }
 
-    assert!(saw_frame, "Spectator WS must receive live map render frames");
+    assert!(
+        saw_frame,
+        "Spectator WS must receive live map render frames"
+    );
     assert!(
         saw_strategy,
         "Spectator WS must receive StrategyUpdate ArenaFeedEvent with full StrategyMemory"
     );
-    assert!(saw_dip_msg, "Spectator WS must receive DipMessage ArenaFeedEvent");
+    assert!(
+        saw_dip_msg,
+        "Spectator WS must receive DipMessage ArenaFeedEvent"
+    );
     assert!(
         saw_dip_change,
         "Spectator WS must receive DiplomacyChange ArenaFeedEvent"
@@ -585,7 +645,10 @@ async fn e2e_openapi_system_view_and_live_auditor() {
     // 3. On-demand Spectator REST endpoints: /system/0, /planet/0, /reports
     let sys: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/system/0", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/system/0",
+            srv.base_url
+        ))
         .send()
         .await
         .unwrap()
@@ -598,7 +661,10 @@ async fn e2e_openapi_system_view_and_live_auditor() {
 
     let planet: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/planet/0", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/planet/0",
+            srv.base_url
+        ))
         .send()
         .await
         .unwrap()
@@ -609,7 +675,10 @@ async fn e2e_openapi_system_view_and_live_auditor() {
 
     let reports: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/reports", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/reports",
+            srv.base_url
+        ))
         .send()
         .await
         .unwrap()
@@ -622,7 +691,10 @@ async fn e2e_openapi_system_view_and_live_auditor() {
     for ep in 0..3u64 {
         let r = srv
             .client
-            .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+            .post(format!(
+                "{}/api/v1/matches/{match_id}/commands",
+                srv.base_url
+            ))
             .bearer_auth(&tok0)
             .json(&json!({ "epoch": ep, "commands": [] }))
             .send()
@@ -635,7 +707,10 @@ async fn e2e_openapi_system_view_and_live_auditor() {
     // 4. Verify LiveAuditor recorded 0 anomalies
     let anomalies: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/anomalies", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/anomalies",
+            srv.base_url
+        ))
         .send()
         .await
         .unwrap()
@@ -688,12 +763,18 @@ async fn e2e_realtime_async_and_live_control() {
         .await
         .unwrap();
     let t1 = s1["tick"].as_u64().unwrap();
-    assert!(t1 > 0, "RealtimeAsync match must advance ticks without blocking on agents");
+    assert!(
+        t1 > 0,
+        "RealtimeAsync match must advance ticks without blocking on agents"
+    );
 
     // 2. Live pause via POST /control -> ticks MUST freeze
     let ctrl_pause: Value = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/control", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
         .json(&json!({ "paused": true }))
         .send()
         .await
@@ -726,12 +807,18 @@ async fn e2e_realtime_async_and_live_control() {
         .unwrap()["tick"]
         .as_u64()
         .unwrap();
-    assert_eq!(t_paused_a, t_paused_b, "Paused match must not advance ticks");
+    assert_eq!(
+        t_paused_a, t_paused_b,
+        "Paused match must not advance ticks"
+    );
 
     // 3. stepTicks: 2 while paused -> advances by exactly 2 ticks and stays paused
     let _ = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/control", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
         .json(&json!({ "stepTicks": 2 }))
         .send()
         .await
@@ -752,7 +839,10 @@ async fn e2e_realtime_async_and_live_control() {
     // 4. Resume at speedMult: 10.0 and submit an async POST /commands in flight (even with stale epoch: 0!)
     let ctrl_resume: Value = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/control", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
         .json(&json!({ "paused": false, "speedMult": 10.0 }))
         .send()
         .await
@@ -765,7 +855,10 @@ async fn e2e_realtime_async_and_live_control() {
 
     let cmd_resp = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({
             "epoch": 0,
@@ -788,7 +881,10 @@ async fn e2e_realtime_async_and_live_control() {
     tokio::time::sleep(Duration::from_millis(180)).await;
     let obs_after: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .send()
         .await
@@ -804,7 +900,10 @@ async fn e2e_realtime_async_and_live_control() {
     let bias = obs_after["observation"]["empire"]["policy"]["colonizeVsAttackBias"]
         .as_f64()
         .unwrap();
-    assert!((bias - 0.2).abs() < 0.02, "Expected patched bias 0.2, got {bias}");
+    assert!(
+        (bias - 0.2).abs() < 0.02,
+        "Expected patched bias 0.2, got {bias}"
+    );
     assert!(obs_after["tick"].as_u64().unwrap() > t_paused_b + 2);
 }
 
@@ -835,7 +934,10 @@ async fn e2e_lockstep_no_timeout_and_exact_epoch_ticks() {
     // Epoch 0 -> submit -> must execute EXACTLY 20 ticks (tick == 20, epoch == 1)
     let r0 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({ "epoch": 0, "commands": [] }))
         .send()
@@ -864,7 +966,10 @@ async fn e2e_lockstep_no_timeout_and_exact_epoch_ticks() {
     // Submit Epoch 1 -> must execute EXACTLY 20 ticks (tick == 40, epoch == 2, zero drift!)
     let r1 = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({ "epoch": 1, "commands": [] }))
         .send()
@@ -902,7 +1007,10 @@ async fn e2e_observation_hub_metrics_and_build_hub_alias() {
     // 1. Verify ownHubs includes `maxPop` and `shipProdBuf`
     let obs: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .send()
         .await
@@ -911,14 +1019,23 @@ async fn e2e_observation_hub_metrics_and_build_hub_alias() {
         .await
         .unwrap();
     let hub0 = &obs["observation"]["ownHubs"][0];
-    assert!(hub0["maxPop"].as_f64().unwrap_or(0.0) > 10.0, "ownHubs[0] must include maxPop, got {hub0}");
-    assert!(hub0["shipProdBuf"].is_number(), "ownHubs[0] must include shipProdBuf, got {hub0}");
+    assert!(
+        hub0["maxPop"].as_f64().unwrap_or(0.0) > 10.0,
+        "ownHubs[0] must include maxPop, got {hub0}"
+    );
+    assert!(
+        hub0["shipProdBuf"].is_number(),
+        "ownHubs[0] must include shipProdBuf, got {hub0}"
+    );
     let pid = hub0["planetId"].as_u64().unwrap();
 
     // 2. Verify buildHub accepts BOTH `planetId` alias AND `planetIdx`
     let res = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({
             "epoch": 0,
@@ -998,7 +1115,10 @@ async fn e2e_mcp_full_handshake_and_gameplay() {
     assert_eq!(init_resp.status(), StatusCode::OK);
     assert!(init_resp.headers().get("mcp-session-id").is_some());
     let init_body: Value = init_resp.json().await.unwrap();
-    assert_eq!(init_body["result"]["protocolVersion"].as_str(), Some("2025-06-18"));
+    assert_eq!(
+        init_body["result"]["protocolVersion"].as_str(),
+        Some("2025-06-18")
+    );
     assert!(init_body["result"]["instructions"]
         .as_str()
         .unwrap()
@@ -1076,7 +1196,10 @@ async fn e2e_mcp_full_handshake_and_gameplay() {
     assert_eq!(brief_body["result"]["isError"].as_bool(), Some(false));
     let brief_txt = brief_body["result"]["content"][0]["text"].as_str().unwrap();
     assert!(brief_txt.contains("SI-STARS GRAND STRATEGIST BRIEFING"));
-    assert!(!brief_txt.contains("year 0.0"), "Briefing must not mention year 0.0 when maxYear is None");
+    assert!(
+        !brief_txt.contains("year 0.0"),
+        "Briefing must not mention year 0.0 when maxYear is None"
+    );
 
     // 6. tools/call get_observation
     let obs_body: Value = srv
@@ -1167,7 +1290,9 @@ async fn e2e_mcp_full_handshake_and_gameplay() {
     let mut saw_strategy = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline && !saw_strategy {
-        if let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_millis(200), ws_stream.next()).await {
+        if let Ok(Some(Ok(msg))) =
+            tokio::time::timeout(Duration::from_millis(200), ws_stream.next()).await
+        {
             if msg.is_text() {
                 let v: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
                 if v["type"].as_str() == Some("feed")
@@ -1179,7 +1304,10 @@ async fn e2e_mcp_full_handshake_and_gameplay() {
             }
         }
     }
-    assert!(saw_strategy, "Spectator WS must receive StrategyUpdate emitted via MCP submit_orders");
+    assert!(
+        saw_strategy,
+        "Spectator WS must receive StrategyUpdate emitted via MCP submit_orders"
+    );
 }
 
 #[tokio::test]
@@ -1288,10 +1416,8 @@ async fn e2e_mcp_auth_isolation_and_http_methods() {
 
 #[tokio::test]
 async fn e2e_mcp_persistent_seat_rebinding() {
-    let logs_dir = std::env::temp_dir().join(format!(
-        "sistars_mcp_seat_test_{}",
-        std::process::id()
-    ));
+    let logs_dir =
+        std::env::temp_dir().join(format!("sistars_mcp_seat_test_{}", std::process::id()));
     let seat_token = "persistent_claude_seat_secret_token_01";
     let state = AppState::new_with_mcp(
         None,
@@ -1382,10 +1508,8 @@ async fn e2e_mcp_persistent_seat_rebinding() {
 
 #[tokio::test]
 async fn e2e_mcp_header_auth_lobby_and_self_join() {
-    let logs_dir = std::env::temp_dir().join(format!(
-        "sistars_mcp_lobby_test_{}",
-        std::process::id()
-    ));
+    let logs_dir =
+        std::env::temp_dir().join(format!("sistars_mcp_lobby_test_{}", std::process::id()));
     let secret1 = "claude_seat_1_secret_token_abc";
     let secret2 = "gemini_seat_2_secret_token_xyz";
     let state = AppState::new_with_mcp(
@@ -1693,8 +1817,14 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
         .unwrap();
     assert!(seats_text.contains("claude-1"));
     assert!(seats_text.contains("gemini-1"));
-    assert!(!seats_text.contains(secret1), "Secret token leaked in /api/v1/mcp/seats!");
-    assert!(!seats_text.contains(secret2), "Secret token leaked in /api/v1/mcp/seats!");
+    assert!(
+        !seats_text.contains(secret1),
+        "Secret token leaked in /api/v1/mcp/seats!"
+    );
+    assert!(
+        !seats_text.contains(secret2),
+        "Secret token leaked in /api/v1/mcp/seats!"
+    );
 
     state.shutdown_all().await;
 }
@@ -1703,7 +1833,8 @@ async fn e2e_mcp_header_auth_lobby_and_self_join() {
 async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
     let secret1 = "lobby_claude_secret_001";
     let secret2 = "lobby_gemini_secret_002";
-    let logs_dir = std::env::temp_dir().join(format!("sistars_e2e_lobby1_{}", uuid::Uuid::new_v4()));
+    let logs_dir =
+        std::env::temp_dir().join(format!("sistars_e2e_lobby1_{}", uuid::Uuid::new_v4()));
     let state = AppState::new_with_mcp(
         None,
         logs_dir,
@@ -1757,9 +1888,13 @@ async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
         .unwrap()
         .unwrap()
         .unwrap();
-    let initial_lobby_json: Value = serde_json::from_str(initial_lobby_ws.to_text().unwrap()).unwrap();
+    let initial_lobby_json: Value =
+        serde_json::from_str(initial_lobby_ws.to_text().unwrap()).unwrap();
     assert_eq!(initial_lobby_json["type"].as_str(), Some("lobbyState"));
-    assert_eq!(initial_lobby_json["status"].as_str(), Some("WaitingForAgents"));
+    assert_eq!(
+        initial_lobby_json["status"].as_str(),
+        Some("WaitingForAgents")
+    );
 
     // Verify simulation stays frozen at tick 0 while waiting in lobby
     tokio::time::sleep(Duration::from_millis(120)).await;
@@ -1791,7 +1926,8 @@ async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
         .await
         .unwrap();
     assert_eq!(j1["result"]["isError"].as_bool(), Some(false));
-    let j1_payload: Value = serde_json::from_str(j1["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let j1_payload: Value =
+        serde_json::from_str(j1["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(j1_payload["joinedAgentCount"].as_u64(), Some(1));
     assert_eq!(j1_payload["matchStatus"].as_str(), Some("WaitingForAgents"));
 
@@ -1855,7 +1991,8 @@ async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
         .await
         .unwrap();
     assert_eq!(j2_ok["result"]["isError"].as_bool(), Some(false));
-    let j2_payload: Value = serde_json::from_str(j2_ok["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let j2_payload: Value =
+        serde_json::from_str(j2_ok["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(j2_payload["matchStatus"].as_str(), Some("Running"));
     assert_eq!(j2_payload["startReason"].as_str(), Some("allAgentsJoined"));
 
@@ -1863,7 +2000,9 @@ async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
     let mut saw_running_lobby_ws = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
-        if let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_millis(300), ws_stream.next()).await {
+        if let Ok(Some(Ok(msg))) =
+            tokio::time::timeout(Duration::from_millis(300), ws_stream.next()).await
+        {
             if let Ok(txt) = msg.to_text() {
                 if let Ok(v) = serde_json::from_str::<Value>(txt) {
                     if v["type"].as_str() == Some("lobbyState")
@@ -1877,7 +2016,10 @@ async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
             }
         }
     }
-    assert!(saw_running_lobby_ws, "Spectator WS must receive lobbyState transition to Running");
+    assert!(
+        saw_running_lobby_ws,
+        "Spectator WS must receive lobbyState transition to Running"
+    );
 
     // Verify ticks actually advance now!
     tokio::time::sleep(Duration::from_millis(180)).await;
@@ -1902,7 +2044,8 @@ async fn e2e_lobby_autostart_on_all_distinct_agents_join() {
 async fn e2e_lobby_timeout_autostart_and_late_join() {
     let secret1 = "late_claude_secret_001";
     let secret2 = "late_gemini_secret_002";
-    let logs_dir = std::env::temp_dir().join(format!("sistars_e2e_lobby2_{}", uuid::Uuid::new_v4()));
+    let logs_dir =
+        std::env::temp_dir().join(format!("sistars_e2e_lobby2_{}", uuid::Uuid::new_v4()));
     let state = AppState::new_with_mcp(
         None,
         logs_dir,
@@ -2008,7 +2151,8 @@ async fn e2e_lobby_timeout_autostart_and_late_join() {
         .json()
         .await
         .unwrap();
-    let obs2_json: Value = serde_json::from_str(obs2["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let obs2_json: Value =
+        serde_json::from_str(obs2["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(
         obs2_json["tick"].as_u64().unwrap_or(0) > 0,
         "Late-join agent must observe advanced tick > 0"
@@ -2043,7 +2187,8 @@ async fn e2e_lobby_timeout_autostart_and_late_join() {
         .await
         .unwrap();
     assert_eq!(sub2["result"]["isError"].as_bool(), Some(false));
-    let sub2_json: Value = serde_json::from_str(sub2["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let sub2_json: Value =
+        serde_json::from_str(sub2["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(sub2_json["accepted"].as_bool(), Some(true));
 
     state.shutdown_all().await;
@@ -2117,7 +2262,10 @@ async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
     let cable = "E2E diplomatic check for Insectoids";
     let resp: Value = srv
         .client
-        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
         .bearer_auth(&tok0)
         .json(&json!({
             "commands": [
@@ -2138,15 +2286,27 @@ async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
     assert_eq!(fb.len(), 4);
     assert_eq!(fb[0]["status"].as_str(), Some("applied"));
     assert!(
-        fb[0]["reason"].as_str().unwrap_or("").contains("Insectoids")
-            && fb[0]["reason"].as_str().unwrap_or("").contains("empireId=3"),
+        fb[0]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Insectoids")
+            && fb[0]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("empireId=3"),
         "Expected Insectoids (empireId=3) in feedback, got: {}",
         fb[0]
     );
     assert_eq!(fb[1]["status"].as_str(), Some("applied"));
     assert!(
-        fb[1]["reason"].as_str().unwrap_or("").contains("Insectoids")
-            && fb[1]["reason"].as_str().unwrap_or("").contains("empireId=3"),
+        fb[1]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Insectoids")
+            && fb[1]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("empireId=3"),
         "Expected Insectoids (empireId=3) in cable feedback, got: {}",
         fb[1]
     );
@@ -2156,7 +2316,10 @@ async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
     // Insectoids (seat 2, empireId=3) must observe Ceasefire + cable from Humanoids (empId=1)
     let obs_insectoids: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok2)
         .send()
         .await
@@ -2177,7 +2340,10 @@ async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
     // Nucleids (seat 3, empireId=4) must NOT receive the cable or Ceasefire
     let obs_nucleids: Value = srv
         .client
-        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .get(format!(
+            "{}/api/v1/matches/{match_id}/observation",
+            srv.base_url
+        ))
         .bearer_auth(&tok3)
         .send()
         .await
@@ -2190,7 +2356,9 @@ async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
         .as_array()
         .unwrap_or(&empty_vec);
     assert!(
-        known_n.iter().all(|k| k["inbox"].as_array().map(|a| a.is_empty()).unwrap_or(true)),
+        known_n
+            .iter()
+            .all(|k| k["inbox"].as_array().map(|a| a.is_empty()).unwrap_or(true)),
         "Nucleids (empireId=4) must not receive Insectoids' cable: {:?}",
         known_n
     );
@@ -2201,12 +2369,7 @@ async fn e2e_hud_diplomacy_matrix_and_mcp_transition_from_finished() {
     let secret = "seat_secret_transition_test_0123";
     let logs_dir =
         std::env::temp_dir().join(format!("sistars_e2e_matrix_{}", uuid::Uuid::new_v4()));
-    let state = AppState::new_with_mcp(
-        None,
-        logs_dir,
-        None,
-        Some(&format!("claude-1:{secret}")),
-    );
+    let state = AppState::new_with_mcp(None, logs_dir, None, Some(&format!("claude-1:{secret}")));
     let router = build_router(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2329,9 +2492,12 @@ async fn e2e_hud_diplomacy_matrix_and_mcp_transition_from_finished() {
         .json()
         .await
         .unwrap();
-    let obs_fin_json: Value =
-        serde_json::from_str(obs_finished["result"]["content"][0]["text"].as_str().unwrap())
-            .unwrap();
+    let obs_fin_json: Value = serde_json::from_str(
+        obs_finished["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(obs_fin_json["status"].as_str(), Some("Finished"));
     assert!(
         obs_fin_json["hint"]

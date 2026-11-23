@@ -172,11 +172,20 @@ fn generate_star(temp_k: f32, rad_mr: f32, rng: &mut SysRng) -> StarView {
     if temp_k < 175.0 && exotic_roll < 0.34 {
         let sub = rng.next_f32();
         let (cls, bd_temp) = if sub < 0.45 {
-            (format!("L{}", (rng.next_u32() % 8) + 1), rng.range(1350.0, 2100.0))
+            (
+                format!("L{}", (rng.next_u32() % 8) + 1),
+                rng.range(1350.0, 2100.0),
+            )
         } else if sub < 0.82 {
-            (format!("T{}", (rng.next_u32() % 8) + 1), rng.range(720.0, 1300.0))
+            (
+                format!("T{}", (rng.next_u32() % 8) + 1),
+                rng.range(720.0, 1300.0),
+            )
         } else {
-            (format!("Y{}", (rng.next_u32() % 3) + 1), rng.range(420.0, 680.0))
+            (
+                format!("Y{}", (rng.next_u32() % 3) + 1),
+                rng.range(420.0, 680.0),
+            )
         };
         return StarView {
             star_kind: StarKind::BrownDwarf,
@@ -333,7 +342,19 @@ fn classify_and_style_body(
     is_gas: bool,
     hab_hint: Option<f32>,
     rng: &mut SysRng,
-) -> (BodyType, f32, f32, f32, [f32; 3], f32, bool, f32, f32, [f32; 3], u8) {
+) -> (
+    BodyType,
+    f32,
+    f32,
+    f32,
+    [f32; 3],
+    f32,
+    bool,
+    f32,
+    f32,
+    [f32; 3],
+    u8,
+) {
     if is_gas {
         let is_ice_giant = orbit_au > frost_line_au * 2.1 || radius_earth < 6.0;
         let body_type = if is_ice_giant {
@@ -753,9 +774,8 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
             let eq_temp = (278.0 * lum_quarter / orbit_au.sqrt()).clamp(38.0, 1450.0);
             let beyond_frost = orbit_au >= frost_line_au * 0.92;
             let is_outermost = idx + 1 == orbits.len();
-            let is_dwarf =
-                (is_outermost && beyond_frost && rng.next_f32() < 0.42)
-                    || (!beyond_frost && orbit_au > frost_line_au * 0.62 && rng.next_f32() < 0.16);
+            let is_dwarf = (is_outermost && beyond_frost && rng.next_f32() < 0.42)
+                || (!beyond_frost && orbit_au > frost_line_au * 0.62 && rng.next_f32() < 0.16);
 
             if is_dwarf {
                 let radius_earth = rng.range(0.16, 0.34);
@@ -765,7 +785,11 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
                 } else {
                     rng.range(0.08, 0.28)
                 };
-                let moons_n = if is_plutoid && rng.next_f32() < 0.45 { 1 } else { 0 };
+                let moons_n = if is_plutoid && rng.next_f32() < 0.45 {
+                    1
+                } else {
+                    0
+                };
                 let moons = generate_moons(
                     &name,
                     BodyType::Dwarf,
@@ -883,8 +907,12 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
         for i in 0..bodies.len().saturating_sub(1) {
             let a = bodies[i].orbit_au;
             let b = bodies[i + 1].orbit_au;
-            let is_rocky_a = !matches!(bodies[i].body_type, BodyType::GasGiant | BodyType::IceGiant);
-            let is_giant_b = matches!(bodies[i + 1].body_type, BodyType::GasGiant | BodyType::IceGiant);
+            let is_rocky_a =
+                !matches!(bodies[i].body_type, BodyType::GasGiant | BodyType::IceGiant);
+            let is_giant_b = matches!(
+                bodies[i + 1].body_type,
+                BodyType::GasGiant | BodyType::IceGiant
+            );
             if (is_rocky_a && is_giant_b) || (a < frost_line_au && b >= frost_line_au) {
                 insert_pos = Some((i + 1, (a + b) * 0.5));
                 break;
@@ -951,8 +979,8 @@ pub fn generate_star_system(input: &PrimaryWorldInput) -> StarSystemView {
 
     // 4c. Rare eccentric Comet (~26% of systems)
     if rng.next_f32() < 0.26 {
-        let comet_au = (bodies.last().map(|b| b.orbit_au).unwrap_or(6.0) * rng.range(1.18, 1.45))
-            .max(1.2);
+        let comet_au =
+            (bodies.last().map(|b| b.orbit_au).unwrap_or(6.0) * rng.range(1.18, 1.45)).max(1.2);
         let eq_temp = (278.0 * lum_quarter / comet_au.sqrt()).clamp(45.0, 260.0);
         let code = format!("C/{}-{}", 2400 + (system_seed % 95), (system_seed % 26) + 1);
         bodies.push(SystemBodyView {
@@ -1085,7 +1113,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw_belt, "expected Main Asteroid Belt in at least one system");
+        assert!(
+            saw_belt,
+            "expected Main Asteroid Belt in at least one system"
+        );
         assert!(saw_kuiper, "expected Kuiper Belt in at least one system");
         assert!(saw_dwarf, "expected Dwarf planet in at least one system");
         assert!(saw_comet, "expected Comet in at least one system");

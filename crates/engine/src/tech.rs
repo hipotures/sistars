@@ -832,7 +832,11 @@ impl TechStore {
                     let mut parts: Vec<String> = Vec::new();
                     if item.cloak_units > 0 {
                         let pct = (cloak_units_to_pct(item.cloak_units as f32) * 100.0).round();
-                        let tag = if item.cloak_unarmed_only { " unarmed" } else { "" };
+                        let tag = if item.cloak_unarmed_only {
+                            " unarmed"
+                        } else {
+                            ""
+                        };
                         parts.push(format!("Cloak {} ({:.0}%{})", item.cloak_units, pct, tag));
                     }
                     if item.reduce_cloaking {
@@ -1196,14 +1200,12 @@ impl EmpireTechCache {
                     // Prefer highest ideal_speed (cruise warp) and ramscoop free_speed on tie
                     if item.tech.requirements.hulls_allowed.is_empty() {
                         let spd = item.ideal_speed.max(5) as f32;
-                        let ideal_idx = (item.ideal_speed.max(1) as usize).min(item.fuel_usage.len().saturating_sub(1));
-                        let usage = item
-                            .fuel_usage
-                            .get(ideal_idx)
-                            .copied()
-                            .unwrap_or(100) as f32;
+                        let ideal_idx = (item.ideal_speed.max(1) as usize)
+                            .min(item.fuel_usage.len().saturating_sub(1));
+                        let usage = item.fuel_usage.get(ideal_idx).copied().unwrap_or(100) as f32;
                         let better_engine = spd > engine_warp
-                            || ((spd - engine_warp).abs() < 0.01 && item.free_speed > engine_free_speed);
+                            || ((spd - engine_warp).abs() < 0.01
+                                && item.free_speed > engine_free_speed);
                         if better_engine {
                             engine_warp = spd;
                             engine_free_speed = item.free_speed;
@@ -1226,7 +1228,9 @@ impl EmpireTechCache {
                     }
                 }
                 "TECH_CATEGORY_BOMB" => {
-                    let eff = item.kill_rate + item.structure_destroy_rate * 0.35 + if item.smart { 1.5 } else { 0.0 };
+                    let eff = item.kill_rate
+                        + item.structure_destroy_rate * 0.35
+                        + if item.smart { 1.5 } else { 0.0 };
                     if eff > bomb_power {
                         bomb_power = eff;
                         bomb_name = item.tech.name.clone();
@@ -1265,7 +1269,8 @@ impl EmpireTechCache {
                             stargate_max_range = rng;
                             stargate_name = Some(item.tech.name.clone());
                             stargate_cost_iron = (item.tech.cost.ironium.max(25) as f32).min(90.0);
-                            stargate_cost_germ = (item.tech.cost.germanium.max(25) as f32).min(90.0);
+                            stargate_cost_germ =
+                                (item.tech.cost.germanium.max(25) as f32).min(90.0);
                         }
                     }
                 }
@@ -1500,7 +1505,9 @@ impl EmpireTechCache {
             let per_det = store.ew_rules.tachyon_cloak_reduction.clamp(0.01, 0.25);
             let max_red = store.ew_rules.tachyon_max_cloak_reduction.clamp(0.25, 0.90);
             let eff_detectors = (5.0 + (int_levels[4] - 6).max(0) as f32 * 0.65).min(18.0);
-            (1.0 - (1.0 - per_det).powf(eff_detectors)).min(max_red).min(0.65)
+            (1.0 - (1.0 - per_det).powf(eff_detectors))
+                .min(max_red)
+                .min(0.65)
         } else {
             0.0
         };
@@ -1508,7 +1515,11 @@ impl EmpireTechCache {
         // Torpedo Jammer (capped at 75%) + Planetary ECM Scanner Jamming (unlocked from Jammer 20/30/50)
         let torpedo_jamming = (best_torpedo_jamming * 1.35).min(0.75);
         let (ecm_jammer_strength, ecm_jammer_range) = if best_torpedo_jamming >= 0.20 {
-            let ss_mult = if !ignore_traits && prt == "PRT_SS" { 1.25 } else { 1.0 };
+            let ss_mult = if !ignore_traits && prt == "PRT_SS" {
+                1.25
+            } else {
+                1.0
+            };
             let strength = (best_torpedo_jamming * 1.15 * ss_mult).min(0.85);
             let range = (55.0 + best_torpedo_jamming * 130.0) * ss_mult;
             (strength, range)
@@ -1673,9 +1684,19 @@ mod tests {
         assert!(mid.stargate_name.is_some());
         assert!(max.weapon_power > mid.weapon_power);
         assert!(max.engine_warp >= 9.0);
-        assert!(low.range_col < 110.0, "early colonizer range should be local (<110ly), got {}", low.range_col);
-        assert!(mid.range_col > low.range_col, "mid-game tech should expand ship range");
-        assert!(max.range_battleship > 450.0, "late-game ramscoop capital range should span sectors");
+        assert!(
+            low.range_col < 110.0,
+            "early colonizer range should be local (<110ly), got {}",
+            low.range_col
+        );
+        assert!(
+            mid.range_col > low.range_col,
+            "mid-game tech should expand ship range"
+        );
+        assert!(
+            max.range_battleship > 450.0,
+            "late-game ramscoop capital range should span sectors"
+        );
         assert_eq!(classic_races().len(), 6);
     }
 

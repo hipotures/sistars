@@ -304,13 +304,9 @@ pub enum SpectatorWsMessage {
         tps: f32,
     },
     #[serde(rename_all = "camelCase")]
-    Feed {
-        event: ArenaFeedEvent,
-    },
+    Feed { event: ArenaFeedEvent },
     #[serde(rename_all = "camelCase")]
-    Status {
-        summary: MatchPublicSummary,
-    },
+    Status { summary: MatchPublicSummary },
     #[serde(rename_all = "camelCase")]
     Control {
         paused: bool,
