@@ -256,6 +256,17 @@ export interface WreckEntryView {
   count: number;
 }
 
+export interface InboundSalvageFleetView {
+  id: number;
+  emp: number;
+  shipType: FleetClass;
+  x: number;
+  y: number;
+  distLy: number;
+  cargoCap: number;
+  shipCount: number;
+}
+
 export interface DebrisFieldView {
   x: number;
   y: number;
@@ -264,6 +275,7 @@ export interface DebrisFieldView {
   germ: number;
   ttl: number;
   wrecks?: WreckEntryView[];
+  inboundFleets?: InboundSalvageFleetView[];
 }
 
 export interface CombatFxView {

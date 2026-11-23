@@ -218,6 +218,9 @@ export class UiController {
   private selection: MapSelection = null;
   private debrisWrecksExpanded = false;
   private planetFleetsExpanded = false;
+  private inspectorBackTarget: { selection: MapSelection; x: number; y: number; label: string } | null = null;
+  private lastDebrisPos: { index: number; x: number; y: number } | null = null;
+  private pendingInspectorDrilldown = false;
   private lastHud: HudSnapshot | null = null;
   private lastReports: ReportsSnapshot | null = null;
   private lastConfig: SimConfig;
@@ -462,12 +465,18 @@ export class UiController {
     if (!samePlanet) {
       this.planetFleetsExpanded = false;
     }
+    if (!this.pendingInspectorDrilldown) {
+      this.inspectorBackTarget = null;
+    }
+    this.pendingInspectorDrilldown = false;
     this.selection = sel;
+    this.syncInspectorBackButton();
     this.syncReportRowHighlight();
     if (!sel) {
       getEl('planetInspector').style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
+      getEl('inspDebrisInboundWrap').style.display = 'none';
       getEl('inspDebrisHistoryWrap').style.display = 'none';
       getEl('inspPlanetFleetsWrap').style.display = 'none';
       this.inspGlobeRenderer.stop();
@@ -855,7 +864,8 @@ export class UiController {
     });
 
     getEl('btnReset').addEventListener('click', () => this.callbacks.onReset());
-    getEl('btnCloseInspector').addEventListener('click', () => this.callbacks.onSelectObject(null));
+    getEl('btnBackInspector').addEventListener('click', () => this.closeOrBackInspector());
+    getEl('btnCloseInspector').addEventListener('click', () => this.closeOrBackInspector());
     getEl('btnToggleDebrisWrecks').addEventListener('click', () => {
       this.debrisWrecksExpanded = !this.debrisWrecksExpanded;
       const body = getEl('inspDebrisWrecksBody');
@@ -890,6 +900,29 @@ export class UiController {
     };
     getEl('inspPlanetFleetsTbody').addEventListener('click', handleStationedFleetClick);
     getEl('sysOrbitFleetsTbody').addEventListener('click', handleStationedFleetClick);
+    getEl('inspDebrisInboundTbody').addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-fleet-id]');
+      if (!row || !row.dataset.fleetId) return;
+      const id = Number(row.dataset.fleetId);
+      const x = Number(row.dataset.x);
+      const y = Number(row.dataset.y);
+      if (Number.isNaN(id)) return;
+      if (this.selection?.kind === 'debris') {
+        const dIdx = this.selection.index;
+        const pos = this.lastDebrisPos?.index === dIdx ? this.lastDebrisPos : null;
+        this.inspectorBackTarget = {
+          selection: { kind: 'debris', index: dIdx },
+          x: pos ? pos.x : Number.NaN,
+          y: pos ? pos.y : Number.NaN,
+          label: `← D#${dIdx + 1}`,
+        };
+        this.pendingInspectorDrilldown = true;
+      }
+      this.callbacks.onSelectObject({ kind: 'fleet', id });
+      if (!Number.isNaN(x) && !Number.isNaN(y)) {
+        this.focusWorldPointOnMap(x, y, 55);
+      }
+    });
 
     // Procedural Planet Inspector -> System View modal events
     getEl('btnOpenSystemView').addEventListener('click', () => {
@@ -925,6 +958,8 @@ export class UiController {
           this.setSysPreviewExpanded(false);
         } else if (getEl('systemModal').style.display !== 'none') {
           this.closeSystemView();
+        } else if (this.selection !== null) {
+          this.closeOrBackInspector();
         }
       }
     });
@@ -2171,17 +2206,42 @@ export class UiController {
     }
   }
 
+  private syncInspectorBackButton(): void {
+    const btn = getEl('btnBackInspector');
+    if (this.inspectorBackTarget && this.selection !== null) {
+      btn.style.display = 'inline-block';
+      btn.textContent = this.inspectorBackTarget.label;
+    } else {
+      btn.style.display = 'none';
+    }
+  }
+
+  private closeOrBackInspector(): void {
+    if (this.inspectorBackTarget) {
+      const target = this.inspectorBackTarget;
+      this.inspectorBackTarget = null;
+      this.callbacks.onSelectObject(target.selection);
+      if (Number.isFinite(target.x) && Number.isFinite(target.y)) {
+        this.focusWorldPointOnMap(target.x, target.y, 45);
+      }
+      return;
+    }
+    this.callbacks.onSelectObject(null);
+  }
+
   private async updateInspector(hud: HudSnapshot): Promise<void> {
     const sel = this.selection;
     const reqSeq = ++this.inspectorReqSeq;
     const insp = getEl('planetInspector');
     const minWrap = getEl('inspMineralsWrap');
+    const debrisInboundWrap = getEl('inspDebrisInboundWrap');
     const debrisHistWrap = getEl('inspDebrisHistoryWrap');
     const planetFleetsWrap = getEl('inspPlanetFleetsWrap');
     if (!sel || this.activeModalFleetId !== null) {
       insp.style.display = 'none';
       getEl('inspGlobeWrap').style.display = 'none';
       getEl('inspShipWrap').style.display = 'none';
+      debrisInboundWrap.style.display = 'none';
       debrisHistWrap.style.display = 'none';
       planetFleetsWrap.style.display = 'none';
       this.inspGlobeRenderer.stop();
@@ -2190,6 +2250,7 @@ export class UiController {
     }
 
     if (sel.kind !== 'debris') {
+      debrisInboundWrap.style.display = 'none';
       debrisHistWrap.style.display = 'none';
     }
     if (sel.kind !== 'planet') {
@@ -2459,6 +2520,7 @@ export class UiController {
       insp.style.display = 'flex';
       minWrap.style.display = 'flex';
       insp.style.borderLeftColor = '#c084fc';
+      this.lastDebrisPos = { index: sel.index, x: deb.x, y: deb.y };
       const iron = Math.round(deb.iron);
       const bora = Math.round(deb.bora);
       const germ = Math.round(deb.germ);
@@ -2479,6 +2541,27 @@ export class UiController {
       getEl('valBora').textContent = `${bora} kT`;
       getEl('barGerm').style.width = `${Math.min(100, (germ / barMax) * 100)}%`;
       getEl('valGerm').textContent = `${germ} kT`;
+
+      const inbound = deb.inboundFleets ?? [];
+      debrisInboundWrap.style.display = 'flex';
+      getEl('inspDebrisInboundLabel').textContent = `✦ Inbound Fleets (${inbound.length})`;
+      if (inbound.length === 0) {
+        getEl('inspDebrisInboundTbody').innerHTML =
+          '<tr><td colspan="3" style="color:var(--muted);text-align:center;">No fleets inbound</td></tr>';
+      } else {
+        getEl('inspDebrisInboundTbody').innerHTML = inbound
+          .map((fl) => {
+            const emp = fl.emp > 0 ? hud.empires[fl.emp - 1] : null;
+            const empCol = emp?.color ?? '#94a3b8';
+            const empName = emp ? emp.name : `Empire #${fl.emp}`;
+            return `<tr data-fleet-id="${fl.id}" data-x="${fl.x}" data-y="${fl.y}" style="cursor:pointer;" title="Focus & inspect Fleet #${fl.id} (${empName})">
+              <td style="color:${empCol};"><span class="dot" style="background:${empCol}"></span>F#${fl.id} ${empName}</td>
+              <td>${Math.round(fl.cargoCap)} kT</td>
+              <td style="color:var(--accent);font-weight:bold;">${Math.round(fl.distLy)} ly</td>
+            </tr>`;
+          })
+          .join('');
+      }
 
       const wrecks = deb.wrecks ?? [];
       const totalShips = wrecks.reduce((acc, w) => acc + w.count, 0);

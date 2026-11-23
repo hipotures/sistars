@@ -252,7 +252,10 @@
 <div id="planetInspector">
   <div class="insp-header">
     <div class="insp-title" id="inspTitle">System #1</div>
-    <button class="insp-close" id="btnCloseInspector">✕</button>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <button class="insp-close" id="btnBackInspector" style="display:none;font-size:0.72rem;padding:2px 6px;" title="Return to previous object (Esc)">← Back</button>
+      <button class="insp-close" id="btnCloseInspector">✕</button>
+    </div>
   </div>
   <div id="inspGlobeWrap" class="insp-globe-wrap" style="display:none;">
     <canvas id="inspPlanetCanvas" class="insp-planet-canvas"></canvas>
@@ -288,6 +291,20 @@
     <div class="min-bar-row"><span class="c-iron" style="width:58px;">Ironium</span><div class="min-bar-track"><div id="barIron" class="min-bar-fill" style="background:var(--iron);width:50%"></div></div><span id="valIron" style="width:85px;text-align:right;">160 (800)</span></div>
     <div class="min-bar-row"><span class="c-bora" style="width:58px;">Boranium</span><div class="min-bar-track"><div id="barBora" class="min-bar-fill" style="background:var(--bora);width:50%"></div></div><span id="valBora" style="width:85px;text-align:right;">160 (800)</span></div>
     <div class="min-bar-row"><span class="c-germ" style="width:58px;">Germanium</span><div class="min-bar-track"><div id="barGerm" class="min-bar-fill" style="background:var(--germ);width:50%"></div></div><span id="valGerm" style="width:85px;text-align:right;">160 (800)</span></div>
+  </div>
+  <div id="inspDebrisInboundWrap" class="insp-wreck-wrap" style="display:none;">
+    <div class="insp-wreck-toggle" style="cursor:default;">
+      <span id="inspDebrisInboundLabel">✦ Inbound Fleets (0)</span>
+      <span class="insp-wreck-hint">Click to focus</span>
+    </div>
+    <div class="insp-wreck-body">
+      <table class="insp-wreck-table">
+        <thead>
+          <tr><th>Fleet</th><th>Cap</th><th>Dist</th></tr>
+        </thead>
+        <tbody id="inspDebrisInboundTbody"></tbody>
+      </table>
+    </div>
   </div>
   <div id="inspDebrisHistoryWrap" class="insp-wreck-wrap" style="display:none;">
     <button type="button" class="insp-wreck-toggle" id="btnToggleDebrisWrecks">

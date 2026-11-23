@@ -467,7 +467,11 @@ pub fn round1(v: f32) -> f32 {
         return 0.0;
     }
     let r = (v * 10.0).round() / 10.0;
-    if r == -0.0 { 0.0 } else { r }
+    if r == -0.0 {
+        0.0
+    } else {
+        r
+    }
 }
 
 #[inline]
@@ -476,7 +480,11 @@ pub fn round2(v: f32) -> f32 {
         return 0.0;
     }
     let r = (v * 100.0).round() / 100.0;
-    if r == -0.0 { 0.0 } else { r }
+    if r == -0.0 {
+        0.0
+    } else {
+        r
+    }
 }
 
 /// Clean LLM-facing view of an empire's active strategic policy (zero evolutionary tournament noise).
@@ -661,12 +669,24 @@ impl Doctrine {
             self.intercept_bias = v.clamp(0.0, 1.0);
         }
         if let Some(ta) = patch.tech_alloc {
-            if let Some(v) = ta.ene { self.tech_alloc[0] = v.clamp(0.0, 1.0); }
-            if let Some(v) = ta.wep { self.tech_alloc[1] = v.clamp(0.0, 1.0); }
-            if let Some(v) = ta.pro { self.tech_alloc[2] = v.clamp(0.0, 1.0); }
-            if let Some(v) = ta.con { self.tech_alloc[3] = v.clamp(0.0, 1.0); }
-            if let Some(v) = ta.ele { self.tech_alloc[4] = v.clamp(0.0, 1.0); }
-            if let Some(v) = ta.bio { self.tech_alloc[5] = v.clamp(0.0, 1.0); }
+            if let Some(v) = ta.ene {
+                self.tech_alloc[0] = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = ta.wep {
+                self.tech_alloc[1] = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = ta.pro {
+                self.tech_alloc[2] = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = ta.con {
+                self.tech_alloc[3] = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = ta.ele {
+                self.tech_alloc[4] = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = ta.bio {
+                self.tech_alloc[5] = v.clamp(0.0, 1.0);
+            }
             let sum: f32 = self.tech_alloc.iter().sum();
             if sum > 1e-4 {
                 for x in &mut self.tech_alloc {
@@ -699,9 +719,15 @@ impl Doctrine {
             self.min_colonize_hab = v.clamp(0.0, 1.0);
         }
         if let Some(mw) = patch.mineral_weights {
-            if let Some(v) = mw.iron { self.mineral_weights[0] = v.clamp(0.1, 5.0); }
-            if let Some(v) = mw.bora { self.mineral_weights[1] = v.clamp(0.1, 5.0); }
-            if let Some(v) = mw.germ { self.mineral_weights[2] = v.clamp(0.1, 5.0); }
+            if let Some(v) = mw.iron {
+                self.mineral_weights[0] = v.clamp(0.1, 5.0);
+            }
+            if let Some(v) = mw.bora {
+                self.mineral_weights[1] = v.clamp(0.1, 5.0);
+            }
+            if let Some(v) = mw.germ {
+                self.mineral_weights[2] = v.clamp(0.1, 5.0);
+            }
         }
         if let Some(v) = patch.min_force_ratio {
             self.min_force_ratio = v.clamp(0.5, 4.0);
@@ -955,6 +981,32 @@ pub struct DebrisField {
     pub ttl: f32,
     #[serde(default)]
     pub wrecks: Vec<WreckEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboundSalvageFleetView {
+    pub id: u32,
+    pub emp: u8,
+    pub ship_type: FleetClass,
+    pub x: f32,
+    pub y: f32,
+    pub dist_ly: f32,
+    pub cargo_cap: f32,
+    pub ship_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebrisDetailView {
+    pub x: f32,
+    pub y: f32,
+    pub iron: f32,
+    pub bora: f32,
+    pub germ: f32,
+    pub ttl: f32,
+    pub wrecks: Vec<WreckEntry>,
+    pub inbound_fleets: Vec<InboundSalvageFleetView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1252,12 +1304,8 @@ impl LiveAuditor {
                 spent_alchemy,
             } => {
                 self.closed_transactions_count += 1;
-                let total_spent = spent_tech
-                    + spent_mines
-                    + spent_fac
-                    + spent_def
-                    + spent_ship
-                    + spent_alchemy;
+                let total_spent =
+                    spent_tech + spent_mines + spent_fac + spent_def + spent_ship + spent_alchemy;
                 if !res_gen.is_finite()
                     || !total_spent.is_finite()
                     || *res_gen < -1e-4

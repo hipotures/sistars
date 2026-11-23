@@ -14,7 +14,9 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
-use crate::match_runner::{speed_to_frame_stride, speed_to_tick_delay_ms, MatchHandle, QueuedDecision};
+use crate::match_runner::{
+    speed_to_frame_stride, speed_to_tick_delay_ms, MatchHandle, QueuedDecision,
+};
 use crate::mcp;
 use crate::models::{
     ApiErrorBody, CreateMatchRequest, CreateMatchResponse, ExecutionMode, MatchControlRequest,
@@ -158,14 +160,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/matches/{id}/start", post(start_match))
         .route("/api/v1/matches/{id}/observation", get(get_observation))
         .route("/api/v1/matches/{id}/commands", post(submit_commands))
-        .route("/api/v1/matches/{id}/system/{planet_idx}", get(get_star_system))
-        .route("/api/v1/matches/{id}/planet/{planet_idx}", get(get_planet_detail))
+        .route(
+            "/api/v1/matches/{id}/system/{planet_idx}",
+            get(get_star_system),
+        )
+        .route(
+            "/api/v1/matches/{id}/planet/{planet_idx}",
+            get(get_planet_detail),
+        )
         .route(
             "/api/v1/matches/{id}/planet/{planet_idx}/fleets",
             get(get_planet_fleets),
         )
-        .route("/api/v1/matches/{id}/fleet/by-id/{fleet_id}", get(get_fleet_by_id))
-        .route("/api/v1/matches/{id}/fleet/by-index/{idx}", get(get_fleet_by_index))
+        .route(
+            "/api/v1/matches/{id}/fleet/by-id/{fleet_id}",
+            get(get_fleet_by_id),
+        )
+        .route(
+            "/api/v1/matches/{id}/fleet/by-index/{idx}",
+            get(get_fleet_by_index),
+        )
         .route("/api/v1/matches/{id}/debris/{idx}", get(get_debris_detail))
         .route("/api/v1/matches/{id}/reports", get(get_reports))
         .route("/api/v1/matches/{id}/power-history", get(get_power_history))
@@ -176,7 +190,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-fn api_error(status: StatusCode, error: &str, message: impl Into<String>) -> (StatusCode, Json<ApiErrorBody>) {
+fn api_error(
+    status: StatusCode,
+    error: &str,
+    message: impl Into<String>,
+) -> (StatusCode, Json<ApiErrorBody>) {
     (
         status,
         Json(ApiErrorBody {
@@ -758,7 +776,7 @@ async fn get_debris_detail(
     .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match_not_found", "Match not found"))?;
 
     let guard = handle.inner.read().await;
-    let deb = guard.sim.debris_fields.get(idx);
+    let deb = guard.sim.debris_detail(idx);
     Ok(Json(serde_json::to_value(deb).unwrap_or(Value::Null)))
 }
 

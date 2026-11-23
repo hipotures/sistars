@@ -99,7 +99,12 @@ impl WasmEngine {
         }
     }
 
-    pub fn set_scenario_modifiers(&mut self, mods_js: JsValue, new_seed: u32, reset_map: bool) -> bool {
+    pub fn set_scenario_modifiers(
+        &mut self,
+        mods_js: JsValue,
+        new_seed: u32,
+        reset_map: bool,
+    ) -> bool {
         let parsed: Result<ScenarioModifiers, _> = serde_wasm_bindgen::from_value(mods_js);
         match parsed {
             Ok(mods) => {
@@ -181,10 +186,10 @@ impl WasmEngine {
         serde_wasm_bindgen::to_value(&list).unwrap_or(JsValue::NULL)
     }
 
-    /// On-demand detail for a clicked salvage debris field.
+    /// On-demand detail for a clicked salvage debris field (including inbound salvage fleets).
     pub fn get_debris_detail(&self, idx: usize) -> JsValue {
-        match self.sim.debris_fields.get(idx) {
-            Some(deb) => serde_wasm_bindgen::to_value(deb).unwrap_or(JsValue::NULL),
+        match self.sim.debris_detail(idx) {
+            Some(detail) => serde_wasm_bindgen::to_value(&detail).unwrap_or(JsValue::NULL),
             None => JsValue::NULL,
         }
     }

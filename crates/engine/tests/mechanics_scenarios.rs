@@ -20,7 +20,7 @@ fn scenario_salvage_respects_cargo_cap_and_mass_conservation() {
         x: 100.0,
         y: 100.0,
         owner: 1,
-        pop: 0.0,       // 0 pop & 0 mines so planetary mining/economy doesn't alter min_surf during transit
+        pop: 0.0, // 0 pop & 0 mines so planetary mining/economy doesn't alter min_surf during transit
         mines: 0.0,
         factories: 0.0,
         defense: 0.0,
@@ -220,7 +220,10 @@ fn scenario_salvage_respects_cargo_cap_and_mass_conservation() {
         } => {
             assert!((debris_before - 80.0).abs() < 1e-3);
             assert!((loaded - 80.0).abs() < 1e-3);
-            assert!(debris_after.abs() < 1e-3, "Expected debris_after == 0, got {debris_after}");
+            assert!(
+                debris_after.abs() < 1e-3,
+                "Expected debris_after == 0, got {debris_after}"
+            );
         }
         _ => unreachable!(),
     }
@@ -277,8 +280,14 @@ fn scenario_planet_assault_without_starbase() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
 
     let mut assault_ev = None;
     let mut sb_ev = None;
@@ -297,7 +306,10 @@ fn scenario_planet_assault_without_starbase() {
     }
 
     assert!(sim.anomalies.is_empty());
-    assert!(sb_ev.is_none(), "No StarbaseAssault should occur when starbase_tier == 0");
+    assert!(
+        sb_ev.is_none(),
+        "No StarbaseAssault should occur when starbase_tier == 0"
+    );
 
     match assault_ev.expect("Expected PlanetAssault event") {
         SimEvent::PlanetAssault {
@@ -319,7 +331,10 @@ fn scenario_planet_assault_without_starbase() {
     assert_eq!(sim.owner[1], 1, "Planet #1 should now be owned by Empire 1");
     assert_eq!(sim.fleets.len(), 1);
     let survivor = &sim.fleets[0];
-    assert!(survivor.orbiting, "Victorious fleet should station in orbit");
+    assert!(
+        survivor.orbiting,
+        "Victorious fleet should station in orbit"
+    );
     assert_eq!(survivor.target, 1);
     assert!(survivor.power > 0.0 && survivor.power < 160.0);
 }
@@ -361,8 +376,14 @@ fn scenario_planet_assault_blocked_by_starbase() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
     sim.step_tick(true);
 
     let events = sim.drain_events();
@@ -383,7 +404,10 @@ fn scenario_planet_assault_blocked_by_starbase() {
             assert_eq!(*planet_idx, 1);
             assert!((*sb_hp_before - 1000.0).abs() < 1.0);
             assert!(*sb_hp_after < *sb_hp_before && *sb_hp_after > 0.0);
-            assert!(!*attacker_survived, "Attacker must be destroyed by surviving Starbase");
+            assert!(
+                !*attacker_survived,
+                "Attacker must be destroyed by surviving Starbase"
+            );
         }
         _ => unreachable!(),
     }
@@ -556,8 +580,14 @@ fn scenario_orbiting_garrison_intercepts_before_starbase() {
         },
     ];
 
-    let mut sim2 =
-        Simulation::new_sandbox(SimConfig::default(), races, planets2, fleets2, Vec::new(), false);
+    let mut sim2 = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets2,
+        fleets2,
+        Vec::new(),
+        false,
+    );
     sim2.step_tick(true);
     let events2 = sim2.drain_events();
     assert!(sim2.anomalies.is_empty());
@@ -622,8 +652,14 @@ fn scenario_economy_conservation_no_triple_spend() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
 
     let mut econ_ticks = 0usize;
     for _ in 0..20 {
@@ -642,12 +678,8 @@ fn scenario_economy_conservation_no_triple_spend() {
             {
                 assert_eq!(planet_idx, 0);
                 econ_ticks += 1;
-                let total_spent = spent_tech
-                    + spent_mines
-                    + spent_fac
-                    + spent_def
-                    + spent_ship
-                    + spent_alchemy;
+                let total_spent =
+                    spent_tech + spent_mines + spent_fac + spent_def + spent_ship + spent_alchemy;
                 assert!(
                     total_spent <= res_gen + 1e-3,
                     "Budget overspend detected: total_spent={total_spent} > res_gen={res_gen}"
@@ -656,9 +688,18 @@ fn scenario_economy_conservation_no_triple_spend() {
                     (total_spent - res_gen).abs() < 1e-3,
                     "Expected full budget accounting: total_spent={total_spent} vs res_gen={res_gen}"
                 );
-                assert!(spent_def > 0.0, "Expected defense spending from surplus_res");
-                assert!(spent_ship > 0.0, "Expected shipyard spending from surplus_res");
-                assert!(spent_alchemy > 0.0, "Expected alchemy spending from surplus_res");
+                assert!(
+                    spent_def > 0.0,
+                    "Expected defense spending from surplus_res"
+                );
+                assert!(
+                    spent_ship > 0.0,
+                    "Expected shipyard spending from surplus_res"
+                );
+                assert!(
+                    spent_alchemy > 0.0,
+                    "Expected alchemy spending from surplus_res"
+                );
             }
         }
     }
@@ -716,8 +757,14 @@ fn scenario_diplomacy_prevents_combat_until_war() {
         },
     ];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
 
     // 1. Neutral stance: fleets pass within < intercept_rad without fighting
     sim.set_relation(0, 1, DiplomaticStance::Neutral);
@@ -741,11 +788,20 @@ fn scenario_diplomacy_prevents_combat_until_war() {
     sim.step_tick(true);
     let events = sim.drain_events();
     assert_eq!(sim.space_battles_count, 1);
-    assert_eq!(sim.fleets.len(), 1, "Loser fleet must be destroyed on War tick");
+    assert_eq!(
+        sim.fleets.len(),
+        1,
+        "Loser fleet must be destroyed on War tick"
+    );
     assert!(
-        events
-            .iter()
-            .any(|ev| matches!(ev, SimEvent::SpaceBattle { winner_emp: 1, loser_emp: 2, .. })),
+        events.iter().any(|ev| matches!(
+            ev,
+            SimEvent::SpaceBattle {
+                winner_emp: 1,
+                loser_emp: 2,
+                ..
+            }
+        )),
         "Expected SpaceBattle event on the tick War was declared"
     );
 }
@@ -796,8 +852,14 @@ fn scenario_victory_condition_triggers() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
     sim.victory_cfg = VictoryConfig {
         enabled: true,
         planet_share_threshold: 0.60,
@@ -919,8 +981,14 @@ fn live_auditor_prunes_valid_events_and_captures_anomalies_to_json() {
         factories: 40.0,
         ..Default::default()
     }];
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
     sim.auditor.prune_valid_events = true;
 
     for _ in 0..50 {
@@ -991,8 +1059,14 @@ fn scenario_fow_intel_freezes_out_of_scanner_range() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
     sim.empires[0].tech_cache.scanner_range = 60.0;
     sim.empires[0].tech_cache.scanner_pen = 30.0;
 
@@ -1203,8 +1277,14 @@ fn scenario_fow_cloak_and_ecm_hide_fleet_from_observation_and_intercept() {
         },
     ];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
     // Guarantee Cruiser interception roll passes when target is detected
     sim.empires[0].race.doctrine.intercept_bias = 1.0;
     sim.empires[0].tech_cache.scanner_range = 100.0;
@@ -1425,13 +1505,19 @@ fn scenario_governor_respects_starbase_and_min_force_ratio() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        true,
+    );
     sim.empires[0].tech_cache.scanner_range = 120.0;
     sim.empires[0].tech_cache.scanner_pen = 120.0;
     sim.empires[0].race.doctrine.min_force_ratio = 1.25;
     sim.empires[0].race.doctrine.colonize_vs_attack_bias = 0.0; // pure attack focus
-    // Disable Empire 2's shipyard so it stays a static fortified target
+                                                                // Disable Empire 2's shipyard so it stays a static fortified target
     sim.empires[1].race.doctrine.ship_share = 0.0;
     sim.empires[1].race.doctrine.surplus_ship_share = 0.0;
     sim.refresh_initial_fow();
@@ -1579,11 +1665,15 @@ fn scenario_governor_sector_directive_and_diplomacy_commands() {
         sim.step_tick(true);
     }
     assert!(
-        !sim.fleets.iter().any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
+        !sim.fleets
+            .iter()
+            .any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
         "Governor must not colonize Planet #1 in SectorMode::Ignore"
     );
     assert!(
-        !sim.fleets.iter().any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 2),
+        !sim.fleets
+            .iter()
+            .any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 2),
         "Governor must not attack Planet #2 while DiplomaticStance::Ceasefire is active"
     );
 
@@ -1614,7 +1704,9 @@ fn scenario_governor_sector_directive_and_diplomacy_commands() {
         "Governor must launch an attack on Planet #2 in Sector 1 once War is declared"
     );
     assert!(
-        !sim.fleets.iter().any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
+        !sim.fleets
+            .iter()
+            .any(|fl| fl.emp == 1 && !fl.orbiting && fl.target == 1),
         "Sector 0 must still remain ignored"
     );
 }
@@ -1651,11 +1743,12 @@ fn scenario_agent_observation_compact_and_isolated() {
         .sectors
         .iter()
         .map(|s| {
-            let enemy_sum: u32 = s.enemy_planets_by_emp.iter().map(|&(_, cnt)| cnt as u32).sum();
-            s.own_planets as u32
-                + enemy_sum
-                + s.neutral_known as u32
-                + s.unexplored_stars as u32
+            let enemy_sum: u32 = s
+                .enemy_planets_by_emp
+                .iter()
+                .map(|&(_, cnt)| cnt as u32)
+                .sum();
+            s.own_planets as u32 + enemy_sum + s.neutral_known as u32 + s.unexplored_stars as u32
         })
         .sum();
     assert_eq!(total_sector_planets, 1000);
@@ -1666,7 +1759,14 @@ fn scenario_agent_observation_compact_and_isolated() {
     );
 
     // 3. No tournament noise (`kills`, `gates`, `lastFit`, `winRate`) or raw `x`/`y` coordinates in AgentObservation JSON
-    for forbidden in ["\"kills\"", "\"gates\"", "\"lastFit\"", "\"winRate\"", "\"x\":", "\"y\":"] {
+    for forbidden in [
+        "\"kills\"",
+        "\"gates\"",
+        "\"lastFit\"",
+        "\"winRate\"",
+        "\"x\":",
+        "\"y\":",
+    ] {
         assert!(
             !json.contains(forbidden),
             "Forbidden field {forbidden} leaked into AgentObservation JSON!"
@@ -1732,8 +1832,14 @@ fn scenario_wormhole_one_sided_discovery_and_camelcase_partial_policy() {
         x2: 820.0,
         y2: 520.0,
     }];
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), false);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        false,
+    );
     sim.wormholes = wormholes;
     sim.build_planet_neighbors();
     sim.refresh_initial_fow();
@@ -1774,7 +1880,10 @@ fn scenario_wormhole_one_sided_discovery_and_camelcase_partial_policy() {
         (sim.empires[0].race.doctrine.min_force_ratio - orig_min_force).abs() < 1e-4,
         "Partial SetPolicy patch must NOT overwrite omitted fields!"
     );
-    assert_eq!(sim.empires[0].race.doctrine.min_garrison_count, orig_garrison);
+    assert_eq!(
+        sim.empires[0].race.doctrine.min_garrison_count,
+        orig_garrison
+    );
     assert_eq!(sim.empires[0].sector_directives[3], SectorMode::Fortify);
     assert_eq!(sim.relations[0][1], DiplomaticStance::Ceasefire);
     assert!(sim.empires[1]
@@ -1782,8 +1891,6 @@ fn scenario_wormhole_one_sided_discovery_and_camelcase_partial_policy() {
         .iter()
         .any(|m| m.text == "CamelCase test cable"));
 }
-
-
 
 #[test]
 fn scenario_governor_scouts_unscanned_neutrals_and_expands() {
@@ -1871,8 +1978,14 @@ fn scenario_probe_wormhole_reveals_far_endpoint() {
         ..Default::default()
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        true,
+    );
     sim.wormholes = wormholes;
     sim.build_planet_neighbors();
     sim.refresh_initial_fow();
@@ -1949,8 +2062,14 @@ fn scenario_build_hub_deterministic_and_validation_feedback() {
         },
     ];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), true);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
     sim.empires[0].tech_cache.stargate_max_range = 300.0;
     sim.empires[0].tech_cache.stargate_name = Some("Stargate 100/250".to_string());
 
@@ -2076,10 +2195,26 @@ fn scenario_diplomacy_uses_1_based_empire_id_not_index() {
             item
         );
     }
-    assert!(fb_invalid[0].reason.as_deref().unwrap_or("").contains("Unknown empireId 0"));
-    assert!(fb_invalid[1].reason.as_deref().unwrap_or("").contains("Cannot target own empire"));
-    assert!(fb_invalid[2].reason.as_deref().unwrap_or("").contains("Unknown empireId 99"));
-    assert!(fb_invalid[3].reason.as_deref().unwrap_or("").contains("eliminated"));
+    assert!(fb_invalid[0]
+        .reason
+        .as_deref()
+        .unwrap_or("")
+        .contains("Unknown empireId 0"));
+    assert!(fb_invalid[1]
+        .reason
+        .as_deref()
+        .unwrap_or("")
+        .contains("Cannot target own empire"));
+    assert!(fb_invalid[2]
+        .reason
+        .as_deref()
+        .unwrap_or("")
+        .contains("Unknown empireId 99"));
+    assert!(fb_invalid[3]
+        .reason
+        .as_deref()
+        .unwrap_or("")
+        .contains("eliminated"));
 }
 
 #[test]
@@ -2154,7 +2289,10 @@ fn scenario_early_colonizer_before_cruiser_spam_and_buffer_drain() {
     for tick in 1..=350 {
         sim.step_tick(true);
         if first_col_tick.is_none()
-            && sim.fleets.iter().any(|fl| fl.emp == 1 && fl.fleet_type == FleetClass::Col)
+            && sim
+                .fleets
+                .iter()
+                .any(|fl| fl.emp == 1 && fl.fleet_type == FleetClass::Col)
         {
             first_col_tick = Some(tick);
             cruisers_at_first_col = sim
@@ -2212,8 +2350,14 @@ fn scenario_early_colonizer_before_cruiser_spam_and_buffer_drain() {
             ..Default::default()
         },
     ];
-    let mut sb_sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), true);
+    let mut sb_sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
     // Peace so no attack launches — pure shipyard buffer drain into orbital task force
     sb_sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
     let initial_buf = sb_sim.ship_prod_buf[0];
@@ -2290,8 +2434,14 @@ fn scenario_bot_breaks_ceasefire_on_dominance_or_warmonger() {
         ship_count: 4,
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        true,
+    );
     sim.external_agent_mask = 1u16 << 0; // Seat 0 is external agent; Insectoids (idx 2) is a Bot
     sim.set_relation(0, 2, DiplomaticStance::Ceasefire);
     sim.empires[2].contact_mask |= 1u16 << 0;
@@ -2383,8 +2533,14 @@ fn scenario_garrison_reallocates_to_fortify_front_and_gate_distance() {
         ship_count: 6,
     }];
 
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, Vec::new(), true);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        true,
+    );
     sim.empires[0].tech_cache.stargate_max_range = 400.0;
     sim.empires[0].tech_cache.stargate_name = Some("Stargate 100/400".to_string());
     sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
@@ -2468,8 +2624,14 @@ fn scenario_galactic_dominance_early_warning_alert() {
             ..Default::default()
         });
     }
-    let mut sim =
-        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), true);
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
     // Keep victory threshold at 0.65 so 55.6% triggers early warning without ending the game
     sim.victory_cfg.planet_share_threshold = 0.65;
     sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
@@ -2490,5 +2652,167 @@ fn scenario_galactic_dominance_early_warning_alert() {
             .iter()
             .any(|(_, msg)| msg.contains("GALACTIC ALERT")),
         "pending_public_alerts must queue the galactic alert for ArenaFeedEvent"
+    );
+}
+
+#[test]
+fn scenario_salvage_aborts_and_returns_home_when_debris_vanishes() {
+    let races = classic_races().into_iter().take(2).collect();
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 50.0,
+            factories: 20.0,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 800.0,
+            y: 500.0,
+            owner: 2,
+            pop: 50.0,
+            factories: 20.0,
+            ..Default::default()
+        },
+    ];
+    let fleets = vec![Fleet {
+        id: 1,
+        x: 130.0,
+        y: 100.0,
+        from: 0,
+        target: 0,
+        emp: 1,
+        fleet_type: FleetClass::Freight,
+        min_type: 0,
+        power: 12.0,
+        max_power: 100.0,
+        hunting: false,
+        used_wh: false,
+        steer_x: 260.0,
+        steer_y: 100.0,
+        wh_route: -1,
+        salvage_mode: 1,
+        cargo_iron: 0.0,
+        cargo_bora: 0.0,
+        cargo_germ: 0.0,
+        orbiting: false,
+        upkeep: FleetClass::Freight.upkeep(),
+        ship_count: 1,
+    }];
+    // Debris field at (260, 100) is already gone (empty vec)
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        fleets,
+        Vec::new(),
+        false,
+    );
+
+    sim.step_tick(true);
+
+    let fl = sim
+        .fleets
+        .iter()
+        .find(|f| f.id == 1)
+        .expect("Freighter should still exist");
+    assert_eq!(
+        fl.salvage_mode, 2,
+        "Outbound salvage freighter must immediately switch to returning home (mode 2) when target debris is gone"
+    );
+    assert_eq!(fl.target, 0);
+    assert!((fl.steer_x - 100.0).abs() < 1e-3 && (fl.steer_y - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn scenario_salvage_dispatch_capped_by_debris_mass() {
+    let races = classic_races().into_iter().take(2).collect();
+    // 8 friendly planets in a ring around a 100 kT debris field at (300, 300),
+    // far enough (~180 ly) that freighters stay in transit while we count dispatches.
+    let mut planets = Vec::new();
+    let mut fleets = Vec::new();
+    for i in 0..8 {
+        let angle = (i as f32) * std::f32::consts::TAU / 8.0;
+        let px = 300.0 + angle.cos() * 180.0;
+        let py = 300.0 + angle.sin() * 180.0;
+        planets.push(SandboxPlanet {
+            x: px,
+            y: py,
+            owner: 1,
+            pop: 60.0,
+            factories: 25.0,
+            iron_surf: 500.0,
+            bora_surf: 500.0,
+            germ_surf: 500.0,
+            ..Default::default()
+        });
+        fleets.push(Fleet {
+            id: (i + 1) as u32,
+            x: px,
+            y: py,
+            from: i,
+            target: i,
+            emp: 1,
+            fleet_type: FleetClass::Freight,
+            min_type: 0,
+            power: 12.0,
+            max_power: 40.0,
+            hunting: false,
+            used_wh: false,
+            steer_x: px,
+            steer_y: py,
+            wh_route: -1,
+            salvage_mode: 0,
+            cargo_iron: 0.0,
+            cargo_bora: 0.0,
+            cargo_germ: 0.0,
+            orbiting: true,
+            upkeep: FleetClass::Freight.upkeep(),
+            ship_count: 1,
+        });
+    }
+    planets.push(SandboxPlanet {
+        x: 900.0,
+        y: 500.0,
+        owner: 2,
+        pop: 50.0,
+        factories: 20.0,
+        ..Default::default()
+    });
+    let debris = vec![DebrisField {
+        x: 300.0,
+        y: 300.0,
+        iron: 40.0,
+        bora: 30.0,
+        germ: 30.0,
+        ttl: 50.0,
+        wrecks: Vec::new(),
+    }];
+
+    let mut sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, fleets, debris, true);
+    sim.empires[0].tech_cache.scanner_range = 300.0;
+    sim.empires[0].tech_cache.range_freight = 300.0;
+    // cargo_cap = (hull_freight.cargo * 0.75).clamp(45.0, 220.0) = 45.0 -> ceil(100 / 45) = 3
+    sim.empires[0].tech_cache.hull_freight.cargo = 60.0;
+    sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
+
+    let mut max_concurrent_outbound = 0usize;
+    for _ in 0..35 {
+        sim.step_tick(true);
+        let outbound = sim
+            .fleets
+            .iter()
+            .filter(|f| f.emp == 1 && !f.orbiting && f.salvage_mode == 1)
+            .count();
+        if outbound > max_concurrent_outbound {
+            max_concurrent_outbound = outbound;
+        }
+    }
+
+    assert!(
+        max_concurrent_outbound >= 1 && max_concurrent_outbound <= 3,
+        "For 100 kT debris and 40 kT cargo cap, governor must dispatch between 1 and 3 freighters, got {max_concurrent_outbound}"
     );
 }

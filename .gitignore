@@ -15,3 +15,7 @@ Cargo.lock
 # OS / Editor
 .DS_Store
 *.swp
+
+# Python
+__pycache__/
+*.pyc

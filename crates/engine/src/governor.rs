@@ -99,6 +99,8 @@ pub struct EmpireView<'a> {
     pub wh_near_b: &'a [Vec<(u32, f32)>],
     pub visible_enemy_fleets: &'a [DetectedEnemyFleet],
     pub visible_debris: &'a [VisibleDebrisBrief],
+    /// Already-outbound salvage freighters for this empire: `(steer_x, steer_y, remaining_cargo_cap)`.
+    pub inbound_salvage_targets: &'a [(f32, f32, f32)],
     pub pending_hub_orders: &'a [(usize, HubKind)],
     pub active_exploration_orders: &'a [ExplorationOrder],
 }
@@ -254,6 +256,27 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
         .clamp(0.05, 0.90);
     let min_force_ratio = policy.min_force_ratio.clamp(0.75, 4.0);
 
+    // Track unclaimed mineral mass per visible debris field so we don't over-dispatch
+    // dozens of salvage freighters to the same wreck.
+    let mut deb_unclaimed: Vec<f32> = if view.visible_debris.is_empty() {
+        Vec::new()
+    } else {
+        view.visible_debris
+            .iter()
+            .map(|deb| {
+                let mut rem = deb.iron + deb.bora + deb.germ;
+                for &(sx, sy, cap) in view.inbound_salvage_targets {
+                    let dx = sx - deb.x;
+                    let dy = sy - deb.y;
+                    if dx * dx + dy * dy <= 196.0 {
+                        rem = (rem - cap).max(0.0);
+                    }
+                }
+                rem
+            })
+            .collect()
+    };
+
     // 1. Estimate known rivals' GDP strictly from our own PlanetIntel (zero global omniscience!)
     //    Only scanned when at least one owned planet is on its AI turn and ready for shipyard decisions.
     let any_shipyard_turn = view.own_planets.iter().any(|op| {
@@ -408,10 +431,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     (tg - pg * 0.5).max(0.0),
                     (tr - pr * 0.5).max(0.0),
                 );
-                if rem_prod_buf >= cr
-                    && rem_surf[0] >= ci
-                    && rem_surf[1] >= cb
-                    && rem_surf[2] >= cg
+                if rem_prod_buf >= cr && rem_surf[0] >= ci && rem_surf[1] >= cb && rem_surf[2] >= cg
                 {
                     rem_prod_buf -= cr;
                     rem_surf[0] -= ci;
@@ -504,15 +524,19 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
             let f_range = view.freight_range * 0.92;
             let f_range_sq = f_range * f_range;
             let min_worth = if view.salvage_mult > 1.1 { 15.0 } else { 25.0 };
-            let mut best_deb: Option<(f32, f32)> = None;
+            let mut best_deb: Option<(usize, f32, f32)> = None;
             let mut best_deb_score = 0.0f32;
 
-            for deb in view.visible_debris {
+            for (d_idx, deb) in view.visible_debris.iter().enumerate() {
                 if deb.ttl <= 0.5 {
                     continue;
                 }
-                let tot = deb.iron + deb.bora + deb.germ;
-                if tot < min_worth {
+                let raw_tot = deb.iron + deb.bora + deb.germ;
+                if raw_tot < min_worth {
+                    continue;
+                }
+                let tot = deb_unclaimed[d_idx];
+                if tot <= 1.0 {
                     continue;
                 }
                 let dx = deb.x - op.x;
@@ -524,11 +548,12 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                 let score = tot / (d_sq.sqrt() + 35.0);
                 if score > best_deb_score {
                     best_deb_score = score;
-                    best_deb = Some((deb.x, deb.y));
+                    best_deb = Some((d_idx, deb.x, deb.y));
                 }
             }
 
-            if let Some((dx, dy)) = best_deb {
+            if let Some((d_idx, dx, dy)) = best_deb {
+                let mut dispatched = false;
                 if op.orbit_freight >= 0 && !used_orbit_freight {
                     actions.push(GovernorAction::DispatchSalvage {
                         from: i,
@@ -536,6 +561,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                         dest_y: dy,
                         docked_fleet_idx: Some(op.orbit_freight as usize),
                     });
+                    dispatched = true;
                 } else if view.upkeep_ratio < max_upkeep * 0.82
                     && rem_prod_buf >= view.effective_ship_cost * 0.35
                 {
@@ -552,7 +578,11 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                             dest_y: dy,
                             docked_fleet_idx: None,
                         });
+                        dispatched = true;
                     }
+                }
+                if dispatched {
+                    deb_unclaimed[d_idx] = (deb_unclaimed[d_idx] - view.cargo_cap).max(0.0);
                 }
             }
         }
@@ -585,17 +615,17 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
             let dist_exp = policy.dist_exp;
             let qual_exp = policy.qual_exp;
             let min_hab = policy.min_colonize_hab;
-            let m_weight_avg =
-                ((policy.mineral_weights[0] + policy.mineral_weights[1] + policy.mineral_weights[2])
-                    / 3.0)
-                    .clamp(0.2, 3.0);
+            let m_weight_avg = ((policy.mineral_weights[0]
+                + policy.mineral_weights[1]
+                + policy.mineral_weights[2])
+                / 3.0)
+                .clamp(0.2, 3.0);
 
             // 4a. Evaluate best colonization candidate strictly using PlanetIntel & discovered wormholes
             let mut best_col_target: Option<usize> = None;
             let mut best_col_score = -1.0f32;
             let mut best_col_wh: i16 = -1;
-            let col_res_cost =
-                view.effective_ship_cost * view.cfg.col_cost_mult.clamp(0.5, 5.0);
+            let col_res_cost = view.effective_ship_cost * view.cfg.col_cost_mult.clamp(0.5, 5.0);
 
             let can_afford_col = rem_prod_buf >= col_res_cost
                 && rem_surf[0] >= view.col_i
@@ -860,7 +890,8 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     let total_available_power = if can_merge_orbit {
                         op.orbit_warship_power + (max_buildable as f32) * unit_power
                     } else {
-                        op.orbit_warship_power.max((max_buildable as f32) * unit_power)
+                        op.orbit_warship_power
+                            .max((max_buildable as f32) * unit_power)
                     };
 
                     let bomb_pen = if c_class == FleetClass::Bomber {
@@ -878,10 +909,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                             return None;
                         }
                         let intel = &view.intel_planets[j];
-                        if !intel.is_explored()
-                            || intel.owner == 0
-                            || intel.owner == view.emp_u8
-                        {
+                        if !intel.is_explored() || intel.owner == 0 || intel.owner == view.emp_u8 {
                             return None;
                         }
                         let target_e = (intel.owner - 1) as usize;
@@ -921,12 +949,12 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                             view.visible_enemy_fleets,
                         );
                         let target_share = est_emp_res[target_e] / total_known_res;
-                        let leader_aggro_bonus =
-                            if target_e == est_leader_e && target_share > 0.30 {
-                                1.0 + (target_share - 0.25) * 4.0 * view.cfg.aggro_bias
-                            } else {
-                                1.0
-                            };
+                        let leader_aggro_bonus = if target_e == est_leader_e && target_share > 0.30
+                        {
+                            1.0 + (target_share - 0.25) * 4.0 * view.cfg.aggro_bias
+                        } else {
+                            1.0
+                        };
 
                         let required_power = enemy_def * min_force_ratio;
                         if total_available_power * leader_aggro_bonus >= required_power {
@@ -1142,9 +1170,19 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                         for vwh in view.visible_wormholes {
                             if vwh.has_a ^ vwh.has_b {
                                 let (dir, ex, ey, near_exit) = if vwh.has_a {
-                                    (0i16, vwh.wh.x1, vwh.wh.y1, view.wh_near_b.get(vwh.wormhole_id))
+                                    (
+                                        0i16,
+                                        vwh.wh.x1,
+                                        vwh.wh.y1,
+                                        view.wh_near_b.get(vwh.wormhole_id),
+                                    )
                                 } else {
-                                    (1i16, vwh.wh.x2, vwh.wh.y2, view.wh_near_a.get(vwh.wormhole_id))
+                                    (
+                                        1i16,
+                                        vwh.wh.x2,
+                                        vwh.wh.y2,
+                                        view.wh_near_a.get(vwh.wormhole_id),
+                                    )
                                 };
                                 if (ex - op.x).hypot(ey - op.y) <= view.range_cruiser {
                                     let exit_target = near_exit
@@ -1388,7 +1426,11 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                             continue;
                         }
                         let deficit = (op.orbit_count.saturating_sub(cand.orbit_count)) as f32;
-                        let mode_bonus = if c_mode == SectorMode::Fortify { 1.3 } else { 1.0 };
+                        let mode_bonus = if c_mode == SectorMode::Fortify {
+                            1.3
+                        } else {
+                            1.0
+                        };
                         let gate_bonus = if via_gate { 2.5 } else { 1.0 };
                         let score = (deficit * mode_bonus * gate_bonus) / (d_sq.sqrt().max(40.0));
                         if score > best_dest_score {
@@ -1411,81 +1453,82 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
 
                 // 4e-2. Build or reinforce standing orbital garrison (for Starbase assaults or draining large shipProdBuf)
                 if !reallocated_garrison {
-                let has_pending_hub_here = view.pending_hub_orders.iter().any(|&(p, _)| p == i);
-                let high_buf_drain = !has_pending_hub_here
-                    && rem_prod_buf >= view.effective_ship_cost * 3.0
-                    && view.upkeep_ratio < max_upkeep * 0.82;
-                let min_gar = if my_sector_mode == SectorMode::Fortify {
-                    policy.min_garrison_count.max(2)
-                } else {
-                    policy.min_garrison_count
-                };
-                let max_gar = if saw_fortified_enemy_needing_buildup {
-                    12u16.max(8 + (op.starbase_tier as u16) * 6)
-                } else if high_buf_drain {
-                    (8 + (op.starbase_tier as u16) * 6).max(min_gar)
-                } else {
-                    min_gar
-                };
-                let upkeep_cap = if saw_fortified_enemy_needing_buildup || high_buf_drain {
-                    max_upkeep * 0.82
-                } else {
-                    max_upkeep * 0.52
-                };
-                let prod_req = if saw_fortified_enemy_needing_buildup || high_buf_drain {
-                    view.effective_ship_cost
-                } else {
-                    view.effective_ship_cost * 1.4
-                };
-                if view.upkeep_ratio < upkeep_cap
-                    && rem_prod_buf >= prod_req
-                    && op.orbit_count < max_gar
-                    && view.total_active_fleets < 2400
-                    && (saw_fortified_enemy_needing_buildup
-                        || high_buf_drain
-                        || my_sector_mode == SectorMode::Fortify
-                        || next_rand(rng_seed) < 0.18)
-                {
-                    let g_class = if let Some(existing_cls) = op.orbit_warship_class {
-                        existing_cls
+                    let has_pending_hub_here = view.pending_hub_orders.iter().any(|&(p, _)| p == i);
+                    let high_buf_drain = !has_pending_hub_here
+                        && rem_prod_buf >= view.effective_ship_cost * 3.0
+                        && view.upkeep_ratio < max_upkeep * 0.82;
+                    let min_gar = if my_sector_mode == SectorMode::Fortify {
+                        policy.min_garrison_count.max(2)
                     } else {
-                        let r = next_rand(rng_seed);
-                        if r < policy.cruiser_share {
-                            FleetClass::Cruiser
-                        } else if r < policy.cruiser_share + policy.bship_share {
-                            FleetClass::Battleship
-                        } else {
-                            FleetClass::Bomber
-                        }
+                        policy.min_garrison_count
                     };
-                    let (ci, cb, cg) = match g_class {
-                        FleetClass::Cruiser => view.cost_cruiser,
-                        FleetClass::Battleship => view.cost_bship,
-                        FleetClass::Bomber => view.cost_bomber,
-                        _ => view.cost_cruiser,
+                    let max_gar = if saw_fortified_enemy_needing_buildup {
+                        12u16.max(8 + (op.starbase_tier as u16) * 6)
+                    } else if high_buf_drain {
+                        (8 + (op.starbase_tier as u16) * 6).max(min_gar)
+                    } else {
+                        min_gar
                     };
-                    let max_g_res = (rem_prod_buf / view.effective_ship_cost.max(1.0)).floor() as u16;
-                    let max_g_i = (rem_surf[0] / ci.max(0.1)).floor() as u16;
-                    let max_g_b = (rem_surf[1] / cb.max(0.1)).floor() as u16;
-                    let max_g_g = (rem_surf[2] / cg.max(0.1)).floor() as u16;
-                    let max_g = max_g_res.min(max_g_i).min(max_g_b).min(max_g_g);
-                    if max_g >= 1 {
-                        let room = max_gar.saturating_sub(op.orbit_count).max(1);
-                        let tier_batch = 2 + (op.starbase_tier as u16) * 2;
-                        let build_cnt = if saw_fortified_enemy_needing_buildup {
-                            max_g.min(room).clamp(1, 6.max(tier_batch))
-                        } else if high_buf_drain {
-                            max_g.min(room).clamp(1, tier_batch)
+                    let upkeep_cap = if saw_fortified_enemy_needing_buildup || high_buf_drain {
+                        max_upkeep * 0.82
+                    } else {
+                        max_upkeep * 0.52
+                    };
+                    let prod_req = if saw_fortified_enemy_needing_buildup || high_buf_drain {
+                        view.effective_ship_cost
+                    } else {
+                        view.effective_ship_cost * 1.4
+                    };
+                    if view.upkeep_ratio < upkeep_cap
+                        && rem_prod_buf >= prod_req
+                        && op.orbit_count < max_gar
+                        && view.total_active_fleets < 2400
+                        && (saw_fortified_enemy_needing_buildup
+                            || high_buf_drain
+                            || my_sector_mode == SectorMode::Fortify
+                            || next_rand(rng_seed) < 0.18)
+                    {
+                        let g_class = if let Some(existing_cls) = op.orbit_warship_class {
+                            existing_cls
                         } else {
-                            1
+                            let r = next_rand(rng_seed);
+                            if r < policy.cruiser_share {
+                                FleetClass::Cruiser
+                            } else if r < policy.cruiser_share + policy.bship_share {
+                                FleetClass::Battleship
+                            } else {
+                                FleetClass::Bomber
+                            }
                         };
-                        actions.push(GovernorAction::BuildGarrison {
-                            planet_idx: i,
-                            class: g_class,
-                            ship_count: build_cnt,
-                        });
+                        let (ci, cb, cg) = match g_class {
+                            FleetClass::Cruiser => view.cost_cruiser,
+                            FleetClass::Battleship => view.cost_bship,
+                            FleetClass::Bomber => view.cost_bomber,
+                            _ => view.cost_cruiser,
+                        };
+                        let max_g_res =
+                            (rem_prod_buf / view.effective_ship_cost.max(1.0)).floor() as u16;
+                        let max_g_i = (rem_surf[0] / ci.max(0.1)).floor() as u16;
+                        let max_g_b = (rem_surf[1] / cb.max(0.1)).floor() as u16;
+                        let max_g_g = (rem_surf[2] / cg.max(0.1)).floor() as u16;
+                        let max_g = max_g_res.min(max_g_i).min(max_g_b).min(max_g_g);
+                        if max_g >= 1 {
+                            let room = max_gar.saturating_sub(op.orbit_count).max(1);
+                            let tier_batch = 2 + (op.starbase_tier as u16) * 2;
+                            let build_cnt = if saw_fortified_enemy_needing_buildup {
+                                max_g.min(room).clamp(1, 6.max(tier_batch))
+                            } else if high_buf_drain {
+                                max_g.min(room).clamp(1, tier_batch)
+                            } else {
+                                1
+                            };
+                            actions.push(GovernorAction::BuildGarrison {
+                                planet_idx: i,
+                                class: g_class,
+                                ship_count: build_cnt,
+                            });
+                        }
                     }
-                }
                 }
             }
         }
