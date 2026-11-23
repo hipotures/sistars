@@ -3049,6 +3049,23 @@ export class UiController {
   private prevMatchStatus: import('./types').ArenaMatchStatus | null = null;
   private activeLobbySummary: ArenaMatchSummary | null = null;
   private lobbyTimerId: number | null = null;
+  private configuredMcpSeatCount: number | null = null;
+  private userEditedAgentSeats = false;
+
+  private applyDefaultAgentSeatCount(count: number): void {
+    const agentCountSel = document.getElementById('arenaNewAgentCount') as HTMLSelectElement | null;
+    const seatCheckboxes = Array.from(
+      document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
+    );
+    const maxSeats = seatCheckboxes.length || 6;
+    const clamped = Math.max(0, Math.min(maxSeats, count));
+    if (agentCountSel) {
+      agentCountSel.value = String(clamped);
+    }
+    seatCheckboxes.forEach((cb, idx) => {
+      cb.checked = idx < clamped;
+    });
+  }
 
   private bindArenaEvents(): void {
     const btnLocal = document.getElementById('btnModeLocal');
@@ -3173,6 +3190,7 @@ export class UiController {
       document.querySelectorAll<HTMLInputElement>('#arenaNewSeatsGrid input[type="checkbox"]'),
     );
     agentCountSel?.addEventListener('change', () => {
+      this.userEditedAgentSeats = true;
       const cnt = Math.max(0, Math.min(seatCheckboxes.length, Number(agentCountSel.value) || 0));
       seatCheckboxes.forEach((cb, idx) => {
         cb.checked = idx < cnt;
@@ -3180,6 +3198,7 @@ export class UiController {
     });
     seatCheckboxes.forEach((cb) => {
       cb.addEventListener('change', () => {
+        this.userEditedAgentSeats = true;
         if (!agentCountSel) return;
         const checkedCount = seatCheckboxes.filter((c) => c.checked).length;
         agentCountSel.value = String(checkedCount);
@@ -3329,6 +3348,11 @@ export class UiController {
     }
     if (shapeSel) {
       shapeSel.value = this.lastConfig.galaxyShape;
+    }
+    // Reset Agent Seats default to match configured MCP seat count (when > 0)
+    this.userEditedAgentSeats = false;
+    if (this.configuredMcpSeatCount !== null && this.configuredMcpSeatCount > 0) {
+      this.applyDefaultAgentSeatCount(this.configuredMcpSeatCount);
     }
     // Hide stale match tokens from previous match creations so the user never copies an old match ID
     const createdBox = document.getElementById('arenaCreatedBox');
@@ -3505,6 +3529,10 @@ export class UiController {
   }
 
   public setMcpSeats(seats: import('./types').McpSeatPublicInfo[], activeMatchId: string | null): void {
+    this.configuredMcpSeatCount = seats.length;
+    if (!this.userEditedAgentSeats && seats.length > 0) {
+      this.applyDefaultAgentSeatCount(seats.length);
+    }
     const bar = document.getElementById('arenaMcpSeatsBar');
     if (!bar) return;
     if (seats.length === 0) {
