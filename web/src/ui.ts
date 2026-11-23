@@ -118,6 +118,7 @@ const DRAWER_IDS = [
   'drawerReports',
   'drawerSettings',
   'drawerArenaNew',
+  'drawerReplay',
 ] as const;
 const DRAWER_TAB_MAP: Partial<Record<(typeof DRAWER_IDS)[number], string>> = {
   drawerRaces: 'tabRaces',
@@ -125,6 +126,7 @@ const DRAWER_TAB_MAP: Partial<Record<(typeof DRAWER_IDS)[number], string>> = {
   drawerStats: 'tabStats',
   drawerReports: 'tabReports',
   drawerSettings: 'tabSettings',
+  drawerReplay: 'tabReplays',
 };
 
 function getEl<T extends HTMLElement>(id: string): T {
@@ -3995,7 +3997,11 @@ export class UiController {
 
     if (badge) {
       badge.className = 'arena-badge';
-      if (summary.status === 'Aborted') {
+      if (summary.replayOf) {
+        badge.textContent =
+          summary.status === 'Finished' ? 'REPLAY END' : summary.paused ? 'REPLAY ⏸' : 'REPLAY';
+        badge.classList.add('replay');
+      } else if (summary.status === 'Aborted') {
         badge.textContent = 'ABORTED';
         badge.classList.add('aborted');
       } else if (summary.status === 'Finished') {
@@ -4019,7 +4025,9 @@ export class UiController {
     const spd = summary.speedMult ?? 1.0;
     const spdLabel = summary.paused ? '⏸ Paused' : `${spd}x`;
     if (info) {
-      const waitTxt = isLobby
+      const waitTxt = summary.replayOf
+        ? `Replay of ${summary.replayOf} • tick ${summary.tick}/${summary.replayTotalTicks ?? '?'}${summary.replayDivergence ? ' • ⚠ diverged' : ''}`
+        : isLobby
         ? `Lobby ${joinedCnt}/${reqCnt} joined • Auto-start in ${remSec}s`
         : summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0
           ? `Waiting seats [${summary.waitingForSeats.join(', ')}]`
@@ -4142,6 +4150,7 @@ export class UiController {
       EpochStatus: '⏱',
       MatchFinished: '🏆',
       MatchAborted: '⏹',
+      ReplayDivergence: '⚠️',
     };
 
     const item = document.createElement('div');

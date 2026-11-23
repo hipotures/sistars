@@ -2259,3 +2259,100 @@ tr.rep-row-selected:hover {
   border-color: rgba(148, 163, 184, 0.25);
   color: var(--muted);
 }
+
+/* Replay drawer */
+.replay-server-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.replay-list-wrap {
+  max-height: 42vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+}
+
+.replay-table td.replay-left,
+.replay-table th.replay-left {
+  text-align: left;
+}
+
+.replay-table .hud-btn {
+  padding: 2px 8px;
+}
+
+.replay-empty,
+.replay-muted {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-align: left;
+  white-space: normal;
+}
+
+.replay-error {
+  color: var(--red);
+  text-align: left;
+}
+
+.replay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.replay-sep {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-left: 6px;
+}
+
+.replay-num {
+  width: 80px;
+}
+
+.replay-progress {
+  height: 8px;
+  margin-top: 8px;
+  background: #0d1422;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.replay-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+
+.replay-progress-text {
+  font-family: monospace;
+  font-size: 0.7rem;
+  margin-top: 4px;
+}
+
+.replay-hint {
+  color: var(--yellow);
+  font-size: 0.7rem;
+  min-height: 0.9rem;
+}
+
+.replay-divergence {
+  border: 1px solid var(--red);
+  background: rgba(127, 29, 29, 0.35);
+  color: var(--red);
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  border-radius: 4px;
+}
+
+.arena-badge.replay {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(14, 116, 144, 0.3);
+}

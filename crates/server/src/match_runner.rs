@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::Rng;
 use sistars_engine::config::SimConfig;
 use sistars_engine::replay::{
-    self, build_simulation, ReplayHeader, ReplayLine, ReplayRecorder, ReplaySrc,
+    self, build_simulation, ReplayCursor, ReplayHeader, ReplayLine, ReplayRecorder, ReplaySrc,
     REPLAY_FORMAT_VERSION,
 };
 use sistars_engine::sim::Simulation;
@@ -27,8 +27,9 @@ use crate::models::{
 const MAX_FEED_HISTORY: usize = 250;
 
 /// Maps `speed_mult` (`1.0` = 20 ticks/s -> 50 ms/tick) to per-tick delay in ms.
+/// Callers clamp `speed_mult` to the match's `max_speed` first (20 live, 100 playback).
 pub fn speed_to_tick_delay_ms(speed_mult: f32) -> u64 {
-    let clamped = speed_mult.clamp(0.05, 20.0);
+    let clamped = speed_mult.clamp(0.05, PLAYBACK_MAX_SPEED);
     let tps = (20.0 * clamped).max(1.0);
     if tps >= 400.0 {
         0
@@ -40,7 +41,7 @@ pub fn speed_to_tick_delay_ms(speed_mult: f32) -> u64 {
 /// At `<= 1.5x` (`<= 30 ticks/s`), emit a WebSocket frame every single tick for silky-smooth motion.
 /// Above `1.5x`, group ticks to keep WebSocket output around 25-30 FPS.
 pub fn speed_to_frame_stride(speed_mult: f32) -> u32 {
-    let clamped = speed_mult.clamp(0.05, 20.0);
+    let clamped = speed_mult.clamp(0.05, PLAYBACK_MAX_SPEED);
     if clamped <= 1.5 {
         1
     } else {
@@ -124,8 +125,27 @@ pub struct MatchInner {
     /// Set when the match ends for a reason other than a natural victory (e.g. `"aborted"`).
     pub end_reason: Option<String>,
     /// In-memory replay log, written once to `replay_path` when the match ends.
-    pub replay: ReplayRecorder,
+    /// `None` for replay playbacks (they never re-record themselves).
+    pub replay: Option<ReplayRecorder>,
     pub replay_path: PathBuf,
+    /// Set when this match is a playback of a recorded replay instead of a live game.
+    pub playback: Option<PlaybackState>,
+    /// Upper bound for `speed_mult` (20 for live matches, 100 for playbacks).
+    pub max_speed: f32,
+}
+
+pub const LIVE_MAX_SPEED: f32 = 20.0;
+pub const PLAYBACK_MAX_SPEED: f32 = 100.0;
+
+/// Playback of a recorded match: inputs come from the replay log instead of agents.
+pub struct PlaybackState {
+    pub source_match_id: String,
+    pub recorded_commit: String,
+    pub cursor: ReplayCursor,
+    /// Jump-forward target: ticks run without delay or frames until reached, then pause.
+    pub seek_target: Option<u64>,
+    /// Human-readable first divergence from the recording, if any.
+    pub divergence: Option<String>,
 }
 
 impl MatchInner {
@@ -232,11 +252,13 @@ impl MatchInner {
         }
         if self.sim.external_agent_mask != mask {
             self.sim.external_agent_mask = mask;
-            self.replay.push(ReplayLine::AgentMask {
-                t: self.sim.ticks,
-                src: ReplaySrc::System,
-                mask,
-            });
+            if let Some(rec) = self.replay.as_mut() {
+                rec.push(ReplayLine::AgentMask {
+                    t: self.sim.ticks,
+                    src: ReplaySrc::System,
+                    mask,
+                });
+            }
         }
     }
 
@@ -379,6 +401,11 @@ impl MatchInner {
             execution_mode: self.execution_mode,
             paused: self.paused,
             speed_mult: self.speed_mult,
+            replay_of: self.playback.as_ref().map(|p| p.source_match_id.clone()),
+            replay_total_ticks: self.playback.as_ref().map(|p| p.cursor.total_ticks()),
+            replay_divergence: self.playback.as_ref().and_then(|p| p.divergence.clone()),
+            replay_recorded_commit: self.playback.as_ref().map(|p| p.recorded_commit.clone()),
+            max_speed: self.max_speed,
             end_reason: self
                 .end_reason
                 .clone()
@@ -536,7 +563,85 @@ impl MatchInner {
     /// Moves this tick's governor actions and periodic state hash into the replay log.
     pub fn record_tick_for_replay(&mut self) {
         let Self { replay, sim, .. } = self;
-        replay.after_tick(sim);
+        if let Some(rec) = replay.as_mut() {
+            rec.after_tick(sim);
+        }
+    }
+
+    /// Playback: injects the inputs recorded for the current tick and returns their feed events.
+    pub fn apply_playback_inputs(&mut self) -> Vec<ArenaFeedEvent> {
+        let lines = {
+            let Self { playback, sim, .. } = self;
+            match playback.as_mut() {
+                Some(pb) => pb.cursor.apply_inputs(sim),
+                None => return Vec::new(),
+            }
+        };
+        let mut events = Vec::new();
+        for line in lines {
+            match line {
+                ReplayLine::Commands { emp, cmds, fb, .. } => {
+                    for (cmd, f) in cmds.iter().zip(fb.iter()) {
+                        events.push(feed_for_command(self, emp, cmd, f));
+                    }
+                }
+                ReplayLine::Note {
+                    emp,
+                    text,
+                    strategy,
+                    ..
+                } => {
+                    if let Some(ev) = feed_for_note(self, emp, text, strategy) {
+                        events.push(ev);
+                    }
+                }
+                _ => {}
+            }
+        }
+        events
+    }
+
+    /// Playback: compares the tick just simulated with the recording. On the first divergence
+    /// it stores a description, appends a detailed record to the anomaly log and returns a feed event.
+    pub fn check_playback_after_tick(&mut self) -> Option<ArenaFeedEvent> {
+        let divergence = {
+            let Self { playback, sim, .. } = self;
+            playback.as_mut()?.cursor.check_after_tick(sim)?
+        };
+        let text = divergence.describe();
+        let pb = self.playback.as_mut()?;
+        pb.divergence = Some(text.clone());
+        let record = serde_json::json!({
+            "type": "replayDivergence",
+            "playbackMatchId": self.match_id,
+            "sourceMatchId": pb.source_match_id,
+            "recordedCommit": pb.recorded_commit,
+            "currentCommit": env!("SISTARS_GIT_COMMIT"),
+            "tick": divergence.tick(),
+            "year": self.sim.year,
+            "summary": text,
+            "divergence": divergence,
+        });
+        if let Some(path) = self.audit_log_path.as_ref() {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(mut f) => {
+                    let _ = writeln!(f, "{record}");
+                }
+                Err(e) => eprintln!(
+                    "Failed to write replay divergence to {}: {e}",
+                    path.display()
+                ),
+            }
+        }
+        Some(self.push_feed_event(
+            None,
+            ArenaFeedKind::ReplayDivergence,
+            format!("Replay diverged from the recording: {text}. Continuing as a what-if run."),
+            None,
+        ))
     }
 
     /// Admin abort: ends the match immediately with status `Aborted` and no winner.
@@ -701,6 +806,60 @@ impl MatchHandle {
         logs_dir: PathBuf,
         replays_dir: PathBuf,
     ) -> (Arc<Self>, HashMap<usize, String>, Vec<usize>) {
+        let (match_inner, empire_tokens, open_agent_seats) =
+            Self::build_inner(match_id, req, logs_dir, replays_dir);
+        (Self::launch(match_inner), empire_tokens, open_agent_seats)
+    }
+
+    /// Spawns a paused playback of a recorded match. The world is built from the replay
+    /// header exactly like the original; inputs are then injected from the log each tick.
+    pub fn spawn_playback(
+        playback_id: String,
+        source_match_id: String,
+        lines: Vec<ReplayLine>,
+        logs_dir: PathBuf,
+    ) -> Result<Arc<Self>, String> {
+        let cursor = ReplayCursor::new(lines)?;
+        let h = cursor.header().clone();
+        let req = CreateMatchRequest {
+            seed: Some(h.seed),
+            sim_config: Some(h.sim_config.clone()),
+            races: Some(h.races.clone()),
+            galaxy_size: h.galaxy_size.clone(),
+            galaxy_shape: h.galaxy_shape.clone(),
+            victory_config: Some(h.victory_config),
+            debug_audit: Some(h.debug_audit),
+            execution_mode: Some(ExecutionMode::RealtimeAsync),
+            start_paused: Some(true),
+            lobby_timeout_sec: Some(0),
+            open_agent_seats: Some(Vec::new()),
+            speed_mult: Some(1.0),
+            scenario_name: Some(format!("Replay of {source_match_id}")),
+            ..Default::default()
+        };
+        let (mut inner, _tokens, _seats) =
+            Self::build_inner(playback_id.clone(), req, logs_dir.clone(), logs_dir.clone());
+        inner.replay = None;
+        inner.max_speed = PLAYBACK_MAX_SPEED;
+        inner.ticks_per_epoch = h.ticks_per_epoch.max(1);
+        // Divergence details are appended here even when the original ran without debug_audit.
+        inner.audit_log_path = Some(logs_dir.join(format!("match_{playback_id}_anomalies.jsonl")));
+        inner.playback = Some(PlaybackState {
+            source_match_id,
+            recorded_commit: h.engine_commit.clone(),
+            cursor,
+            seek_target: None,
+            divergence: None,
+        });
+        Ok(Self::launch(inner))
+    }
+
+    fn build_inner(
+        match_id: String,
+        req: CreateMatchRequest,
+        logs_dir: PathBuf,
+        replays_dir: PathBuf,
+    ) -> (MatchInner, HashMap<usize, String>, Vec<usize>) {
         let mut cfg = req.sim_config.clone().unwrap_or_else(SimConfig::default);
         if let Some(mods) = req.scenario_modifiers {
             cfg.scenario_modifiers = mods;
@@ -760,7 +919,7 @@ impl MatchHandle {
         }
 
         let execution_mode = req.execution_mode.unwrap_or(ExecutionMode::RealtimeAsync);
-        let speed_mult = req.speed_mult.unwrap_or(1.0).clamp(0.05, 20.0);
+        let speed_mult = req.speed_mult.unwrap_or(1.0).clamp(0.05, LIVE_MAX_SPEED);
         let ticks_per_epoch = req.ticks_per_epoch.unwrap_or(20).clamp(1, 500);
         // `0` means infinite wait (no timeout) in LockstepEpoch mode.
         let epoch_timeout_ms = match req.epoch_timeout_ms {
@@ -848,14 +1007,20 @@ impl MatchHandle {
             audit_log_path,
             last_written_anomaly_idx: 0,
             end_reason: None,
-            replay: ReplayRecorder::new(header),
+            replay: Some(ReplayRecorder::new(header)),
             replay_path,
+            playback: None,
+            max_speed: LIVE_MAX_SPEED,
         };
         // Seed initial baseline snapshots at tick 0 so RealtimeAsync agents get an accurate delta immediately
         for emp_i in 0..num_empires {
             let snap = match_inner.capture_empire_snapshot(emp_i);
             match_inner.prev_epoch_snapshots.insert(emp_i, snap);
         }
+        (match_inner, empire_tokens, open_agent_seats)
+    }
+
+    fn launch(match_inner: MatchInner) -> Arc<Self> {
         let inner = Arc::new(RwLock::new(match_inner));
 
         let barrier_notify = Arc::new(Notify::new());
@@ -886,7 +1051,7 @@ impl MatchHandle {
             let _ = done_tx.send(true);
         });
 
-        (handle, empire_tokens, open_agent_seats)
+        handle
     }
 }
 
@@ -906,6 +1071,157 @@ pub fn prt_short_summary(prt: &str) -> &'static str {
     }
 }
 
+/// Feed event for an agent's reasoning note / strategy memory (live submissions and replays).
+fn feed_for_note(
+    guard: &mut MatchInner,
+    emp_idx: usize,
+    note: Option<String>,
+    strategy: Option<StrategyMemory>,
+) -> Option<ArenaFeedEvent> {
+    if let Some(mem) = strategy {
+        guard.latest_strategy.insert(emp_idx, mem.clone());
+        let summary = if mem.phase.is_empty() {
+            mem.rationale.clone()
+        } else if mem.rationale.is_empty() {
+            format!("[{}]", mem.phase)
+        } else {
+            format!("[{}] {}", mem.phase, mem.rationale)
+        };
+        return Some(guard.push_feed_event_with_strategy(
+            Some(emp_idx),
+            ArenaFeedKind::StrategyUpdate,
+            summary,
+            None,
+            Some(mem),
+        ));
+    }
+    let trimmed = note?.trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(guard.push_feed_event(Some(emp_idx), ArenaFeedKind::Reasoning, trimmed, None))
+}
+
+/// Feed event describing one applied agent command (live submissions and replays).
+fn feed_for_command(
+    guard: &mut MatchInner,
+    emp_idx: usize,
+    cmd: &StrategicCommand,
+    fb: &CommandFeedback,
+) -> ArenaFeedEvent {
+    match cmd {
+        StrategicCommand::SetPolicy(patch) => {
+            let mut parts = Vec::new();
+            if let Some(v) = patch.fac_share {
+                parts.push(format!("fac {:.0}%", v * 100.0));
+            }
+            if let Some(v) = patch.ship_share {
+                parts.push(format!("ship {:.0}%", v * 100.0));
+            }
+            if let Some(v) = patch.tech_share {
+                parts.push(format!("tech {:.0}%", v * 100.0));
+            }
+            if let Some(v) = patch.mine_share {
+                parts.push(format!("mine {:.0}%", v * 100.0));
+            }
+            if let Some(v) = patch.colonize_vs_attack_bias {
+                parts.push(format!("colBias {:.2}", v));
+            }
+            if let Some(v) = patch.min_force_ratio {
+                parts.push(format!("minForce {:.2}x", v));
+            }
+            if patch.tech_alloc.is_some() {
+                parts.push("techAlloc".to_string());
+            }
+            if patch.mineral_weights.is_some() {
+                parts.push("mineralWeights".to_string());
+            }
+            let desc = if parts.is_empty() {
+                "Updated policy sliders".to_string()
+            } else {
+                format!("Updated policy ({})", parts.join(", "))
+            };
+            guard.push_feed_event(Some(emp_idx), ArenaFeedKind::PolicyUpdate, desc, None)
+        }
+        StrategicCommand::SetDiplomacy { target_emp, stance } => {
+            let target_label = guard
+                .sim
+                .empire_idx_from_id(*target_emp)
+                .and_then(|i| guard.sim.empires.get(i))
+                .map(|e| format!("{} (empireId={target_emp})", e.race.name))
+                .unwrap_or_else(|| format!("Unknown Empire (empireId={target_emp})"));
+            let desc = if fb.status == "applied" {
+                format!("Set diplomatic stance with {target_label} -> {stance:?}")
+            } else {
+                format!(
+                    "SetDiplomacy({target_label} -> {stance:?}) [{}]: {}",
+                    fb.status,
+                    fb.reason.as_deref().unwrap_or("rejected")
+                )
+            };
+            guard.push_feed_event(
+                Some(emp_idx),
+                ArenaFeedKind::DiplomacyChange,
+                desc,
+                fb.reason.clone(),
+            )
+        }
+        StrategicCommand::SetSectorDirective { sector_id, mode } => guard.push_feed_event(
+            Some(emp_idx),
+            ArenaFeedKind::SectorDirective,
+            format!("Sector #{sector_id} directive -> {mode:?}"),
+            None,
+        ),
+        StrategicCommand::BuildHub { planet_idx, kind } => {
+            let suffix = match fb.reason.as_deref() {
+                Some(r) => format!(" [{}]: {r}", fb.status),
+                None => format!(" [{}]", fb.status),
+            };
+            guard.push_feed_event(
+                Some(emp_idx),
+                ArenaFeedKind::BuildHub,
+                format!("BuildHub {kind:?} at Planet #{planet_idx}{suffix}"),
+                None,
+            )
+        }
+        StrategicCommand::SendDipMessage { to_emp, text } => {
+            let target_label = guard
+                .sim
+                .empire_idx_from_id(*to_emp)
+                .and_then(|i| guard.sim.empires.get(i))
+                .map(|e| format!("{} (empireId={to_emp})", e.race.name))
+                .unwrap_or_else(|| format!("Unknown Empire (empireId={to_emp})"));
+            let desc = if fb.status == "applied" {
+                format!("Diplomatic cable to {target_label}: \"{text}\"")
+            } else {
+                format!(
+                    "SendDipMessage({target_label}) [{}]: {}",
+                    fb.status,
+                    fb.reason.as_deref().unwrap_or("rejected")
+                )
+            };
+            guard.push_feed_event(
+                Some(emp_idx),
+                ArenaFeedKind::DipMessage,
+                desc,
+                fb.reason.clone(),
+            )
+        }
+        StrategicCommand::ScoutSector { sector_id } => guard.push_feed_event(
+            Some(emp_idx),
+            ArenaFeedKind::ScoutSector,
+            format!("ScoutSector #{sector_id} [{}]", fb.status),
+            fb.reason.clone(),
+        ),
+        StrategicCommand::ProbeWormhole { wormhole_id } => guard.push_feed_event(
+            Some(emp_idx),
+            ArenaFeedKind::ProbeWormhole,
+            format!("ProbeWormhole #{wormhole_id} [{}]", fb.status),
+            fb.reason.clone(),
+        ),
+    }
+}
+
 pub(crate) fn apply_submissions_locked(
     guard: &mut MatchInner,
     capture_per_empire_delta: bool,
@@ -922,167 +1238,40 @@ pub(crate) fn apply_submissions_locked(
             .map(str::to_string);
         if note_text.is_some() || decision.strategy_memory.is_some() {
             let t = guard.sim.ticks;
-            guard.replay.push(ReplayLine::Note {
-                t,
-                src: ReplaySrc::Agent,
-                emp: emp_idx,
-                text: note_text,
-                strategy: decision.strategy_memory.clone(),
-            });
-        }
-        if let Some(mem) = decision.strategy_memory {
-            guard.latest_strategy.insert(emp_idx, mem.clone());
-            let summary = if mem.phase.is_empty() {
-                mem.rationale.clone()
-            } else if mem.rationale.is_empty() {
-                format!("[{}]", mem.phase)
-            } else {
-                format!("[{}] {}", mem.phase, mem.rationale)
-            };
-            let ev = guard.push_feed_event_with_strategy(
-                Some(emp_idx),
-                ArenaFeedKind::StrategyUpdate,
-                summary,
-                None,
-                Some(mem),
-            );
-            new_feed_events.push(ev);
-        } else if let Some(note) = decision.reasoning_note {
-            let trimmed = note.trim();
-            if !trimmed.is_empty() {
-                let ev = guard.push_feed_event(
-                    Some(emp_idx),
-                    ArenaFeedKind::Reasoning,
-                    trimmed.to_string(),
-                    None,
-                );
-                new_feed_events.push(ev);
+            if let Some(rec) = guard.replay.as_mut() {
+                rec.push(ReplayLine::Note {
+                    t,
+                    src: ReplaySrc::Agent,
+                    emp: emp_idx,
+                    text: note_text,
+                    strategy: decision.strategy_memory.clone(),
+                });
             }
+        }
+        if let Some(ev) = feed_for_note(
+            guard,
+            emp_idx,
+            decision.reasoning_note,
+            decision.strategy_memory,
+        ) {
+            new_feed_events.push(ev);
         }
 
         let cmds_for_feed = decision.commands.clone();
         let t = guard.sim.ticks;
         let feedback = guard.sim.submit_commands(emp_idx, decision.commands);
-        guard.replay.push(ReplayLine::Commands {
-            t,
-            src: ReplaySrc::Agent,
-            emp: emp_idx,
-            cmds: cmds_for_feed.clone(),
-            fb: feedback.clone(),
-        });
+        if let Some(rec) = guard.replay.as_mut() {
+            rec.push(ReplayLine::Commands {
+                t,
+                src: ReplaySrc::Agent,
+                emp: emp_idx,
+                cmds: cmds_for_feed.clone(),
+                fb: feedback.clone(),
+            });
+        }
 
         for (cmd, fb) in cmds_for_feed.iter().zip(feedback.iter()) {
-            let ev = match cmd {
-                StrategicCommand::SetPolicy(patch) => {
-                    let mut parts = Vec::new();
-                    if let Some(v) = patch.fac_share {
-                        parts.push(format!("fac {:.0}%", v * 100.0));
-                    }
-                    if let Some(v) = patch.ship_share {
-                        parts.push(format!("ship {:.0}%", v * 100.0));
-                    }
-                    if let Some(v) = patch.tech_share {
-                        parts.push(format!("tech {:.0}%", v * 100.0));
-                    }
-                    if let Some(v) = patch.mine_share {
-                        parts.push(format!("mine {:.0}%", v * 100.0));
-                    }
-                    if let Some(v) = patch.colonize_vs_attack_bias {
-                        parts.push(format!("colBias {:.2}", v));
-                    }
-                    if let Some(v) = patch.min_force_ratio {
-                        parts.push(format!("minForce {:.2}x", v));
-                    }
-                    if patch.tech_alloc.is_some() {
-                        parts.push("techAlloc".to_string());
-                    }
-                    if patch.mineral_weights.is_some() {
-                        parts.push("mineralWeights".to_string());
-                    }
-                    let desc = if parts.is_empty() {
-                        "Updated policy sliders".to_string()
-                    } else {
-                        format!("Updated policy ({})", parts.join(", "))
-                    };
-                    guard.push_feed_event(Some(emp_idx), ArenaFeedKind::PolicyUpdate, desc, None)
-                }
-                StrategicCommand::SetDiplomacy { target_emp, stance } => {
-                    let target_label = guard
-                        .sim
-                        .empire_idx_from_id(*target_emp)
-                        .and_then(|i| guard.sim.empires.get(i))
-                        .map(|e| format!("{} (empireId={target_emp})", e.race.name))
-                        .unwrap_or_else(|| format!("Unknown Empire (empireId={target_emp})"));
-                    let desc = if fb.status == "applied" {
-                        format!("Set diplomatic stance with {target_label} -> {stance:?}")
-                    } else {
-                        format!(
-                            "SetDiplomacy({target_label} -> {stance:?}) [{}]: {}",
-                            fb.status,
-                            fb.reason.as_deref().unwrap_or("rejected")
-                        )
-                    };
-                    guard.push_feed_event(
-                        Some(emp_idx),
-                        ArenaFeedKind::DiplomacyChange,
-                        desc,
-                        fb.reason.clone(),
-                    )
-                }
-                StrategicCommand::SetSectorDirective { sector_id, mode } => guard.push_feed_event(
-                    Some(emp_idx),
-                    ArenaFeedKind::SectorDirective,
-                    format!("Sector #{sector_id} directive -> {mode:?}"),
-                    None,
-                ),
-                StrategicCommand::BuildHub { planet_idx, kind } => {
-                    let suffix = match fb.reason.as_deref() {
-                        Some(r) => format!(" [{}]: {r}", fb.status),
-                        None => format!(" [{}]", fb.status),
-                    };
-                    guard.push_feed_event(
-                        Some(emp_idx),
-                        ArenaFeedKind::BuildHub,
-                        format!("BuildHub {kind:?} at Planet #{planet_idx}{suffix}"),
-                        None,
-                    )
-                }
-                StrategicCommand::SendDipMessage { to_emp, text } => {
-                    let target_label = guard
-                        .sim
-                        .empire_idx_from_id(*to_emp)
-                        .and_then(|i| guard.sim.empires.get(i))
-                        .map(|e| format!("{} (empireId={to_emp})", e.race.name))
-                        .unwrap_or_else(|| format!("Unknown Empire (empireId={to_emp})"));
-                    let desc = if fb.status == "applied" {
-                        format!("Diplomatic cable to {target_label}: \"{text}\"")
-                    } else {
-                        format!(
-                            "SendDipMessage({target_label}) [{}]: {}",
-                            fb.status,
-                            fb.reason.as_deref().unwrap_or("rejected")
-                        )
-                    };
-                    guard.push_feed_event(
-                        Some(emp_idx),
-                        ArenaFeedKind::DipMessage,
-                        desc,
-                        fb.reason.clone(),
-                    )
-                }
-                StrategicCommand::ScoutSector { sector_id } => guard.push_feed_event(
-                    Some(emp_idx),
-                    ArenaFeedKind::ScoutSector,
-                    format!("ScoutSector #{sector_id} [{}]", fb.status),
-                    fb.reason.clone(),
-                ),
-                StrategicCommand::ProbeWormhole { wormhole_id } => guard.push_feed_event(
-                    Some(emp_idx),
-                    ArenaFeedKind::ProbeWormhole,
-                    format!("ProbeWormhole #{wormhole_id} [{}]", fb.status),
-                    fb.reason.clone(),
-                ),
-            };
+            let ev = feed_for_command(guard, emp_idx, cmd, fb);
             new_feed_events.push(ev);
         }
 
@@ -1117,8 +1306,11 @@ async fn finalize_match(
             (None, _) => "shutdown".to_string(),
         };
         let g = &mut *guard;
-        g.replay.finish(&g.sim, &reason);
-        (std::mem::take(&mut g.replay), g.replay_path.clone())
+        let Some(mut recorder) = g.replay.take() else {
+            return; // playback matches are not recorded
+        };
+        recorder.finish(&g.sim, &reason);
+        (recorder, g.replay_path.clone())
     };
     let written =
         tokio::task::spawn_blocking(move || replay::write_gz(&path, &recorder).map(|_| path)).await;
@@ -1143,6 +1335,8 @@ async fn run_match_loop(
     let mut last_ws_broadcast = Instant::now() - Duration::from_secs(1);
     let mut tps_window_start = Instant::now();
     let mut tps_window_ticks = 0u32;
+    // Playback pacing anchor: (wall time, tick, speed) from which the target tick rate is measured.
+    let mut pace: Option<(Instant, u64, f32)> = None;
 
     // =========================================================================
     // PHASE 0: Pre-Start Lobby (WaitingForAgents at tick 0 until all distinct
@@ -1209,6 +1403,7 @@ async fn run_match_loop(
             if !is_paused || has_step || is_done {
                 break;
             }
+            pace = None;
             tokio::select! {
                 _ = control_notify.notified() => {}
                 _ = shutdown_rx.changed() => {
@@ -1239,12 +1434,15 @@ async fn run_match_loop(
         // MODE A: RealtimeAsync (smooth continuous RTS + async AI commands)
         // =====================================================================
         if mode == ExecutionMode::RealtimeAsync {
-            let (frame_opt, feed_events, status_opt, cur_delay_ms, finished) = {
+            let (frame_opt, feed_events, status_opt, cur_delay_ms, finished, pacing) = {
                 let mut guard = inner.write().await;
                 guard.status = MatchStatus::Running;
                 guard.epoch_deadline_ms = None;
+                let is_playback = guard.playback.is_some();
 
-                let mut feed_events = if !guard.pending_submissions.is_empty() {
+                let mut feed_events = if is_playback {
+                    guard.apply_playback_inputs()
+                } else if !guard.pending_submissions.is_empty() {
                     apply_submissions_locked(&mut guard, true).0
                 } else {
                     Vec::new()
@@ -1260,6 +1458,9 @@ async fn run_match_loop(
                 guard.sim.step_tick(false);
                 guard.record_tick_for_replay();
                 tps_window_ticks += 1;
+                let divergence_ev = guard.check_playback_after_tick();
+                let diverged_now = divergence_ev.is_some();
+                feed_events.extend(divergence_ev);
 
                 let public_alerts: Vec<(Option<usize>, String)> =
                     guard.sim.pending_public_alerts.drain(..).collect();
@@ -1278,12 +1479,42 @@ async fn run_match_loop(
 
                 let is_victory = guard.sim.winner.is_some();
                 let mut victory_feed = None;
-                let public_alerts: Vec<(Option<usize>, String)> =
-                    guard.sim.pending_public_alerts.drain(..).collect();
-                for (emp_opt, msg) in public_alerts {
-                    let ev = guard.push_feed_event(emp_opt, ArenaFeedKind::EpochStatus, msg, None);
-                    let _ = ws_tx.send(SpectatorWsMessage::Feed { event: ev });
+
+                // Playback: end of the recording, and the jump-forward target.
+                let ticks_now = guard.sim.ticks;
+                let playback_end = guard
+                    .playback
+                    .as_ref()
+                    .is_some_and(|p| ticks_now >= p.cursor.total_ticks());
+                let mut seeking = false;
+                let mut seek_reached = false;
+                if let Some(pb) = guard.playback.as_mut() {
+                    if let Some(target) = pb.seek_target {
+                        if ticks_now < target && !playback_end && !is_victory {
+                            seeking = true;
+                        } else {
+                            pb.seek_target = None;
+                            seek_reached = true;
+                        }
+                    }
                 }
+                if seek_reached {
+                    guard.paused = true;
+                }
+                if is_playback && (playback_end || is_victory) {
+                    guard.end_reason = Some("replayEnd".to_string());
+                    if !is_victory {
+                        guard.status = MatchStatus::Finished;
+                        let year = guard.sim.year;
+                        feed_events.push(guard.push_feed_event(
+                            None,
+                            ArenaFeedKind::MatchFinished,
+                            format!("Replay finished: end of the recording at tick {ticks_now} (year {year:.1})."),
+                            None,
+                        ));
+                    }
+                }
+                let finished_now = is_victory || (is_playback && playback_end);
 
                 if is_victory {
                     guard.status = MatchStatus::Finished;
@@ -1316,8 +1547,10 @@ async fn run_match_loop(
                 };
                 let ws_due = min_ws_interval_ms == 0
                     || last_ws_broadcast.elapsed() >= Duration::from_millis(min_ws_interval_ms);
-                let should_broadcast =
-                    was_stepped || is_victory || (ws_due && (guard.sim.ticks % cur_stride == 0));
+                let should_broadcast = was_stepped
+                    || finished_now
+                    || seek_reached
+                    || (!seeking && ws_due && (guard.sim.ticks % cur_stride == 0));
 
                 let frame = if should_broadcast && ws_tx.receiver_count() > 0 {
                     last_ws_broadcast = Instant::now();
@@ -1340,13 +1573,27 @@ async fn run_match_loop(
                 if let Some(vf) = victory_feed {
                     all_feeds.push(vf);
                 }
-                let status_opt = if epoch_advanced || is_victory {
+                let status_opt = if epoch_advanced || finished_now || diverged_now || seek_reached {
                     Some(guard.public_summary())
                 } else {
                     None
                 };
+                // Playback is paced by wall clock (20 ticks/s per 1x) instead of a fixed delay,
+                // so speeds above 20x stay distinct; jump-forward runs flat out.
+                let pacing = match (is_playback, seeking) {
+                    (true, false) => Some((guard.speed_mult, ticks_now)),
+                    _ => None,
+                };
+                let cur_delay = if seeking { 0 } else { cur_delay };
 
-                (frame, all_feeds, status_opt, cur_delay, is_victory)
+                (
+                    frame,
+                    all_feeds,
+                    status_opt,
+                    cur_delay,
+                    finished_now,
+                    pacing,
+                )
             };
 
             for ev in feed_events {
@@ -1361,6 +1608,37 @@ async fn run_match_loop(
             if finished {
                 break;
             }
+
+            if let Some((speed, ticks_now)) = pacing {
+                let tps = (20.0 * speed as f64).max(0.5);
+                let now = Instant::now();
+                let (t0, k0, s0) = *pace.get_or_insert((now, ticks_now.saturating_sub(1), speed));
+                if s0 != speed {
+                    pace = Some((now, ticks_now, speed));
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                let due = t0 + Duration::from_secs_f64(ticks_now.saturating_sub(k0) as f64 / tps);
+                if due > now + Duration::from_millis(2) {
+                    tokio::select! {
+                        _ = tokio::time::sleep(due - now) => {}
+                        _ = control_notify.notified() => {}
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                } else {
+                    if now.saturating_duration_since(due) > Duration::from_millis(250) {
+                        // Fell far behind (slow machine / huge galaxy): don't burst to catch up.
+                        pace = Some((now, ticks_now, speed));
+                    }
+                    tokio::task::yield_now().await;
+                }
+                continue;
+            }
+            pace = None;
 
             if cur_delay_ms > 0 {
                 tokio::select! {

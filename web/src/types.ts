@@ -528,8 +528,18 @@ export interface ArenaMatchSummary {
   speedMult?: number;
   tickDelayMs?: number;
   winner: number | null;
-  /** Why the match ended: 'victory' or 'aborted' (admin). Null while in progress. */
+  /** Why the match ended: 'victory', 'aborted' (admin) or 'replayEnd'. Null while in progress. */
   endReason?: string | null;
+  /** Source match id when this match is a server-side replay playback. */
+  replayOf?: string;
+  /** Last tick of the recording being played back. */
+  replayTotalTicks?: number;
+  /** First divergence of the playback from the recording (game code changed since). */
+  replayDivergence?: string;
+  /** Engine commit that recorded the replay being played back. */
+  replayRecordedCommit?: string;
+  /** Upper bound for speedMult (20 live, 100 playback). */
+  maxSpeed?: number;
   planetCount: number;
   empireCount: number;
   seats?: ArenaMatchSeatInfo[];
@@ -616,7 +626,27 @@ export type ArenaFeedKind =
   | 'PolicyUpdate'
   | 'EpochStatus'
   | 'MatchFinished'
-  | 'MatchAborted';
+  | 'MatchAborted'
+  | 'ReplayDivergence';
+
+/** One recorded match from `GET /api/v1/replays`. */
+export interface ReplayFileInfo {
+  matchId: string;
+  fileSize: number;
+  modifiedMs: number;
+  scenarioName?: string;
+  seed?: number;
+  engineCommit?: string;
+  numEmpires?: number;
+  galaxySize?: string;
+  endReason?: string;
+  finalTick?: number;
+  finalYear?: number;
+  winner?: number;
+  winnerName?: string;
+  actionCount?: number;
+  error?: string;
+}
 
 export interface ArenaFeedEvent {
   id: number;

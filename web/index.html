@@ -24,6 +24,7 @@
       <button class="hud-btn" id="btn05x" data-speed="0.5">0.5x</button>
       <button class="hud-btn" id="btn1x" data-speed="1">1x</button>
       <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
+      <button class="hud-btn" id="btn10x" data-speed="10">10x</button>
       <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
     </div>
   </div>
@@ -40,6 +41,7 @@
     <button class="hud-btn" id="tabStats" data-drawer="drawerStats">📊 Charts &amp; AI</button>
     <button class="hud-btn" id="tabReports" data-drawer="drawerReports">📋 Reports</button>
     <button class="hud-btn" id="tabSettings" data-drawer="drawerSettings">⚙️ Settings</button>
+    <button class="hud-btn" id="tabReplays" data-drawer="drawerReplay" title="Recorded arena matches: list, download and play back">🎬 Replays</button>
     <button class="hud-btn danger" id="btnReset" title="New galaxy">↺ Map</button>
   </div>
 </header>
@@ -65,6 +67,61 @@
   <button class="hud-btn" id="btnArenaNewMatch" title="Configure & launch a new Arena match on the server">+ New Match</button>
   <div id="arenaMcpSeatsBar" class="arena-mcp-seats" style="display:none;"></div>
   <span class="arena-epoch-info" id="arenaEpochInfo">Epoch #0 • Idle</span>
+</div>
+
+<!-- DRAWER: RECORDED MATCH REPLAYS -->
+<div class="drawer wide" id="drawerReplay">
+  <div class="drawer-head">
+    <div class="drawer-title">🎬 Replays</div>
+    <button class="insp-close" data-close-drawer="drawerReplay">✕</button>
+  </div>
+
+  <h3>Recorded matches</h3>
+  <div class="replay-server-row">
+    <label class="arena-field">
+      <span>SERVER</span>
+      <input type="text" id="replayServerInput" class="text-input arena-input" value="http://localhost:8080" />
+    </label>
+    <button class="hud-btn" id="btnReplayRefresh" title="Reload the replay list">↻ Refresh</button>
+  </div>
+  <div class="replay-list-wrap">
+    <table class="replay-table">
+      <thead>
+        <tr><th>Date</th><th>Match</th><th class="replay-left">Scenario</th><th>End</th><th>Ticks / Year</th><th>Winner</th><th>Size</th><th></th><th></th></tr>
+      </thead>
+      <tbody id="replayListBody"></tbody>
+    </table>
+  </div>
+
+  <h3>Playback</h3>
+  <div id="replayIdleHint" class="replay-muted">Press ▶ Play on a recorded match. The server re-simulates it with the current game code and you watch it here like an arena match.</div>
+  <div id="replayPlaybackSection" style="display:none;">
+    <div id="replaySource" class="replay-muted"></div>
+    <div class="replay-progress"><div id="replayProgressFill" class="replay-progress-fill"></div></div>
+    <div id="replayProgressText" class="replay-progress-text"></div>
+    <div class="replay-controls">
+      <button class="hud-btn" id="btnReplayPlayPause">▶ Play</button>
+      <button class="hud-btn" id="btnReplayStep" title="Advance one tick">⏭ Step</button>
+      <span class="replay-sep">Speed</span>
+      <button class="hud-btn" data-replay-speed="0.1">0.1x</button>
+      <button class="hud-btn" data-replay-speed="1">1x</button>
+      <button class="hud-btn" data-replay-speed="10">10x</button>
+      <input type="number" id="replaySpeedCustom" class="text-input replay-num" min="0.1" max="100" step="0.1" value="1" title="Custom speed 0.1–100x" />
+      <button class="hud-btn" id="btnReplaySpeedApply">Set</button>
+    </div>
+    <div class="replay-controls">
+      <span class="replay-sep">Jump to tick</span>
+      <input type="number" id="replaySeekTick" class="text-input replay-num" min="1" step="1" title="Forward only" />
+      <button class="hud-btn" id="btnReplaySeek">Go ⏩</button>
+      <button class="hud-btn danger" id="btnReplayStop" title="Stop and remove this playback from the server">⏹ Stop</button>
+    </div>
+    <div id="replayHint" class="replay-hint"></div>
+    <div id="replayDivergence" class="replay-divergence" style="display:none;"></div>
+    <div id="replayEnded" class="replay-muted" style="display:none;">End of the recording reached.</div>
+  </div>
+
+  <h3>Recording</h3>
+  <div class="replay-muted">🎥 Video recording — coming soon.</div>
 </div>
 
 <!-- DRAWER: NEW ARENA MATCH CONFIGURATOR -->

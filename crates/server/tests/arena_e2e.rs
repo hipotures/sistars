@@ -2926,3 +2926,351 @@ async fn e2e_delete_writes_replay_with_deleted_reason() {
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
+
+/// Records a short realtime match with agent orders (aborted), returns its match id.
+async fn record_short_match(srv: &TestServer, seed: u32) -> String {
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": seed,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "openAgentSeats": [0],
+            "lobbyTimeoutSec": 0,
+            "speedMult": 10.0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    for round in 0..4 {
+        let resp = srv
+            .client
+            .post(format!(
+                "{}/api/v1/matches/{match_id}/commands",
+                srv.base_url
+            ))
+            .bearer_auth(&tok)
+            .json(&json!({
+                "reasoningNote": format!("round {round}"),
+                "commands": [ { "setPolicy": { "techShare": 0.2 + 0.15 * round as f32 } } ]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let resp = srv
+        .client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
+        .json(&json!({ "abort": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    wait_for_replay_file(srv, &match_id).await;
+    match_id
+}
+
+async fn start_playback(srv: &TestServer, source_id: &str) -> (String, u64) {
+    let resp = srv
+        .client
+        .post(format!("{}/api/v1/replays/{source_id}/play", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["replayOf"].as_str(), Some(source_id));
+    (
+        body["matchId"].as_str().unwrap().to_string(),
+        body["totalTicks"].as_u64().unwrap(),
+    )
+}
+
+async fn get_summary(srv: &TestServer, match_id: &str) -> Value {
+    srv.client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn wait_for_summary(
+    srv: &TestServer,
+    match_id: &str,
+    what: &str,
+    pred: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let s = get_summary(srv, match_id).await;
+        if pred(&s) {
+            return s;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}; last summary: {s}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn control(srv: &TestServer, match_id: &str, body: Value) -> reqwest::Response {
+    srv.client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn e2e_replay_list_and_playback_to_end() {
+    let srv = spawn_test_server().await;
+    let source = record_short_match(&srv, 910401).await;
+
+    let list: Value = srv
+        .client
+        .get(format!("{}/api/v1/replays", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["matchId"].as_str(), Some(source.as_str()));
+    assert_eq!(list[0]["endReason"].as_str(), Some("aborted"));
+    let final_tick = list[0]["finalTick"].as_u64().unwrap();
+    assert!(final_tick > 100, "recording too short: {final_tick}");
+    assert!(list[0]["error"].is_null());
+
+    let (pb, total) = start_playback(&srv, &source).await;
+    assert_eq!(total, final_tick);
+    let s = get_summary(&srv, &pb).await;
+    assert_eq!(s["replayOf"].as_str(), Some(source.as_str()));
+    assert_eq!(s["paused"].as_bool(), Some(true), "playback starts paused");
+    assert_eq!(s["tick"].as_u64(), Some(0));
+    assert_eq!(s["maxSpeed"].as_f64(), Some(100.0));
+
+    // A playback is not a live match: no abort, no lockstep, no orders.
+    assert_eq!(
+        control(&srv, &pb, json!({"abort": true})).await.status(),
+        StatusCode::CONFLICT
+    );
+
+    let resp = control(&srv, &pb, json!({"paused": false, "speedMult": 100.0})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["speedMult"].as_f64(), Some(100.0));
+
+    let done = wait_for_summary(&srv, &pb, "playback end", |s| {
+        s["status"].as_str() == Some("Finished")
+    })
+    .await;
+    assert_eq!(done["endReason"].as_str(), Some("replayEnd"));
+    assert_eq!(done["tick"].as_u64(), Some(total));
+    assert!(
+        done["replayDivergence"].is_null(),
+        "unchanged code must not diverge: {done}"
+    );
+
+    // The playback did not record a new replay of itself.
+    let list: Value = srv
+        .client
+        .get(format!("{}/api/v1/replays", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    // Live matches keep the 20x cap and reject seekTick.
+    let live: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({ "seed": 1, "galaxySize": "small", "startPaused": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let live_id = live["matchId"].as_str().unwrap();
+    let body: Value = control(&srv, live_id, json!({"speedMult": 100.0}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["speedMult"].as_f64(), Some(20.0));
+    assert_eq!(
+        control(&srv, live_id, json!({"seekTick": 50}))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    // Live match list for the arena still contains the playback with its marker.
+    let all: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(all
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["matchId"].as_str() == Some(pb.as_str()) && m["replayOf"].is_string()));
+}
+
+#[tokio::test]
+async fn e2e_replay_seek_pauses_at_target_tick() {
+    let srv = spawn_test_server().await;
+    let source = record_short_match(&srv, 910402).await;
+    let (pb, total) = start_playback(&srv, &source).await;
+    let target = total / 2;
+
+    assert_eq!(
+        control(&srv, &pb, json!({"seekTick": total + 1}))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let resp = control(&srv, &pb, json!({"seekTick": target})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let s = wait_for_summary(&srv, &pb, "seek target", |s| {
+        s["paused"].as_bool() == Some(true) && s["tick"].as_u64() == Some(target)
+    })
+    .await;
+    assert_eq!(s["status"].as_str(), Some("Running"));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(get_summary(&srv, &pb).await["tick"].as_u64(), Some(target));
+
+    // Seeking backwards is not supported.
+    assert_eq!(
+        control(&srv, &pb, json!({"seekTick": target - 1}))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn e2e_replay_divergence_is_reported_logged_and_playback_continues() {
+    use std::io::{Read, Write};
+
+    let srv = spawn_test_server().await;
+    let source = record_short_match(&srv, 910403).await;
+
+    // Simulate "the game code changed since recording" by tampering with one recorded order.
+    let src_path = srv
+        .state
+        .replays_dir
+        .join(format!("match_{source}.replay.jsonl.gz"));
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(std::fs::File::open(&src_path).unwrap())
+        .read_to_string(&mut text)
+        .unwrap();
+    let mut tampered = false;
+    let out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            let mut v: Value = serde_json::from_str(l).unwrap();
+            if !tampered && v["kind"] == "commands" {
+                v["cmds"] = json!([{ "setPolicy": { "techShare": 0.0, "shipShare": 1.0, "colonizeVsAttackBias": 0.0 } }]);
+                tampered = true;
+            }
+            v.to_string()
+        })
+        .collect();
+    assert!(tampered);
+    let fake_id = "tampered0001";
+    let fake_path = srv
+        .state
+        .replays_dir
+        .join(format!("match_{fake_id}.replay.jsonl.gz"));
+    let mut enc = flate2::write::GzEncoder::new(
+        std::fs::File::create(&fake_path).unwrap(),
+        flate2::Compression::default(),
+    );
+    enc.write_all((out.join("\n") + "\n").as_bytes()).unwrap();
+    enc.finish().unwrap();
+
+    let (pb, total) = start_playback(&srv, fake_id).await;
+    control(&srv, &pb, json!({"paused": false, "speedMult": 100.0})).await;
+    let done = wait_for_summary(&srv, &pb, "tampered playback end", |s| {
+        s["status"].as_str() == Some("Finished")
+    })
+    .await;
+    let div = done["replayDivergence"]
+        .as_str()
+        .expect("divergence reported");
+    assert!(div.contains("tick"), "{div}");
+    assert_eq!(done["endReason"].as_str(), Some("replayEnd"));
+
+    let anomalies = std::fs::read_to_string(
+        srv.state
+            .logs_dir
+            .join(format!("match_{pb}_anomalies.jsonl")),
+    )
+    .expect("anomaly log written");
+    let rec: Value = serde_json::from_str(anomalies.lines().next().unwrap()).unwrap();
+    assert_eq!(rec["type"].as_str(), Some("replayDivergence"));
+    assert_eq!(rec["sourceMatchId"].as_str(), Some(fake_id));
+    assert!(rec["divergence"]["kind"].is_string());
+    // Playback continued past the divergence ("what if") to the end of the recording or a victory.
+    let div_tick = rec["tick"].as_u64().unwrap();
+    let end_tick = done["tick"].as_u64().unwrap();
+    assert!(end_tick > div_tick, "stopped at divergence ({div_tick})");
+    assert!(end_tick <= total);
+}
+
+#[tokio::test]
+async fn e2e_replay_play_requires_admin_token_when_set() {
+    let srv = spawn_test_server_with_admin(Some("s3cret".to_string())).await;
+    let resp = srv
+        .client
+        .post(format!("{}/api/v1/replays/whatever1/play", srv.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let resp = srv
+        .client
+        .post(format!("{}/api/v1/replays/whatever1/play", srv.base_url))
+        .header("x-admin-token", "s3cret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = srv
+        .client
+        .post(format!("{}/api/v1/replays/..%2Fetc/play", srv.base_url))
+        .header("x-admin-token", "s3cret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

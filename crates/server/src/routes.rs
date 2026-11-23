@@ -20,8 +20,8 @@ use crate::match_runner::{
 use crate::mcp;
 use crate::models::{
     ApiErrorBody, CreateMatchRequest, CreateMatchResponse, ExecutionMode, MatchControlRequest,
-    MatchPublicSummary, MatchStatus, ObservationEnvelope, SpectatorWsMessage,
-    SubmitCommandsRequest, SubmitCommandsResponse,
+    MatchPublicSummary, MatchStatus, ObservationEnvelope, ReplayFileInfo, SpectatorWsMessage,
+    StartPlaybackResponse, SubmitCommandsRequest, SubmitCommandsResponse,
 };
 use crate::openapi::build_openapi_spec;
 
@@ -203,6 +203,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/matches/{id}/export-state", get(get_export_state))
         .route("/api/v1/matches/{id}/anomalies", get(get_anomalies))
         .route("/api/v1/matches/{id}/replay", get(get_replay))
+        .route("/api/v1/replays", get(list_replays))
+        .route("/api/v1/replays/{id}/play", post(start_replay_playback))
         .route("/ws/matches/{id}/spectate", get(ws_spectate))
         .layer(cors)
         .with_state(state)
@@ -485,8 +487,37 @@ async fn control_match(
         if let Some(p) = req.paused {
             guard.paused = p;
         }
+        if guard.playback.is_some()
+            && (req.abort == Some(true) || req.execution_mode == Some(ExecutionMode::LockstepEpoch))
+        {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "replay_playback",
+                "A replay playback cannot be aborted or switched to lockstep; DELETE it to stop",
+            ));
+        }
+        if let Some(target) = req.seek_tick {
+            let now = guard.sim.ticks;
+            let Some(pb) = guard.playback.as_mut() else {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "not_a_playback",
+                    "seekTick is only supported for replay playbacks",
+                ));
+            };
+            let total = pb.cursor.total_ticks();
+            if target <= now || target > total {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_seek",
+                    format!("seekTick must be after the current tick {now} and at most {total}"),
+                ));
+            }
+            pb.seek_target = Some(target);
+            guard.paused = false;
+        }
         if let Some(sm) = req.speed_mult {
-            let clamped = sm.clamp(0.05, 20.0);
+            let clamped = sm.clamp(0.05, guard.max_speed);
             guard.speed_mult = clamped;
             guard.tick_delay_ms = speed_to_tick_delay_ms(clamped);
             guard.frame_stride_ticks = speed_to_frame_stride(clamped);
@@ -640,6 +671,13 @@ async fn submit_commands(
 
     let (epoch, commands_queued, waiting_for_seats, should_notify, command_feedback) = {
         let mut guard = handle.inner.write().await;
+        if guard.playback.is_some() {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "replay_playback",
+                "This match is a replay playback and does not accept orders",
+            ));
+        }
         if guard.status == MatchStatus::Aborted {
             return Err(api_error(
                 StatusCode::CONFLICT,
@@ -870,7 +908,7 @@ async fn get_replay(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ApiErrorBody>)> {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+    if !is_valid_match_id(&id) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
             "invalid_match_id",
@@ -899,6 +937,143 @@ async fn get_replay(
             ),
         ],
         bytes,
+    ))
+}
+
+fn is_valid_match_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Reads header/footer metadata of one replay file for the replay list.
+fn replay_file_info(path: &std::path::Path, match_id: String) -> ReplayFileInfo {
+    use sistars_engine::replay::{read_file, ReplayLine};
+    let meta = std::fs::metadata(path).ok();
+    let mut info = ReplayFileInfo {
+        match_id,
+        file_size: meta.as_ref().map_or(0, |m| m.len()),
+        modified_ms: meta
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as u64),
+        ..Default::default()
+    };
+    let lines = match read_file(path) {
+        Ok(l) => l,
+        Err(e) => {
+            info.error = Some(e);
+            return info;
+        }
+    };
+    if let Some(ReplayLine::Header(h)) = lines.first() {
+        info.scenario_name = Some(h.scenario_name.clone());
+        info.seed = Some(h.seed);
+        info.engine_commit = Some(h.engine_commit.clone());
+        info.num_empires = Some(h.races.len());
+        info.galaxy_size = Some(
+            h.galaxy_size
+                .clone()
+                .unwrap_or_else(|| format!("{:?}", h.sim_config.galaxy_size).to_lowercase()),
+        );
+        if let Some(ReplayLine::Footer(f)) = lines.last() {
+            info.end_reason = Some(f.end_reason.clone());
+            info.final_tick = Some(f.final_tick);
+            info.final_year = Some(f.final_year);
+            info.winner = f.winner;
+            info.winner_name = f
+                .winner
+                .and_then(|w| h.races.get(w))
+                .map(|r| r.name.clone());
+            info.action_count = Some(f.action_count);
+        } else {
+            info.error = Some("replay has no footer (truncated)".to_string());
+        }
+    } else {
+        info.error = Some("replay has no header".to_string());
+    }
+    info
+}
+
+/// Lists recorded replays in `replays_dir`, newest first.
+async fn list_replays(State(state): State<Arc<AppState>>) -> Json<Vec<ReplayFileInfo>> {
+    let dir = state.replays_dir.clone();
+    let list = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(id) = name
+                .strip_prefix("match_")
+                .and_then(|r| r.strip_suffix(".replay.jsonl.gz"))
+            else {
+                continue;
+            };
+            if is_valid_match_id(id) {
+                out.push(replay_file_info(&entry.path(), id.to_string()));
+            }
+        }
+        out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+        out
+    })
+    .await
+    .unwrap_or_default();
+    Json(list)
+}
+
+/// Starts a server-side playback of a recorded match (admin-gated like `control`).
+/// The playback is a regular match id the browser watches through the spectator WebSocket.
+async fn start_replay_playback(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<StartPlaybackResponse>), (StatusCode, Json<ApiErrorBody>)> {
+    require_admin(&state, &headers, "start a replay playback")?;
+    if !is_valid_match_id(&id) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_match_id",
+            "Invalid match id",
+        ));
+    }
+    let path = state.replays_dir.join(replay_file_name(&id));
+    let lines = tokio::task::spawn_blocking(move || sistars_engine::replay::read_file(&path))
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "replay_read_failed",
+                e.to_string(),
+            )
+        })?
+        .map_err(|e| api_error(StatusCode::NOT_FOUND, "replay_not_found", e))?;
+    let playback_id = Uuid::new_v4().simple().to_string()[..12].to_string();
+    let handle = MatchHandle::spawn_playback(
+        playback_id.clone(),
+        id.clone(),
+        lines,
+        state.logs_dir.clone(),
+    )
+    .map_err(|e| api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_replay", e))?;
+    let total_ticks = {
+        let guard = handle.inner.read().await;
+        guard
+            .playback
+            .as_ref()
+            .map_or(0, |p| p.cursor.total_ticks())
+    };
+    state
+        .matches
+        .write()
+        .await
+        .insert(playback_id.clone(), handle);
+    Ok((
+        StatusCode::CREATED,
+        Json(StartPlaybackResponse {
+            match_id: playback_id,
+            replay_of: id,
+            total_ticks,
+        }),
     ))
 }
 

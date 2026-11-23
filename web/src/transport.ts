@@ -2,6 +2,7 @@ import type {
   ArenaFeedEvent,
   ArenaMatchStatus,
   ArenaMatchSummary,
+  ReplayFileInfo,
   CoEvolutionResult,
   CreateArenaMatchResponse,
   DebrisFieldView,
@@ -414,6 +415,41 @@ export async function deleteArenaMatch(serverUrl: string, matchId: string): Prom
   return resp.ok || resp.status === 204;
 }
 
+export async function fetchReplays(serverUrl: string): Promise<ReplayFileInfo[]> {
+  const base = normalizeServerUrl(serverUrl);
+  const resp = await fetch(`${base}/api/v1/replays`);
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status} listing replays`);
+  }
+  return (await resp.json()) as ReplayFileInfo[];
+}
+
+/** Starts a server-side playback of a recorded match; returns the playback match id. */
+export async function startReplayPlayback(
+  serverUrl: string,
+  sourceMatchId: string,
+): Promise<{ matchId: string; replayOf: string; totalTicks: number }> {
+  const base = normalizeServerUrl(serverUrl);
+  const resp = await fetch(`${base}/api/v1/replays/${encodeURIComponent(sourceMatchId)}/play`, {
+    method: 'POST',
+  });
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try {
+      const body = (await resp.json()) as { message?: string };
+      if (body.message) msg = body.message;
+    } catch {
+      // keep status text
+    }
+    throw new Error(msg);
+  }
+  return (await resp.json()) as { matchId: string; replayOf: string; totalTicks: number };
+}
+
+export function replayDownloadUrl(serverUrl: string, matchId: string): string {
+  return `${normalizeServerUrl(serverUrl)}/api/v1/matches/${encodeURIComponent(matchId)}/replay`;
+}
+
 export async function abortArenaMatch(serverUrl: string, matchId: string): Promise<boolean> {
   const base = normalizeServerUrl(serverUrl);
   const resp = await fetch(`${base}/api/v1/matches/${encodeURIComponent(matchId)}/control`, {
@@ -773,6 +809,7 @@ export class RemoteArenaTransport implements SimTransport {
     tickDelayMs?: number;
     frameStrideTicks?: number;
     stepTicks?: number;
+    seekTick?: number;
   }): void {
     if (this.disposed) return;
     void fetch(`${this.serverUrl}/api/v1/matches/${encodeURIComponent(this.matchId)}/control`, {
@@ -813,6 +850,11 @@ export class RemoteArenaTransport implements SimTransport {
 
   public step(ticks: number): void {
     this.postControl({ paused: true, stepTicks: ticks });
+  }
+
+  /** Replay playback only: run ahead to `tick` (forward only), then pause. */
+  public seek(tick: number): void {
+    this.postControl({ seekTick: Math.floor(tick) });
   }
 
   public newGalaxy(): void {}

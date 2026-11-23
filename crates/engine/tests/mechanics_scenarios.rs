@@ -2930,3 +2930,46 @@ fn replay_reports_first_divergence_when_an_input_changes() {
     };
     assert!(t >= 110, "divergence at {t} precedes the tampered input");
 }
+
+#[test]
+fn replay_cursor_reports_divergence_once_and_keeps_playing() {
+    use sistars_engine::replay::{build_simulation, ReplayCursor, ReplayLine};
+    let mut lines = record_replay_match(400);
+    for line in lines.iter_mut() {
+        if let ReplayLine::Commands { t: 60, cmds, .. } = line {
+            *cmds = vec![StrategicCommand::SetPolicy(
+                sistars_engine::types::AgentPolicyPatch {
+                    tech_share: Some(0.0),
+                    ship_share: Some(1.0),
+                    ..Default::default()
+                },
+            )];
+        }
+    }
+    let mut cursor = ReplayCursor::new(lines).unwrap();
+    assert_eq!(cursor.total_ticks(), 400);
+    let mut sim = build_simulation(cursor.header());
+    sim.action_log = Some(Vec::new());
+    let mut reported = 0;
+    let mut applied_after = 0;
+    while sim.ticks < cursor.total_ticks() {
+        let applied = cursor.apply_inputs(&mut sim);
+        if cursor.divergence.is_some() {
+            applied_after += applied
+                .iter()
+                .filter(|l| matches!(l, ReplayLine::Commands { .. }))
+                .count();
+        }
+        sim.step_tick(false);
+        if cursor.check_after_tick(&mut sim).is_some() {
+            reported += 1;
+        }
+    }
+    assert_eq!(reported, 1, "divergence is reported exactly once");
+    assert!(cursor.divergence.as_ref().unwrap().tick() >= 60);
+    assert!(
+        applied_after > 0,
+        "agent orders keep being injected after divergence"
+    );
+    assert_eq!(sim.ticks, 400);
+}

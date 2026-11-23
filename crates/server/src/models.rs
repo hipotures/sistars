@@ -165,8 +165,22 @@ pub struct MatchPublicSummary {
     pub speed_mult: f32,
     pub tick_delay_ms: u64,
     pub winner: Option<usize>,
-    /// Why the match ended (`"victory"`, `"aborted"`), `None` while it is still in progress.
+    /// Why the match ended (`"victory"`, `"aborted"`, `"replayEnd"`), `None` while in progress.
     pub end_reason: Option<String>,
+    /// Source match id when this is a playback of a recorded replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_of: Option<String>,
+    /// Last tick of the recording being played back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_total_ticks: Option<u64>,
+    /// First divergence of the playback from the recording (current code differs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_divergence: Option<String>,
+    /// Git commit of the engine that recorded the replay being played back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_recorded_commit: Option<String>,
+    /// Upper bound for `speedMult` (20 live, 100 playback).
+    pub max_speed: f32,
     pub galaxy_size: String,
     pub total_planets: usize,
     pub planet_count: usize,
@@ -205,6 +219,8 @@ pub struct MatchControlRequest {
     pub force_start: Option<bool>,
     /// Admin-only: forcibly end the match with status `Aborted` and no winner.
     pub abort: Option<bool>,
+    /// Playback only: run ahead without delay to this tick, then pause.
+    pub seek_tick: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +283,7 @@ pub enum ArenaFeedKind {
     EpochStatus,
     MatchFinished,
     MatchAborted,
+    ReplayDivergence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,4 +363,46 @@ pub enum SpectatorWsMessage {
 pub struct ApiErrorBody {
     pub error: String,
     pub message: String,
+}
+
+/// One recorded match in `GET /api/v1/replays`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayFileInfo {
+    pub match_id: String,
+    pub file_size: u64,
+    pub modified_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scenario_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_empires: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub galaxy_size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_tick: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_year: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub winner: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub winner_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_count: Option<u64>,
+    /// Set when the file could not be read or parsed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartPlaybackResponse {
+    pub match_id: String,
+    pub replay_of: String,
+    pub total_ticks: u64,
 }

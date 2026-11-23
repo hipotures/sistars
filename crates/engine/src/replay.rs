@@ -222,7 +222,12 @@ pub fn parse_jsonl(text: &str) -> Result<Vec<ReplayLine>, String> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Divergence {
     GovernorAction {
         t: u64,
@@ -240,6 +245,229 @@ pub enum Divergence {
         expected: String,
         actual: String,
     },
+}
+
+impl Divergence {
+    pub fn tick(&self) -> u64 {
+        match self {
+            Divergence::GovernorAction { t, .. }
+            | Divergence::Hash { t, .. }
+            | Divergence::FinalHash { t, .. } => *t,
+        }
+    }
+
+    /// One-line human-readable description (feed, UI, CLI).
+    pub fn describe(&self) -> String {
+        match self {
+            Divergence::GovernorAction {
+                t,
+                emp,
+                expected,
+                actual,
+            } => format!(
+                "tick {t}, empire #{}: governor action differs (recorded {}, replayed {})",
+                emp + 1,
+                expected
+                    .as_ref()
+                    .map_or("nothing".to_string(), |a| format!("{a:?}")),
+                actual
+                    .as_ref()
+                    .map_or("nothing".to_string(), |a| format!("{a:?}")),
+            ),
+            Divergence::Hash {
+                t,
+                expected,
+                actual,
+            } => format!(
+                "state hash differs after tick {t} (recorded {expected}, replayed {actual})"
+            ),
+            Divergence::FinalHash {
+                t,
+                expected,
+                actual,
+            } => format!(
+                "final state hash differs at tick {t} (recorded {expected}, replayed {actual})"
+            ),
+        }
+    }
+}
+
+/// Steps through a replay alongside a simulation: injects recorded inputs before each tick and
+/// compares regenerated governor actions / state hashes after it. After the first divergence
+/// comparison stops, but inputs keep being injected ("what if" continuation).
+pub struct ReplayCursor {
+    lines: Vec<ReplayLine>,
+    idx: usize,
+    checking: bool,
+    header: ReplayHeader,
+    footer: Option<ReplayFooter>,
+    total_ticks: u64,
+    expected_gov: Vec<(usize, GovernorAction)>,
+    expected_hash: Option<String>,
+    pub divergence: Option<Divergence>,
+    pub governor_actions_checked: u64,
+    pub hashes_checked: u64,
+}
+
+impl ReplayCursor {
+    pub fn new(lines: Vec<ReplayLine>) -> Result<Self, String> {
+        let header = match lines.first() {
+            Some(ReplayLine::Header(h)) => (**h).clone(),
+            _ => return Err("replay does not start with a header line".to_string()),
+        };
+        let footer = lines.iter().rev().find_map(|l| match l {
+            ReplayLine::Footer(f) => Some((**f).clone()),
+            _ => None,
+        });
+        let total_ticks = footer
+            .as_ref()
+            .map(|f| f.final_tick)
+            .or_else(|| lines.iter().filter_map(line_tick).max())
+            .unwrap_or(0);
+        Ok(Self {
+            lines,
+            idx: 1,
+            checking: true,
+            header,
+            footer,
+            total_ticks,
+            expected_gov: Vec::new(),
+            expected_hash: None,
+            divergence: None,
+            governor_actions_checked: 0,
+            hashes_checked: 0,
+        })
+    }
+
+    pub fn header(&self) -> &ReplayHeader {
+        &self.header
+    }
+
+    pub fn footer(&self) -> Option<&ReplayFooter> {
+        self.footer.as_ref()
+    }
+
+    /// Last tick of the recording (where playback ends).
+    pub fn total_ticks(&self) -> u64 {
+        self.total_ticks
+    }
+
+    /// Disables comparisons (e.g. when tracing was forced on and divergence is expected).
+    pub fn set_checking(&mut self, on: bool) {
+        self.checking = on;
+    }
+
+    /// Call before `step_tick`: applies agent orders and agent-mask changes recorded at the
+    /// current tick and returns the input lines (Commands / Note / AgentMask) for feed display.
+    /// Returned `Commands` lines carry the feedback of the current engine, not the recorded one.
+    pub fn apply_inputs(&mut self, sim: &mut Simulation) -> Vec<ReplayLine> {
+        let t = sim.ticks;
+        let mut applied = Vec::new();
+        self.expected_gov.clear();
+        self.expected_hash = None;
+        while self.idx < self.lines.len() {
+            let line = &self.lines[self.idx];
+            let Some(lt) = line_tick(line) else {
+                self.idx += 1;
+                continue;
+            };
+            // Governor/hash lines of tick t (hash stamped t+1) follow the inputs of tick t.
+            if lt > t + 1 || (lt == t + 1 && !matches!(line, ReplayLine::Hash { .. })) {
+                break;
+            }
+            if lt < t {
+                // Inputs from ticks already passed (e.g. cursor created mid-way): skip.
+                self.idx += 1;
+                continue;
+            }
+            match line {
+                ReplayLine::Commands { emp, cmds, src, .. } if lt == t => {
+                    // Return the feedback the current engine gave (may differ after divergence).
+                    let fb = sim.submit_commands(*emp, cmds.clone());
+                    applied.push(ReplayLine::Commands {
+                        t,
+                        src: *src,
+                        emp: *emp,
+                        cmds: cmds.clone(),
+                        fb,
+                    });
+                }
+                ReplayLine::AgentMask { mask, .. } if lt == t => {
+                    sim.external_agent_mask = *mask;
+                    applied.push(line.clone());
+                }
+                ReplayLine::Note { .. } if lt == t => applied.push(line.clone()),
+                ReplayLine::Governor { emp, a, .. } if lt == t => {
+                    self.expected_gov.push((*emp, a.clone()));
+                }
+                ReplayLine::Hash { h, .. } if lt == t + 1 => {
+                    self.expected_hash = Some(h.clone());
+                }
+                _ => {}
+            }
+            self.idx += 1;
+        }
+        applied
+    }
+
+    /// Call after `step_tick`: drains the simulation's governor action log and compares it and
+    /// the recorded state hash. Returns the divergence the first time one is detected.
+    pub fn check_after_tick(&mut self, sim: &mut Simulation) -> Option<Divergence> {
+        let t = sim.ticks.saturating_sub(1);
+        let actual_gov: Vec<(usize, GovernorAction)> = sim
+            .action_log
+            .as_mut()
+            .map(|l| l.drain(..).map(|(_, e, a)| (e, a)).collect())
+            .unwrap_or_default();
+        if !self.checking {
+            return None;
+        }
+        let n = self.expected_gov.len().max(actual_gov.len());
+        for i in 0..n {
+            let exp = self.expected_gov.get(i);
+            let act = actual_gov.get(i);
+            if exp != act {
+                return self.diverged(Divergence::GovernorAction {
+                    t,
+                    emp: exp.or(act).map(|(e, _)| *e).unwrap_or(0),
+                    expected: exp.map(|(_, a)| a.clone()),
+                    actual: act.map(|(_, a)| a.clone()),
+                });
+            }
+        }
+        self.governor_actions_checked += actual_gov.len() as u64;
+        if let Some(exp) = self.expected_hash.take() {
+            let act = format_hash(sim.state_hash());
+            self.hashes_checked += 1;
+            if exp != act {
+                return self.diverged(Divergence::Hash {
+                    t: sim.ticks,
+                    expected: exp,
+                    actual: act,
+                });
+            }
+        }
+        if let Some(f) = self.footer.as_ref() {
+            if sim.ticks == f.final_tick {
+                let act = format_hash(sim.state_hash());
+                if act != f.final_hash {
+                    let expected = f.final_hash.clone();
+                    return self.diverged(Divergence::FinalHash {
+                        t: sim.ticks,
+                        expected,
+                        actual: act,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn diverged(&mut self, d: Divergence) -> Option<Divergence> {
+        self.checking = false;
+        self.divergence = Some(d.clone());
+        Some(d)
+    }
 }
 
 #[derive(Debug)]
@@ -262,127 +490,33 @@ pub fn verify(
     until_tick: Option<u64>,
     force_trace: bool,
 ) -> Result<VerifyReport, String> {
-    let header = match lines.first() {
-        Some(ReplayLine::Header(h)) => (**h).clone(),
-        _ => return Err("replay does not start with a header line".to_string()),
-    };
-    let footer = lines.iter().rev().find_map(|l| match l {
-        ReplayLine::Footer(f) => Some((**f).clone()),
-        _ => None,
-    });
-    let check = !(force_trace && !header.debug_audit);
+    let mut cursor = ReplayCursor::new(lines.to_vec())?;
+    let header = cursor.header().clone();
     let mut sim = build_simulation(&header);
     if force_trace {
         sim.trace_enabled = true;
         sim.auditor.prune_valid_events = true;
+        cursor.set_checking(header.debug_audit);
     }
     sim.action_log = Some(Vec::new());
+    let stop = until_tick.map_or(cursor.total_ticks(), |u| u.min(cursor.total_ticks()));
 
-    let last_tick = footer
-        .as_ref()
-        .map(|f| f.final_tick)
-        .or_else(|| lines.iter().filter_map(line_tick).max())
-        .unwrap_or(0);
-    let stop = until_tick.map_or(last_tick, |u| u.min(last_tick));
-
-    let mut idx = 1usize;
-    let mut governor_actions_checked = 0u64;
-    let mut hashes_checked = 0u64;
-    let mut divergence = None;
-
-    'outer: while sim.ticks < stop {
-        let t = sim.ticks;
-        // Inputs recorded at this tick are applied before stepping, as on the server.
-        // Governor/hash lines for this tick come after them in the log.
-        let mut expected_gov: Vec<(usize, GovernorAction)> = Vec::new();
-        let mut expected_hash: Option<String> = None;
-        while idx < lines.len() {
-            let Some(lt) = line_tick(&lines[idx]) else {
-                idx += 1;
-                continue;
-            };
-            if lt > t + 1 || (lt == t + 1 && !matches!(lines[idx], ReplayLine::Hash { .. })) {
-                break;
-            }
-            match &lines[idx] {
-                ReplayLine::Commands { emp, cmds, .. } if lt == t => {
-                    let _ = sim.submit_commands(*emp, cmds.clone());
-                }
-                ReplayLine::AgentMask { mask, .. } if lt == t => {
-                    sim.external_agent_mask = *mask;
-                }
-                ReplayLine::Governor { emp, a, .. } if lt == t => {
-                    expected_gov.push((*emp, a.clone()));
-                }
-                ReplayLine::Hash { h, .. } if lt == t + 1 => {
-                    expected_hash = Some(h.clone());
-                }
-                _ => {}
-            }
-            idx += 1;
-        }
-
+    while sim.ticks < stop {
+        cursor.apply_inputs(&mut sim);
         sim.step_tick(false);
         let _ = sim.drain_events();
-        let actual_gov: Vec<(usize, GovernorAction)> = sim
-            .action_log
-            .as_mut()
-            .map(|l| l.drain(..).map(|(_, e, a)| (e, a)).collect())
-            .unwrap_or_default();
-
-        if check {
-            let n = expected_gov.len().max(actual_gov.len());
-            for i in 0..n {
-                let exp = expected_gov.get(i);
-                let act = actual_gov.get(i);
-                if exp != act {
-                    divergence = Some(Divergence::GovernorAction {
-                        t,
-                        emp: exp.or(act).map(|(e, _)| *e).unwrap_or(0),
-                        expected: exp.map(|(_, a)| a.clone()),
-                        actual: act.map(|(_, a)| a.clone()),
-                    });
-                    break 'outer;
-                }
-            }
-            governor_actions_checked += actual_gov.len() as u64;
-            if let Some(exp) = expected_hash {
-                let act = format_hash(sim.state_hash());
-                hashes_checked += 1;
-                if exp != act {
-                    divergence = Some(Divergence::Hash {
-                        t: sim.ticks,
-                        expected: exp,
-                        actual: act,
-                    });
-                    break;
-                }
-            }
-        }
-    }
-
-    if check && divergence.is_none() {
-        if let Some(f) = footer.as_ref() {
-            if sim.ticks == f.final_tick {
-                let act = format_hash(sim.state_hash());
-                if act != f.final_hash {
-                    divergence = Some(Divergence::FinalHash {
-                        t: sim.ticks,
-                        expected: f.final_hash.clone(),
-                        actual: act,
-                    });
-                }
-            }
+        if cursor.check_after_tick(&mut sim).is_some() {
+            break;
         }
     }
 
     Ok(VerifyReport {
         header,
-        footer,
+        footer: cursor.footer().cloned(),
         ticks_run: sim.ticks,
-        governor_actions_checked,
-        hashes_checked,
-        divergence,
+        governor_actions_checked: cursor.governor_actions_checked,
+        hashes_checked: cursor.hashes_checked,
+        divergence: cursor.divergence.clone(),
         sim,
     })
 }

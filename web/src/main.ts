@@ -11,6 +11,7 @@ import {
   type PersistedSettings,
 } from './settingsStorage';
 import { UiController } from './ui';
+import { ReplayPanel } from './replayPanel';
 import {
   bindMcpSeat,
   createArenaMatch,
@@ -18,14 +19,18 @@ import {
   abortArenaMatch,
   fetchArenaMatches,
   fetchMcpSeats,
+  fetchReplays,
   forceStartArenaMatch,
   LocalWasmTransport,
   normalizeServerUrl,
   RemoteArenaTransport,
+  replayDownloadUrl,
+  startReplayPlayback,
   type SimTransport,
   type TransportFrame,
 } from './transport';
 import type {
+  ArenaMatchSummary,
   EquilibriumMode,
   FleetView,
   GalaxyShape,
@@ -419,7 +424,8 @@ async function bootstrap(): Promise<void> {
     arenaServerUrl = normalizeServerUrl(serverUrl);
     ui.setArenaServerUrl(arenaServerUrl);
     try {
-      const list = await fetchArenaMatches(arenaServerUrl);
+      // Replay playbacks are driven from the Replays drawer, not listed among live matches.
+      const list = (await fetchArenaMatches(arenaServerUrl)).filter((m) => !m.replayOf);
       ui.setArenaMatchList(list, preferredMatchId ?? activeArenaMatchId ?? undefined);
       const seats = await fetchMcpSeats(arenaServerUrl);
       ui.setMcpSeats(seats, preferredMatchId ?? activeArenaMatchId ?? list[0]?.matchId ?? null);
@@ -435,10 +441,40 @@ async function bootstrap(): Promise<void> {
     }
   };
 
+  // Single status handler for remote matches (the transport keeps only one handler, so the
+  // pre-init and post-init registrations must do the same work).
+  const handleArenaStatus = (summary: ArenaMatchSummary): void => {
+    if (summary.executionMode) {
+      activeArenaExecMode = summary.executionMode;
+    }
+    if (summary.paused !== undefined) {
+      const srvSpeed = summary.paused ? 0 : (summary.speedMult ?? 1);
+      speed = srvSpeed;
+      if (srvSpeed > 0) lastNonZeroSpeed = srvSpeed;
+      ui.setActiveSpeedButton(srvSpeed);
+    }
+    ui.updateArenaStatus(summary);
+    replayPanel.updateSummary(summary);
+    void fetchMcpSeats(arenaServerUrl).then((seats) => {
+      ui.setMcpSeats(seats, activeArenaMatchId);
+    });
+  };
+
+  const refreshReplays = async (serverUrl: string): Promise<void> => {
+    replayPanel.setListMessage('Loading…');
+    try {
+      replayPanel.setReplays(await fetchReplays(normalizeServerUrl(serverUrl)));
+    } catch (err) {
+      replayPanel.setListMessage(
+        `Server unreachable (${err instanceof Error ? err.message : 'network error'})`,
+      );
+    }
+  };
+
   const bindTransportHandlers = (t: SimTransport): void => {
     t.onFrame((msg) => handleTransportFrame(msg));
     t.onArenaFeed?.((ev) => ui.appendArenaFeedEvent(ev));
-    t.onArenaStatus?.((summary) => ui.updateArenaStatus(summary));
+    t.onArenaStatus?.((summary) => handleArenaStatus(summary));
     t.onConnectionState?.((state, msg) => ui.setArenaConnectionState(state, msg));
   };
 
@@ -452,21 +488,7 @@ async function bootstrap(): Promise<void> {
 
     const nextTransport = new RemoteArenaTransport(arenaServerUrl, matchId);
     nextTransport.onArenaFeed((ev) => ui.appendArenaFeedEvent(ev));
-    nextTransport.onArenaStatus((summary) => {
-      if (summary.executionMode) {
-        activeArenaExecMode = summary.executionMode;
-      }
-      if (summary.paused !== undefined) {
-        const srvSpeed = summary.paused ? 0 : (summary.speedMult ?? 1);
-        speed = srvSpeed;
-        if (srvSpeed > 0) lastNonZeroSpeed = srvSpeed;
-        ui.setActiveSpeedButton(srvSpeed);
-      }
-      ui.updateArenaStatus(summary);
-      void fetchMcpSeats(arenaServerUrl).then((seats) => {
-        ui.setMcpSeats(seats, activeArenaMatchId);
-      });
-    });
+    nextTransport.onArenaStatus((summary) => handleArenaStatus(summary));
     nextTransport.onConnectionState((state, msg) => ui.setArenaConnectionState(state, msg));
 
     try {
@@ -499,6 +521,7 @@ async function bootstrap(): Promise<void> {
 
   const switchToLocalWasm = async (): Promise<void> => {
     ui.setTransportMode('local');
+    replayPanel.updateSummary(null);
     if (transport.mode === 'local') return;
 
     const nextTransport = new LocalWasmTransport();
@@ -924,8 +947,77 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  // Replays drawer: list recorded matches and drive a server-side playback.
+  const replayPanel = new ReplayPanel({
+    onRefresh: (serverUrl) => {
+      void refreshReplays(serverUrl);
+    },
+    onPlay: (serverUrl, sourceMatchId) => {
+      const server = normalizeServerUrl(serverUrl);
+      replayPanel.setHint(`Starting playback of ${sourceMatchId}…`);
+      void startReplayPlayback(server, sourceMatchId)
+        .then(async (res) => {
+          replayPanel.setHint('');
+          await connectToRemoteArena(server, res.matchId);
+        })
+        .catch((err: unknown) => {
+          replayPanel.setHint(
+            `Could not start playback: ${err instanceof Error ? err.message : 'network error'}`,
+          );
+        });
+    },
+    onDownload: (serverUrl, sourceMatchId) => {
+      const a = document.createElement('a');
+      a.href = replayDownloadUrl(serverUrl, sourceMatchId);
+      a.download = `match_${sourceMatchId}.replay.jsonl.gz`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    },
+    onPause: () => {
+      transport.setPaused(true);
+      ui.setActiveSpeedButton(0);
+    },
+    onResume: (s) => {
+      transport.setSpeed(s);
+      ui.setActiveSpeedButton(s);
+    },
+    onStep: () => {
+      transport.step(1);
+    },
+    onSpeed: (s) => {
+      transport.setSpeed(s);
+      ui.setActiveSpeedButton(s);
+    },
+    onSeek: (tick) => {
+      if (transport instanceof RemoteArenaTransport) {
+        transport.seek(tick);
+      }
+    },
+    onStop: () => {
+      const id = activeArenaMatchId;
+      if (!id) return;
+      void deleteArenaMatch(arenaServerUrl, id).then(async (ok) => {
+        if (!ok) {
+          replayPanel.setHint('Could not stop the playback on the server.');
+          return;
+        }
+        activeArenaMatchId = null;
+        replayPanel.updateSummary(null);
+        ui.setArenaConnectionState('disconnected', 'Replay stopped');
+        await refreshArenaMatches(arenaServerUrl);
+      });
+    },
+  });
+  replayPanel.setServerUrl(arenaServerUrl);
+  document.getElementById('tabReplays')?.addEventListener('click', () => {
+    replayPanel.setServerUrl(arenaServerUrl);
+    void refreshReplays(replayPanel.serverUrl());
+  });
+
   // Receive frame buffers from active transport (Local WASM Worker or Remote Arena WebSocket)
   handleTransportFrame = (msg: TransportFrame) => {
+    replayPanel.updateTick(msg.hud.ticks, msg.hud.year);
     const prev = liveBacking;
     liveBacking = {
       planets: msg.planets,

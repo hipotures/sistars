@@ -683,7 +683,7 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
             let guard = h.inner.read().await;
             guard.public_summary()
         };
-        if !include_finished && summary.status.is_over() {
+        if summary.replay_of.is_some() || (!include_finished && summary.status.is_over()) {
             continue;
         }
         let seats_json: Vec<Value> = summary
@@ -831,6 +831,15 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         summary_for_ws,
     ) = {
         let mut guard = handle.inner.write().await;
+        if guard.playback.is_some() {
+            return tool_text_result(
+                format!(
+                    "Validation error: match '{}' is a replay playback and cannot be joined.",
+                    parsed.match_id
+                ),
+                true,
+            );
+        }
         if guard.status.is_over() {
             return tool_text_result(
                 format!(
@@ -1184,9 +1193,9 @@ async fn handle_tool_submit_orders(
     let applied_commands = parsed.commands.len();
     let (resp_json, feed_events, should_notify_barrier) = {
         let mut guard = handle.inner.write().await;
-        if guard.status.is_over() {
+        if guard.status.is_over() || guard.playback.is_some() {
             return tool_text_result(
-                "Validation error: match has already ended (finished or aborted).".to_string(),
+                "Validation error: match has already ended (finished or aborted) or is a replay playback.".to_string(),
                 true,
             );
         }

@@ -147,6 +147,8 @@ The arena server records every match as a replay: the initial state (seed, confi
   ```
   It reports `OK` or the first divergence (tick, empire, recorded vs replayed governor action, or state hash). Replays always run on the current code; for a bit-exact rerun of an old match, check out the `engineCommit` from its header.
 
+**Watching a replay:** open **🎬 Replays** in the web UI, pick a recorded match and press **▶ Play**. The server re-simulates it with the current code as a playback match (`POST /api/v1/replays/{id}/play`, admin-gated like `control`; `GET /api/v1/replays` lists recordings) and the browser watches it like an arena match. Controls: play/pause, step, speed 0.1x / 1x / 10x or custom 0.1–100x, jump forward to a tick, stop (deletes the playback). Playbacks accept no agent orders and are never re-recorded. If the current code diverges from the recording, the panel and feed show a warning, the details go to `logs/match_<playbackId>_anomalies.jsonl`, and playback continues as a what-if run.
+
 An admin can end a stuck match with `POST /api/v1/matches/{id}/control {"abort": true}` (or the **⏹ Abort** button in the arena bar): status becomes `Aborted` with no winner. Abort and `DELETE` require `SISTARS_ADMIN_TOKEN` when it is set; agents cannot trigger them.
 
 ## External Data & Attribution

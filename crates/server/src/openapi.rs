@@ -487,7 +487,8 @@ pub fn build_openapi_spec() -> Value {
                         "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
                         "stepTicks": { "type": "integer", "minimum": 1, "maximum": 100, "nullable": true },
                         "forceStart": { "type": "boolean", "nullable": true, "description": "Immediately transitions a WaitingForAgents lobby to Running (startReason='manualStart')." },
-                        "abort": { "type": "boolean", "nullable": true, "description": "Admin only: forcibly ends the match with status 'Aborted' and no winner." }
+                        "abort": { "type": "boolean", "nullable": true, "description": "Admin only: forcibly ends the match with status 'Aborted' and no winner." },
+                        "seekTick": { "type": "integer", "nullable": true, "description": "Replay playback only: run ahead to this tick (forward only, at most replayTotalTicks), then pause." }
                     }
                 },
                 "CreateMatchRequest": {
@@ -664,6 +665,38 @@ pub fn build_openapi_spec() -> Value {
                     "responses": {
                         "204": { "description": "Match deleted" },
                         "404": { "description": "Match not found" }
+                    }
+                }
+            },
+            "/api/v1/matches/{id}/replay": {
+                "get": {
+                    "summary": "Download the gzip JSONL replay of an ended match (also after it was deleted)",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "200": { "description": "application/gzip replay file" },
+                        "404": { "description": "No replay written for this match yet" }
+                    }
+                }
+            },
+            "/api/v1/replays": {
+                "get": {
+                    "summary": "List recorded match replays on this server (newest first)",
+                    "responses": {
+                        "200": {
+                            "description": "Array of {matchId, fileSize, modifiedMs, scenarioName, seed, engineCommit, numEmpires, galaxySize, endReason, finalTick, finalYear, winner, winnerName, actionCount, error?}"
+                        }
+                    }
+                }
+            },
+            "/api/v1/replays/{id}/play": {
+                "post": {
+                    "summary": "Start a server-side playback of a recorded match (admin when SISTARS_ADMIN_TOKEN is set)",
+                    "description": "Spawns a paused playback match fed from the replay log. Watch it via /ws/matches/{matchId}/spectate and drive it with /control (paused, speedMult up to 100, stepTicks, seekTick). Playbacks accept no agent orders, cannot be aborted, are never re-recorded; DELETE stops them. Divergence from the recording is reported in replayDivergence, the feed and logs/match_<playbackId>_anomalies.jsonl.",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "201": { "description": "{matchId (playback), replayOf, totalTicks}" },
+                        "401": { "description": "Admin token required" },
+                        "404": { "description": "Replay not found" }
                     }
                 }
             },
