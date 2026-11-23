@@ -3663,10 +3663,7 @@ export class UiController {
       btnGroup.style.display = 'flex';
       btnGroup.style.gap = '4px';
 
-      const maskedMcpUrl = mcpUrl.replace(
-        /(\/mcp\/)[^/?#]+$/,
-        '$1••••••••••••••••••••••••',
-      );
+      const maskedMcpUrl = '••••••••••••••••';
 
       const copyMcpBtn = document.createElement('button');
       copyMcpBtn.className = 'hud-btn active';
