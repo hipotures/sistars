@@ -2656,6 +2656,55 @@ fn scenario_galactic_dominance_early_warning_alert() {
 }
 
 #[test]
+fn scenario_dominance_alert_above_threshold_explains_settlement_gate() {
+    // 20 planets: 5 Humanoids, 3 Rabbitoids, 12 neutral -> 40% settled (alert zone 35-50%),
+    // Humanoids hold 5/8 = 62.5% of inhabited worlds: above the 60% threshold, but victory is
+    // only evaluated once half the galaxy is settled. The alert must not say "approaching 60%".
+    let races = classic_races().into_iter().take(2).collect();
+    let planets = (0..20)
+        .map(|i| {
+            let owner = if i < 5 {
+                1
+            } else if i < 8 {
+                2
+            } else {
+                0
+            };
+            SandboxPlanet {
+                x: 100.0 + (i as f32) * 60.0,
+                y: 100.0 + (i as f32) * 30.0,
+                owner,
+                pop: if owner > 0 { 40.0 } else { 0.0 },
+                factories: if owner > 0 { 20.0 } else { 0.0 },
+                ..Default::default()
+            }
+        })
+        .collect();
+    let mut sim = Simulation::new_sandbox(
+        SimConfig::default(),
+        races,
+        planets,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+    sim.victory_cfg.planet_share_threshold = 0.60;
+
+    sim.step_tick(true);
+
+    assert!(sim.winner.is_none(), "victory is gated until half the galaxy is settled");
+    let alert = sim
+        .pending_public_alerts
+        .iter()
+        .map(|(_, m)| m.as_str())
+        .find(|m| m.contains("GALACTIC ALERT") && m.contains("Humanoids"))
+        .expect("dominance alert for Humanoids");
+    assert!(!alert.contains("approaching"), "{alert}");
+    assert!(alert.contains("above the 60% Planet Dominance threshold"), "{alert}");
+    assert!(alert.contains("half the galaxy is settled (now 40%)"), "{alert}");
+}
+
+#[test]
 fn scenario_salvage_aborts_and_returns_home_when_debris_vanishes() {
     let races = classic_races().into_iter().take(2).collect();
     let planets = vec![

@@ -5852,20 +5852,46 @@ impl Simulation {
                 } else {
                     0.0
                 };
+                // The share can already exceed the victory threshold while victory is still gated
+                // (it is only evaluated once half the galaxy is settled), so say what is missing
+                // instead of "approaching" a threshold that has been passed.
+                let settled_pct = (inhabited as f32) * 100.0 / (total_planets as f32).max(1.0);
+                let name = &self.empires[e].race.name;
                 let alert_msg = if p_share >= 0.50 {
-                    Some(format!(
-                        "GALACTIC ALERT: {} control {:.0}% of inhabited worlds — approaching {:.0}% Planet Dominance!",
-                        self.empires[e].race.name,
-                        p_share * 100.0,
-                        p_thresh * 100.0
-                    ))
+                    Some(if p_share >= p_thresh {
+                        format!(
+                            "GALACTIC ALERT: {} control {:.0}% of inhabited worlds — above the {:.0}% Planet Dominance threshold; victory triggers once half the galaxy is settled (now {:.0}%)!",
+                            name,
+                            p_share * 100.0,
+                            p_thresh * 100.0,
+                            settled_pct
+                        )
+                    } else {
+                        format!(
+                            "GALACTIC ALERT: {} control {:.0}% of inhabited worlds — approaching {:.0}% Planet Dominance!",
+                            name,
+                            p_share * 100.0,
+                            p_thresh * 100.0
+                        )
+                    })
                 } else if r_share >= 0.55 {
-                    Some(format!(
-                        "GALACTIC ALERT: {} control {:.0}% of galaxy resources — approaching {:.0}% Resource Dominance!",
-                        self.empires[e].race.name,
-                        r_share * 100.0,
-                        r_thresh * 100.0
-                    ))
+                    Some(if r_share >= r_thresh {
+                        format!(
+                            "GALACTIC ALERT: {} control {:.0}% of galaxy resources — above the {:.0}% Resource Dominance threshold; victory also needs half the galaxy settled (now {:.0}%) and half of inhabited worlds (now {:.0}%)!",
+                            name,
+                            r_share * 100.0,
+                            r_thresh * 100.0,
+                            settled_pct,
+                            p_share * 100.0
+                        )
+                    } else {
+                        format!(
+                            "GALACTIC ALERT: {} control {:.0}% of galaxy resources — approaching {:.0}% Resource Dominance!",
+                            name,
+                            r_share * 100.0,
+                            r_thresh * 100.0
+                        )
+                    })
                 } else {
                     None
                 };
