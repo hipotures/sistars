@@ -117,6 +117,8 @@ pub struct MatchInner {
     pub debug_audit: bool,
     pub audit_log_path: Option<PathBuf>,
     pub last_written_anomaly_idx: usize,
+    /// Set when the match ends for a reason other than a natural victory (e.g. `"aborted"`).
+    pub end_reason: Option<String>,
 }
 
 impl MatchInner {
@@ -363,6 +365,10 @@ impl MatchInner {
             execution_mode: self.execution_mode,
             paused: self.paused,
             speed_mult: self.speed_mult,
+            end_reason: self
+                .end_reason
+                .clone()
+                .or_else(|| (self.status == MatchStatus::Finished).then(|| "victory".to_string())),
             tick_delay_ms: self.tick_delay_ms,
             winner: self.sim.winner,
             galaxy_size,
@@ -511,6 +517,27 @@ impl MatchInner {
             new_messages_count,
             new_alerts_count,
         })
+    }
+
+    /// Admin abort: ends the match immediately with status `Aborted` and no winner.
+    /// Returns the feed event to broadcast, or `None` if the match was already over.
+    pub fn abort(&mut self) -> Option<ArenaFeedEvent> {
+        if self.status.is_over() {
+            return None;
+        }
+        self.status = MatchStatus::Aborted;
+        self.end_reason = Some("aborted".to_string());
+        self.lobby_active = false;
+        self.lobby_deadline_ms = None;
+        self.lobby_deadline_instant = None;
+        self.epoch_deadline_ms = None;
+        self.pending_submissions.clear();
+        self.flush_live_auditor();
+        let summary = format!(
+            "Match aborted by the server admin in year {:.1}. No winner.",
+            self.sim.year
+        );
+        Some(self.push_feed_event(None, ArenaFeedKind::MatchAborted, summary, None))
     }
 
     pub fn push_feed_event(
@@ -765,6 +792,7 @@ impl MatchHandle {
             debug_audit,
             audit_log_path,
             last_written_anomaly_idx: 0,
+            end_reason: None,
         };
         // Seed initial baseline snapshots at tick 0 so RealtimeAsync agents get an accurate delta immediately
         for emp_i in 0..num_empires {
@@ -786,13 +814,17 @@ impl MatchHandle {
             shutdown_tx,
         });
 
-        tokio::spawn(run_match_loop(
-            inner,
-            barrier_notify,
-            control_notify,
-            ws_tx,
-            shutdown_rx,
-        ));
+        tokio::spawn(async move {
+            run_match_loop(
+                inner.clone(),
+                barrier_notify,
+                control_notify,
+                ws_tx.clone(),
+                shutdown_rx,
+            )
+            .await;
+            finalize_match(&inner, &ws_tx).await;
+        });
 
         (handle, empire_tokens, open_agent_seats)
     }
@@ -977,6 +1009,23 @@ pub(crate) fn apply_submissions_locked(
         }
     }
     (new_feed_events, all_feedback)
+}
+
+/// Runs once after the match loop exits (victory, admin abort, delete, or server shutdown).
+/// The loop may have overwritten the status between the abort request and its shutdown check,
+/// so the final status is re-asserted here from `end_reason`.
+async fn finalize_match(
+    inner: &Arc<RwLock<MatchInner>>,
+    ws_tx: &broadcast::Sender<SpectatorWsMessage>,
+) {
+    let mut guard = inner.write().await;
+    if guard.end_reason.as_deref() == Some("aborted") && guard.status != MatchStatus::Aborted {
+        guard.status = MatchStatus::Aborted;
+        guard.sim.winner = None;
+        let _ = ws_tx.send(SpectatorWsMessage::Status {
+            summary: guard.public_summary(),
+        });
+    }
 }
 
 async fn run_match_loop(

@@ -15,6 +15,7 @@ import {
   bindMcpSeat,
   createArenaMatch,
   deleteArenaMatch,
+  abortArenaMatch,
   fetchArenaMatches,
   fetchMcpSeats,
   forceStartArenaMatch,
@@ -833,6 +834,13 @@ async function bootstrap(): Promise<void> {
           ui.setStatus(`🗑 Deleted Arena match ${matchId}`);
           await refreshArenaMatches(arenaServerUrl);
         }
+      });
+    },
+    onArenaAbortMatch: (serverUrl, matchId) => {
+      arenaServerUrl = normalizeServerUrl(serverUrl);
+      void abortArenaMatch(arenaServerUrl, matchId).then(async (ok) => {
+        ui.setStatus(ok ? `⏹ Aborted Arena match ${matchId}` : `⚠ Failed to abort Arena match ${matchId}`);
+        await refreshArenaMatches(arenaServerUrl);
       });
     },
     onArenaToggleExecMode: () => {

@@ -207,7 +207,7 @@ fn build_tools_list() -> Value {
                         "includeFinished": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Include already-finished matches in the listing."
+                            "description": "Include already-ended (finished or aborted) matches in the listing."
                         }
                     },
                     "additionalProperties": false
@@ -683,7 +683,7 @@ async fn handle_tool_list_matches(state: &AppState, identity: &McpIdentity, args
             let guard = h.inner.read().await;
             guard.public_summary()
         };
-        if !include_finished && summary.status == MatchStatus::Finished {
+        if !include_finished && summary.status.is_over() {
             continue;
         }
         let seats_json: Vec<Value> = summary
@@ -831,11 +831,16 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         summary_for_ws,
     ) = {
         let mut guard = handle.inner.write().await;
-        if guard.status == MatchStatus::Finished {
+        if guard.status.is_over() {
             return tool_text_result(
                 format!(
-                    "Validation error: match '{}' has already finished.",
-                    parsed.match_id
+                    "Validation error: match '{}' has already ended ({}).",
+                    parsed.match_id,
+                    if guard.status == MatchStatus::Aborted {
+                        "aborted by the server admin"
+                    } else {
+                        "finished"
+                    }
                 ),
                 true,
             );
@@ -1114,7 +1119,9 @@ async fn handle_tool_observation(state: &AppState, match_id: &str, empire_idx: u
     let previous_strategy = guard.latest_strategy.get(&empire_idx).cloned();
     let delta = guard.compute_epoch_delta(empire_idx, &obs);
 
-    let hint = if guard.status == MatchStatus::Finished {
+    let hint = if guard.status == MatchStatus::Aborted {
+        Some("Match aborted by the server admin (no winner). Call list_matches and join_match to enter a new match directly.")
+    } else if guard.status == MatchStatus::Finished {
         Some("Match finished. Call list_matches and join_match to enter a new match directly.")
     } else {
         None
@@ -1177,9 +1184,9 @@ async fn handle_tool_submit_orders(
     let applied_commands = parsed.commands.len();
     let (resp_json, feed_events, should_notify_barrier) = {
         let mut guard = handle.inner.write().await;
-        if guard.status == MatchStatus::Finished {
+        if guard.status.is_over() {
             return tool_text_result(
-                "Validation error: match has already finished.".to_string(),
+                "Validation error: match has already ended (finished or aborted).".to_string(),
                 true,
             );
         }

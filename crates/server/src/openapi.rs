@@ -34,7 +34,7 @@ pub fn build_openapi_spec() -> Value {
                 },
                 "MatchStatus": {
                     "type": "string",
-                    "enum": ["WaitingForAgents", "Running", "Finished"]
+                    "enum": ["WaitingForAgents", "Running", "Finished", "Aborted"]
                 },
                 "DiplomaticStance": {
                     "type": "string",
@@ -486,7 +486,8 @@ pub fn build_openapi_spec() -> Value {
                         "speedMult": { "type": "number", "minimum": 0.05, "maximum": 20.0, "nullable": true },
                         "executionMode": { "$ref": "#/components/schemas/ExecutionMode" },
                         "stepTicks": { "type": "integer", "minimum": 1, "maximum": 100, "nullable": true },
-                        "forceStart": { "type": "boolean", "nullable": true, "description": "Immediately transitions a WaitingForAgents lobby to Running (startReason='manualStart')." }
+                        "forceStart": { "type": "boolean", "nullable": true, "description": "Immediately transitions a WaitingForAgents lobby to Running (startReason='manualStart')." },
+                        "abort": { "type": "boolean", "nullable": true, "description": "Admin only: forcibly ends the match with status 'Aborted' and no winner." }
                     }
                 },
                 "CreateMatchRequest": {

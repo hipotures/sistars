@@ -90,6 +90,7 @@ export interface UiCallbacks {
   onArenaRefreshMatches?: (serverUrl: string) => void;
   onArenaConnect?: (serverUrl: string, matchId: string) => void;
   onArenaDeleteMatch?: (serverUrl: string, matchId: string) => void;
+  onArenaAbortMatch?: (serverUrl: string, matchId: string) => void;
   onArenaToggleExecMode?: () => void;
   onArenaBindMcpSeat?: (serverUrl: string, seatName: string, matchId: string | null, empireIdx?: number) => void;
   onArenaForceStart?: (serverUrl: string, matchId: string) => void;
@@ -3386,6 +3387,13 @@ export class UiController {
         this.callbacks.onArenaDeleteMatch?.(srv, mid);
       }
     });
+    document.getElementById('btnArenaAbort')?.addEventListener('click', () => {
+      const srv = serverInput?.value ?? 'http://localhost:8080';
+      const mid = matchSelect?.value ?? '';
+      if (mid && window.confirm(`Abort match ${mid}? It ends immediately with no winner.`)) {
+        this.callbacks.onArenaAbortMatch?.(srv, mid);
+      }
+    });
     btnExecToggle?.addEventListener('click', () => {
       this.callbacks.onArenaToggleExecMode?.();
     });
@@ -3987,7 +3995,10 @@ export class UiController {
 
     if (badge) {
       badge.className = 'arena-badge';
-      if (summary.status === 'Finished') {
+      if (summary.status === 'Aborted') {
+        badge.textContent = 'ABORTED';
+        badge.classList.add('aborted');
+      } else if (summary.status === 'Finished') {
         badge.textContent = 'FINISHED';
         badge.classList.add('finished');
       } else if (isLobby) {
@@ -4012,7 +4023,9 @@ export class UiController {
         ? `Lobby ${joinedCnt}/${reqCnt} joined • Auto-start in ${remSec}s`
         : summary.status === 'WaitingForAgents' && summary.waitingForSeats.length > 0
           ? `Waiting seats [${summary.waitingForSeats.join(', ')}]`
-          : summary.status === 'Finished'
+          : summary.status === 'Aborted'
+            ? 'Aborted by admin • No winner'
+            : summary.status === 'Finished'
             ? `Winner: Empire #${(summary.winner ?? 0) + 1}`
             : `${spdLabel} (${summary.planetCount}p)`;
       info.textContent = `Match ${summary.matchId} • Ep#${summary.epoch} • ${waitTxt}`;
@@ -4128,6 +4141,7 @@ export class UiController {
       PolicyUpdate: '📜',
       EpochStatus: '⏱',
       MatchFinished: '🏆',
+      MatchAborted: '⏹',
     };
 
     const item = document.createElement('div');

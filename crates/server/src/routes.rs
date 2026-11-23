@@ -250,6 +250,32 @@ async fn resolve_agent_seat(
     Ok((*empire_idx, format!("rest:{prefix}")))
 }
 
+/// Enforces `SISTARS_ADMIN_TOKEN` (via `Authorization: Bearer` or `X-Admin-Token`) when configured.
+/// With no admin token configured the server runs in open dev mode and every caller is admin.
+fn require_admin(
+    state: &AppState,
+    headers: &HeaderMap,
+    action: &str,
+) -> Result<(), (StatusCode, Json<ApiErrorBody>)> {
+    let Some(ref expected_admin) = state.admin_token else {
+        return Ok(());
+    };
+    let supplied = extract_bearer_token(headers).or_else(|| {
+        headers
+            .get("x-admin-token")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+    });
+    if supplied != Some(expected_admin.as_str()) {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "admin_auth_required",
+            format!("Valid SISTARS_ADMIN_TOKEN required to {action}"),
+        ));
+    }
+    Ok(())
+}
+
 async fn get_openapi() -> Json<Value> {
     Json(build_openapi_spec())
 }
@@ -263,21 +289,7 @@ async fn create_match(
     headers: HeaderMap,
     payload: Option<Json<CreateMatchRequest>>,
 ) -> Result<(StatusCode, Json<CreateMatchResponse>), (StatusCode, Json<ApiErrorBody>)> {
-    if let Some(ref expected_admin) = state.admin_token {
-        let supplied = extract_bearer_token(&headers).or_else(|| {
-            headers
-                .get("x-admin-token")
-                .and_then(|v| v.to_str().ok())
-                .map(str::trim)
-        });
-        if supplied != Some(expected_admin.as_str()) {
-            return Err(api_error(
-                StatusCode::UNAUTHORIZED,
-                "admin_auth_required",
-                "Valid SISTARS_ADMIN_TOKEN required to create a match",
-            ));
-        }
-    }
+    require_admin(&state, &headers, "create a match")?;
 
     let req = payload.map(|Json(r)| r).unwrap_or_default();
     let match_id = Uuid::new_v4().simple().to_string()[..12].to_string();
@@ -393,7 +405,9 @@ async fn list_matches(State(state): State<Arc<AppState>>) -> Json<Vec<MatchPubli
 async fn delete_match(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, (StatusCode, Json<ApiErrorBody>)> {
+    require_admin(&state, &headers, "delete a match")?;
     let removed = {
         let mut matches = state.matches.write().await;
         matches.remove(&id)
@@ -433,21 +447,7 @@ async fn control_match(
     headers: HeaderMap,
     Json(req): Json<MatchControlRequest>,
 ) -> Result<Json<MatchPublicSummary>, (StatusCode, Json<ApiErrorBody>)> {
-    if let Some(ref expected_admin) = state.admin_token {
-        let supplied = extract_bearer_token(&headers).or_else(|| {
-            headers
-                .get("x-admin-token")
-                .and_then(|v| v.to_str().ok())
-                .map(str::trim)
-        });
-        if supplied != Some(expected_admin.as_str()) {
-            return Err(api_error(
-                StatusCode::UNAUTHORIZED,
-                "admin_auth_required",
-                "Valid SISTARS_ADMIN_TOKEN required to control a match",
-            ));
-        }
-    }
+    require_admin(&state, &headers, "control a match")?;
 
     let handle = {
         let matches = state.matches.read().await;
@@ -455,6 +455,7 @@ async fn control_match(
     }
     .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match_not_found", "Match not found"))?;
 
+    let mut aborted = false;
     let summary = {
         let mut guard = handle.inner.write().await;
         if let Some(p) = req.paused {
@@ -485,11 +486,17 @@ async fn control_match(
         if let Some(steps) = req.step_ticks {
             guard.pending_step_ticks = guard.pending_step_ticks.saturating_add(steps.min(100));
         }
-        let lobby_started = if req.force_start == Some(true) {
+        let lobby_started = if req.force_start == Some(true) && !guard.status.is_over() {
             guard.transition_lobby_to_running("manualStart")
         } else {
             false
         };
+        if req.abort == Some(true) {
+            if let Some(ev) = guard.abort() {
+                aborted = true;
+                let _ = handle.ws_tx.send(SpectatorWsMessage::Feed { event: ev });
+            }
+        }
         let summary = guard.public_summary();
         if lobby_started {
             let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
@@ -505,6 +512,10 @@ async fn control_match(
         summary
     };
 
+    if aborted {
+        // Stops the match loop at its next check; `finalize_match` re-asserts the Aborted status.
+        let _ = handle.shutdown_tx.send(true);
+    }
     handle.control_notify.notify_waiters();
     handle.barrier_notify.notify_waiters();
     Ok(Json(summary))
@@ -605,6 +616,13 @@ async fn submit_commands(
 
     let (epoch, commands_queued, waiting_for_seats, should_notify, command_feedback) = {
         let mut guard = handle.inner.write().await;
+        if guard.status == MatchStatus::Aborted {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "match_aborted",
+                "Match was aborted by the server admin",
+            ));
+        }
         if guard.status == MatchStatus::Finished {
             return Err(api_error(
                 StatusCode::CONFLICT,

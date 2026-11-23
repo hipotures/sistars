@@ -414,6 +414,16 @@ export async function deleteArenaMatch(serverUrl: string, matchId: string): Prom
   return resp.ok || resp.status === 204;
 }
 
+export async function abortArenaMatch(serverUrl: string, matchId: string): Promise<boolean> {
+  const base = normalizeServerUrl(serverUrl);
+  const resp = await fetch(`${base}/api/v1/matches/${encodeURIComponent(matchId)}/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ abort: true }),
+  });
+  return resp.ok;
+}
+
 export async function forceStartArenaMatch(serverUrl: string, matchId: string): Promise<boolean> {
   const base = normalizeServerUrl(serverUrl);
   const resp = await fetch(`${base}/api/v1/matches/${encodeURIComponent(matchId)}/control`, {

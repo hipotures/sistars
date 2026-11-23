@@ -25,11 +25,15 @@ impl Drop for TestServer {
 }
 
 async fn spawn_test_server() -> TestServer {
+    spawn_test_server_with_admin(None).await
+}
+
+async fn spawn_test_server_with_admin(admin_token: Option<String>) -> TestServer {
     let logs_dir = std::env::temp_dir().join(format!(
         "sistars_test_logs_{}",
         uuid::Uuid::new_v4().simple()
     ));
-    let state = AppState::new(None, logs_dir);
+    let state = AppState::new(admin_token, logs_dir);
     let app = build_router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -2552,4 +2556,177 @@ async fn e2e_hud_diplomacy_matrix_and_mcp_transition_from_finished() {
     assert_eq!(join_b_json["matchId"].as_str(), Some(match_b.as_str()));
 
     state.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn e2e_admin_abort_ends_match_without_winner() {
+    let srv = spawn_test_server().await;
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 910201,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "openAgentSeats": [0],
+            "lobbyTimeoutSec": 0,
+            "speedMult": 5.0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let aborted: Value = srv
+        .client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
+        .json(&json!({ "abort": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(aborted["status"].as_str(), Some("Aborted"));
+    assert_eq!(aborted["endReason"].as_str(), Some("aborted"));
+    assert!(aborted["winner"].is_null());
+
+    // The loop stops: the tick counter must freeze and the status must stay Aborted.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let s1: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let s2: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s2["status"].as_str(), Some("Aborted"));
+    assert!(s2["winner"].is_null());
+    assert_eq!(
+        s1["tick"], s2["tick"],
+        "aborted match must not keep ticking"
+    );
+
+    // Agents can no longer submit orders.
+    let resp = srv
+        .client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/commands",
+            srv.base_url
+        ))
+        .bearer_auth(&tok0)
+        .json(&json!({ "commands": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"].as_str(), Some("match_aborted"));
+
+    // A second abort is a no-op.
+    let again: Value = srv
+        .client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
+        .json(&json!({ "abort": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(again["status"].as_str(), Some("Aborted"));
+}
+
+#[tokio::test]
+async fn e2e_abort_and_delete_require_admin_token() {
+    let srv = spawn_test_server_with_admin(Some("s3cret".to_string())).await;
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .header("x-admin-token", "s3cret")
+        .json(&json!({
+            "seed": 910202,
+            "galaxySize": "small",
+            "openAgentSeats": [0],
+            "lobbyTimeoutSec": 0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+
+    // Neither an anonymous caller nor an agent's empire token may abort or delete.
+    for auth in [None, Some(tok0.as_str())] {
+        let mut req = srv
+            .client
+            .post(format!(
+                "{}/api/v1/matches/{match_id}/control",
+                srv.base_url
+            ))
+            .json(&json!({ "abort": true }));
+        if let Some(t) = auth {
+            req = req.bearer_auth(t);
+        }
+        assert_eq!(req.send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+
+        let mut del = srv
+            .client
+            .delete(format!("{}/api/v1/matches/{match_id}", srv.base_url));
+        if let Some(t) = auth {
+            del = del.bearer_auth(t);
+        }
+        assert_eq!(del.send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let aborted: Value = srv
+        .client
+        .post(format!(
+            "{}/api/v1/matches/{match_id}/control",
+            srv.base_url
+        ))
+        .header("x-admin-token", "s3cret")
+        .json(&json!({ "abort": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(aborted["status"].as_str(), Some("Aborted"));
+
+    let del = srv
+        .client
+        .delete(format!("{}/api/v1/matches/{match_id}", srv.base_url))
+        .bearer_auth("s3cret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), StatusCode::NO_CONTENT);
 }

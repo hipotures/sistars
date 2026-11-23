@@ -22,6 +22,15 @@ pub enum MatchStatus {
     WaitingForAgents,
     Running,
     Finished,
+    /// Forcibly ended by the server admin. Never has a winner.
+    Aborted,
+}
+
+impl MatchStatus {
+    /// True once the match can no longer progress (natural finish or admin abort).
+    pub fn is_over(self) -> bool {
+        matches!(self, MatchStatus::Finished | MatchStatus::Aborted)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +165,8 @@ pub struct MatchPublicSummary {
     pub speed_mult: f32,
     pub tick_delay_ms: u64,
     pub winner: Option<usize>,
+    /// Why the match ended (`"victory"`, `"aborted"`), `None` while it is still in progress.
+    pub end_reason: Option<String>,
     pub galaxy_size: String,
     pub total_planets: usize,
     pub planet_count: usize,
@@ -192,6 +203,8 @@ pub struct MatchControlRequest {
     pub frame_stride_ticks: Option<u32>,
     pub step_ticks: Option<u32>,
     pub force_start: Option<bool>,
+    /// Admin-only: forcibly end the match with status `Aborted` and no winner.
+    pub abort: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +266,7 @@ pub enum ArenaFeedKind {
     PolicyUpdate,
     EpochStatus,
     MatchFinished,
+    MatchAborted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

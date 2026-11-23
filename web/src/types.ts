@@ -487,7 +487,7 @@ export interface StarSystemView {
 }
 
 export type TransportMode = 'local' | 'remote';
-export type ArenaMatchStatus = 'WaitingForAgents' | 'Running' | 'Finished';
+export type ArenaMatchStatus = 'WaitingForAgents' | 'Running' | 'Finished' | 'Aborted';
 
 export type ExecutionMode = 'realtimeAsync' | 'lockstepEpoch';
 
@@ -528,6 +528,8 @@ export interface ArenaMatchSummary {
   speedMult?: number;
   tickDelayMs?: number;
   winner: number | null;
+  /** Why the match ended: 'victory' or 'aborted' (admin). Null while in progress. */
+  endReason?: string | null;
   planetCount: number;
   empireCount: number;
   seats?: ArenaMatchSeatInfo[];
@@ -613,7 +615,8 @@ export type ArenaFeedKind =
   | 'BuildHub'
   | 'PolicyUpdate'
   | 'EpochStatus'
-  | 'MatchFinished';
+  | 'MatchFinished'
+  | 'MatchAborted';
 
 export interface ArenaFeedEvent {
   id: number;
