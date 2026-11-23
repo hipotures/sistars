@@ -929,6 +929,14 @@ export class WebGpuGalaxyBackend {
       device.lost.then(() => {
         onDeviceLost();
       });
+      let uncapturedErrors = 0;
+      device.addEventListener('uncapturederror', (ev) => {
+        console.warn('[WebGPU] uncaptured error:', ev.error);
+        uncapturedErrors++;
+        if (uncapturedErrors >= 3) {
+          onDeviceLost();
+        }
+      });
 
       return new WebGpuGalaxyBackend(device, context, format, bgStars);
     } catch {

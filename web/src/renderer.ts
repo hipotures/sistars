@@ -52,6 +52,7 @@ export class GalaxyRenderer {
   private readonly overlayCanvas: HTMLCanvasElement;
   private readonly overlayCtx: CanvasRenderingContext2D;
   private fallbackCtx: CanvasRenderingContext2D | null = null;
+  private fallbackToOverlay = false;
   private gpuBackend: WebGpuGalaxyBackend | null = null;
 
   private worldW: number;
@@ -128,6 +129,13 @@ export class GalaxyRenderer {
     const ctx = this.canvas.getContext('2d');
     if (ctx) {
       this.fallbackCtx = ctx;
+      this.fallbackToOverlay = false;
+    } else {
+      // A <canvas> previously bound to 'webgpu' cannot return a '2d' context per HTML spec.
+      // Fall back to rendering the base galaxy layer onto overlayCtx and hide the stale WebGPU canvas.
+      this.fallbackCtx = this.overlayCtx;
+      this.fallbackToOverlay = true;
+      this.canvas.style.visibility = 'hidden';
     }
   }
 
@@ -407,30 +415,37 @@ export class GalaxyRenderer {
     ]);
 
     if (this.gpuBackend) {
-      this.gpuBackend.render(
-        {
-          offX: transform.offX,
-          offY: transform.offY,
-          scale: transform.scale,
-          zoom: this.zoom,
-          viewportW: this.cssW,
-          viewportH: this.cssH,
-          denseFactor,
-          invCrustNorm,
-          planetCount,
-        },
-        empColors,
-        empRanges,
-        planetsBuf,
-        fleetsBuf,
-        debrisBuf,
-        hud.wormholes,
-        this.jumpFx,
-        this.combatFx,
-        dataVersion,
-        fieldSettings,
-      );
-    } else if (this.fallbackCtx) {
+      try {
+        this.gpuBackend.render(
+          {
+            offX: transform.offX,
+            offY: transform.offY,
+            scale: transform.scale,
+            zoom: this.zoom,
+            viewportW: this.cssW,
+            viewportH: this.cssH,
+            denseFactor,
+            invCrustNorm,
+            planetCount,
+          },
+          empColors,
+          empRanges,
+          planetsBuf,
+          fleetsBuf,
+          debrisBuf,
+          hud.wormholes,
+          this.jumpFx,
+          this.combatFx,
+          dataVersion,
+          fieldSettings,
+        );
+      } catch (err) {
+        console.warn('[WebGPU] render failed, falling back to Canvas2D:', err);
+        this.gpuBackend = null;
+        this.ensureCanvas2dFallback();
+      }
+    }
+    if (!this.gpuBackend && this.fallbackCtx) {
       this.drawCanvas2dBase(
         this.fallbackCtx,
         frame,
@@ -472,7 +487,9 @@ export class GalaxyRenderer {
     const W = this.cssW;
     const H = this.cssH;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
+    if (!this.fallbackToOverlay) {
+      ctx.clearRect(0, 0, W, H);
+    }
 
     for (const s of this.bgStars) {
       ctx.fillStyle = `rgba(180, 210, 255, ${s.a})`;
@@ -717,7 +734,9 @@ export class GalaxyRenderer {
     const W = this.cssW;
     const H = this.cssH;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
+    if (!this.fallbackToOverlay) {
+      ctx.clearRect(0, 0, W, H);
+    }
 
     const { hud, planetsBuf, debrisBuf } = frame;
     const { scale, offX, offY } = transform;
