@@ -1,6 +1,67 @@
 # SI-Stars (Super Intelligence Stars!)
 
-**SI-Stars** is a continuous-time 4X space strategy game (with active pause and variable speed `1x–20x`), inspired by *Stars!* (1995). It is designed both for browser-based gameplay (Rust → WebAssembly + TypeScript/Vite) and high-throughput headless AI-vs-AI policy simulation.
+**SI-Stars** is a continuous-time 4X space strategy game (with active pause and variable speed `1x–20x`), inspired by *Stars!* (1995). It is designed both for browser-based gameplay (Rust → WebAssembly + TypeScript/Vite + WebGPU), high-throughput headless AI-vs-AI policy simulation, and an HTTP/WebSocket + MCP Arena Server where LLM agents compete against each other and built-in AI Governors.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-10.png"><img src="docs/screenshots/shot-10.png" alt="LLM vs LLM Arena Match" width="100%"/></a><br/>
+      <sub><b>LLM vs LLM Arena Match</b> — Claude (Humanoids) vs Antigravity (Rabbitoids) with live AI &amp; Diplomacy Feed</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-09.png"><img src="docs/screenshots/shot-09.png" alt="AI Agent vs Governors" width="100%"/></a><br/>
+      <sub><b>AI Agent vs Governors</b> — WebGPU scanner equilibrium fields, wormhole links &amp; strategic reasoning</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-06.png"><img src="docs/screenshots/shot-06.png" alt="Spiral Galaxy WebGPU" width="100%"/></a><br/>
+      <sub><b>Spiral Galaxy &amp; System Inspector</b> — WebGPU scanner contours, Stargates &amp; fuel range overlays</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-07.png"><img src="docs/screenshots/shot-07.png" alt="Mid-Game Galactic War" width="100%"/></a><br/>
+      <sub><b>Mid-Game Galactic War</b> — Hundreds of fleets in transit, Stargate networks &amp; contested borders</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-05.png"><img src="docs/screenshots/shot-05.png" alt="Binary Star System View" width="100%"/></a><br/>
+      <sub><b>Binary Star System View</b> — Procedural 3D world with orbital infrastructure &amp; moon</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-02.png"><img src="docs/screenshots/shot-02.png" alt="System Orrery" width="100%"/></a><br/>
+      <sub><b>2D System Orrery</b> — Planetary orbits, Main &amp; Kuiper belts, eccentric comet &amp; Stargate</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-08.png"><img src="docs/screenshots/shot-08.png" alt="Ice World 3D" width="100%"/></a><br/>
+      <sub><b>Procedural 3D Planet</b> — Ice world with atmospheric clouds &amp; night-side colony lights</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-01.png"><img src="docs/screenshots/shot-01.png" alt="Eccentric Comet" width="100%"/></a><br/>
+      <sub><b>Eccentric Comet</b> — Dual dust &amp; ion tail inside the System Inspector</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-03.png"><img src="docs/screenshots/shot-03.png" alt="3D Fleet Inspector" width="100%"/></a><br/>
+      <sub><b>3D Fleet Inspector</b> — Interactive 3D hull preview, route ETA &amp; empire tech loadout</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/screenshots/shot-04.png"><img src="docs/screenshots/shot-04.png" alt="Stealth Cruiser Shield Bubble" width="100%"/></a><br/>
+      <sub><b>Stealth &amp; Shield FX</b> — Close-up 3D hull with translucent energy shield bubble</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <a href="docs/screenshots/shot-11.png"><img src="docs/screenshots/shot-11.png" alt="Arena Match Lobby" width="65%"/></a><br/>
+      <sub><b>Arena Match Lobby</b> — Scenario presets, external AI seat configuration &amp; 300s auto-start countdown</sub>
+    </td>
+  </tr>
+</table>
 
 ## Repository Structure
 
