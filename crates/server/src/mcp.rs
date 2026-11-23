@@ -818,7 +818,18 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
     }
 
     let player_id = format!("mcp:{seat_name}");
-    let (emp_name, emp_prt, match_status, start_reason, joined_cnt, req_cnt, lobby_rem, autostarted) = {
+    let (
+        emp_name,
+        emp_prt,
+        match_status,
+        start_reason,
+        joined_cnt,
+        req_cnt,
+        lobby_rem,
+        autostarted,
+        lobby_msg,
+        summary_for_ws,
+    ) = {
         let mut guard = handle.inner.write().await;
         if guard.status == MatchStatus::Finished {
             return tool_text_result(
@@ -854,19 +865,17 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         let emp_prt = emp.race.prt.clone();
         let lobby_msg = guard.build_lobby_ws_message();
         let summary = guard.public_summary();
-        let _ = handle.ws_tx.send(lobby_msg);
-        let _ = handle.ws_tx.send(SpectatorWsMessage::Status {
-            summary: summary.clone(),
-        });
         (
             emp_name,
             emp_prt,
             summary.status,
-            summary.start_reason,
+            summary.start_reason.clone(),
             summary.joined_agent_count,
             summary.required_agent_count,
             summary.lobby_remaining_sec,
             autostarted,
+            lobby_msg,
+            summary,
         )
     };
 
@@ -894,6 +903,13 @@ async fn handle_tool_join_match(state: &AppState, identity: &McpIdentity, args: 
         let mut history = state.seat_match_history.write().await;
         history.insert((seat_name.clone(), parsed.match_id.clone()), parsed.empire_idx);
     }
+
+    // Broadcast WS updates AFTER `persistent_seat_bindings` is updated so UI `/api/v1/mcp/seats`
+    // fetch never races ahead of the binding insertion.
+    let _ = handle.ws_tx.send(lobby_msg);
+    let _ = handle.ws_tx.send(SpectatorWsMessage::Status {
+        summary: summary_for_ws,
+    });
 
     if autostarted {
         handle.control_notify.notify_waiters();
@@ -1330,7 +1346,7 @@ pub async fn bind_persistent_seat(
         ));
     };
 
-    let autostarted = {
+    let (autostarted, lobby_msg, summary_for_ws) = {
         let mut guard = handle.inner.write().await;
         let empire_count = guard.sim.empires.len();
         if empire_idx >= empire_count {
@@ -1358,10 +1374,9 @@ pub async fn bind_persistent_seat(
                 ));
             }
         };
-        let _ = handle.ws_tx.send(guard.build_lobby_ws_message());
+        let lobby_msg = guard.build_lobby_ws_message();
         let summary = guard.public_summary();
-        let _ = handle.ws_tx.send(SpectatorWsMessage::Status { summary });
-        started
+        (started, lobby_msg, summary)
     };
 
     let prev_binding = {
@@ -1384,6 +1399,10 @@ pub async fn bind_persistent_seat(
             }
         }
     }
+    let _ = handle.ws_tx.send(lobby_msg);
+    let _ = handle.ws_tx.send(SpectatorWsMessage::Status {
+        summary: summary_for_ws,
+    });
     {
         let mut history = state.seat_match_history.write().await;
         history.insert((seat_name.clone(), match_id.clone()), empire_idx);

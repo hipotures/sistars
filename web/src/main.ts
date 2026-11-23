@@ -478,6 +478,9 @@ async function bootstrap(): Promise<void> {
       hudLensEmpires.clear();
       applySelection(null);
       handleTransportFrame(res.firstFrame);
+      void fetchMcpSeats(arenaServerUrl).then((seats) => {
+        ui.setMcpSeats(seats, activeArenaMatchId);
+      });
 
       // Update URL query string cleanly for shareable Spectator links
       const nextUrl = new URL(window.location.href);
