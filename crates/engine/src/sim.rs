@@ -3818,6 +3818,21 @@ impl Simulation {
                 }
             }
 
+            let mut active_scout_count: u16 = 0;
+            for fl in &self.fleets {
+                if fl.emp == emp_u8
+                    && !fl.orbiting
+                    && fl.power > 0.0
+                    && matches!(
+                        fl.fleet_type,
+                        FleetClass::Cruiser | FleetClass::Battleship | FleetClass::Bomber
+                    )
+                    && (fl.wh_route >= 0 || fl.target >= n || self.owner[fl.target] == 0)
+                {
+                    active_scout_count = active_scout_count.saturating_add(1);
+                }
+            }
+
             let actions = {
                 let emp = &self.empires[e];
                 let tc = &emp.tech_cache;
@@ -3833,6 +3848,7 @@ impl Simulation {
                     policy: &emp.race.doctrine,
                     upkeep_ratio: emp_upkeep_ratio[e],
                     total_active_fleets: self.fleets.len(),
+                    active_scout_count,
                     has_stargate_tech: ec.has_stargate_tech,
                     max_gates: ec.max_gates,
                     min_fac_for_gate: ec.min_fac_for_gate,
@@ -4366,15 +4382,57 @@ impl Simulation {
         }
     }
 
-    fn resolve_target_empire_idx(&self, caller_idx: usize, raw_target: usize) -> Option<usize> {
-        let num_emp = self.empires.len();
-        if raw_target < num_emp && raw_target != caller_idx {
-            Some(raw_target)
-        } else if raw_target >= 1 && (raw_target - 1) < num_emp {
-            Some(raw_target - 1)
+    /// Maps a 1-based `empire_id` (`1..=empires.len()`) to its 0-based `empire_idx`.
+    /// Returns `None` for `0` (neutral) or any ID outside `1..=empires.len()`.
+    #[inline]
+    pub fn empire_idx_from_id(&self, empire_id: usize) -> Option<usize> {
+        if empire_id == 0 {
+            return None;
+        }
+        let idx = empire_id - 1;
+        if idx < self.empires.len() {
+            Some(idx)
         } else {
             None
         }
+    }
+
+    /// Returns true if the empire at 0-based `emp_idx` still controls at least one planet or active fleet.
+    pub fn is_empire_alive(&self, emp_idx: usize) -> bool {
+        if emp_idx >= self.empires.len() {
+            return false;
+        }
+        let emp_u8 = (emp_idx + 1) as u8;
+        self.owner.iter().any(|&o| o == emp_u8)
+            || self.fleets.iter().any(|fl| fl.emp == emp_u8 && fl.power > 0.0)
+    }
+
+    /// Strictly resolves and validates a 1-based `empireId` (`1..=N`) for diplomacy commands.
+    /// Never falls back to 0-based `empireIdx`.
+    fn resolve_diplomacy_target(
+        &self,
+        caller_idx: usize,
+        target_emp_id: usize,
+    ) -> Result<usize, String> {
+        let num_emp = self.empires.len();
+        let Some(target_idx) = self.empire_idx_from_id(target_emp_id) else {
+            return Err(format!(
+                "Unknown empireId {target_emp_id} (valid 1-based empireIds are 1..={num_emp}; 0 is neutral)"
+            ));
+        };
+        let self_emp_id = caller_idx + 1;
+        if target_emp_id == self_emp_id {
+            return Err(format!(
+                "Cannot target own empire (empireId={self_emp_id})"
+            ));
+        }
+        if !self.is_empire_alive(target_idx) {
+            let name = &self.empires[target_idx].race.name;
+            return Err(format!(
+                "Target empire {name} (empireId={target_emp_id}) is already eliminated"
+            ));
+        }
+        Ok(target_idx)
     }
 
     /// Returns `(min_fac_for_gate, min_hub_dist, max_gates, gate_res, gate_iron, gate_germ)` for `empire_idx`.
@@ -4424,31 +4482,37 @@ impl Simulation {
                 StrategicCommand::SetDiplomacy {
                     target_emp,
                     stance,
-                } => {
-                    if let Some(target_idx) =
-                        self.resolve_target_empire_idx(empire_idx, target_emp)
-                    {
+                } => match self.resolve_diplomacy_target(empire_idx, target_emp) {
+                    Ok(target_idx) => {
+                        let prev_stance = self.get_relation(empire_idx, target_idx);
                         self.set_relation(empire_idx, target_idx, stance);
                         self.empires[empire_idx].contact_mask |= 1u16 << target_idx;
                         self.empires[target_idx].contact_mask |= 1u16 << empire_idx;
                         let sender_name = self.empires[empire_idx].race.name.clone();
+                        let target_name = self.empires[target_idx].race.name.clone();
                         self.push_empire_alert(
                             target_idx,
-                            format!("{sender_name} changed diplomatic stance to {stance:?}"),
+                            format!(
+                                "{sender_name} (empireId={}) changed diplomatic stance to {stance:?}",
+                                empire_idx + 1
+                            ),
                         );
                         feedback.push(CommandFeedback {
                             command: format!("setDiplomacy(targetEmp={target_emp}, {stance:?})"),
                             status: "applied".to_string(),
-                            reason: None,
-                        });
-                    } else {
-                        feedback.push(CommandFeedback {
-                            command: format!("setDiplomacy(targetEmp={target_emp})"),
-                            status: "rejected".to_string(),
-                            reason: Some(format!("Invalid target empire ID {target_emp}")),
+                            reason: Some(format!(
+                                "Diplomatic stance with {target_name} (empireId={target_emp}) changed from {prev_stance:?} to {stance:?}"
+                            )),
                         });
                     }
-                }
+                    Err(reason) => {
+                        feedback.push(CommandFeedback {
+                            command: format!("setDiplomacy(targetEmp={target_emp}, {stance:?})"),
+                            status: "rejected".to_string(),
+                            reason: Some(reason),
+                        });
+                    }
+                },
                 StrategicCommand::SetSectorDirective { sector_id, mode } => {
                     let s = sector_id as usize;
                     if s < num_sectors.max(64) {
@@ -4609,36 +4673,45 @@ impl Simulation {
                     }
                 }
                 StrategicCommand::SendDipMessage { to_emp, text } => {
-                    if let Some(target_idx) = self.resolve_target_empire_idx(empire_idx, to_emp) {
-                        self.empires[empire_idx].contact_mask |= 1u16 << target_idx;
-                        self.empires[target_idx].contact_mask |= 1u16 << empire_idx;
-                        let msg = DipMessage {
-                            tick: self.ticks,
-                            year: self.year,
-                            from_emp: (empire_idx + 1) as u8,
-                            to_emp: (target_idx + 1) as u8,
-                            text: text.clone(),
-                        };
-                        if self.empires[target_idx].inbox.len() >= 16 {
-                            self.empires[target_idx].inbox.remove(0);
+                    match self.resolve_diplomacy_target(empire_idx, to_emp) {
+                        Ok(target_idx) => {
+                            self.empires[empire_idx].contact_mask |= 1u16 << target_idx;
+                            self.empires[target_idx].contact_mask |= 1u16 << empire_idx;
+                            let msg = DipMessage {
+                                tick: self.ticks,
+                                year: self.year,
+                                from_emp: (empire_idx + 1) as u8,
+                                to_emp: (target_idx + 1) as u8,
+                                text: text.clone(),
+                            };
+                            if self.empires[target_idx].inbox.len() >= 16 {
+                                self.empires[target_idx].inbox.remove(0);
+                            }
+                            self.empires[target_idx].inbox.push(msg);
+                            let sender_name = self.empires[empire_idx].race.name.clone();
+                            let target_name = self.empires[target_idx].race.name.clone();
+                            self.push_empire_alert(
+                                target_idx,
+                                format!(
+                                    "Diplomatic transmission from {sender_name} (empireId={}): {text}",
+                                    empire_idx + 1
+                                ),
+                            );
+                            feedback.push(CommandFeedback {
+                                command: format!("sendDipMessage(toEmp={to_emp})"),
+                                status: "applied".to_string(),
+                                reason: Some(format!(
+                                    "Diplomatic cable delivered to {target_name} (empireId={to_emp})"
+                                )),
+                            });
                         }
-                        self.empires[target_idx].inbox.push(msg);
-                        let sender_name = self.empires[empire_idx].race.name.clone();
-                        self.push_empire_alert(
-                            target_idx,
-                            format!("Diplomatic transmission from {sender_name}: {text}"),
-                        );
-                        feedback.push(CommandFeedback {
-                            command: format!("sendDipMessage(toEmp={to_emp})"),
-                            status: "applied".to_string(),
-                            reason: None,
-                        });
-                    } else {
-                        feedback.push(CommandFeedback {
-                            command: format!("sendDipMessage(toEmp={to_emp})"),
-                            status: "rejected".to_string(),
-                            reason: Some(format!("Invalid target empire ID {to_emp}")),
-                        });
+                        Err(reason) => {
+                            feedback.push(CommandFeedback {
+                                command: format!("sendDipMessage(toEmp={to_emp})"),
+                                status: "rejected".to_string(),
+                                reason: Some(reason),
+                            });
+                        }
                     }
                 }
                 StrategicCommand::ScoutSector { sector_id } => {

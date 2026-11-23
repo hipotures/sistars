@@ -197,7 +197,11 @@ pub fn build_openapi_spec() -> Value {
                                 "setDiplomacy": {
                                     "type": "object",
                                     "properties": {
-                                        "targetEmp": { "type": "integer", "minimum": 0 },
+                                        "targetEmp": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "description": "1-based empireId (1..=N) matching knownEmpires[].empId and enemyPlanets[].ownerEmp."
+                                        },
                                         "stance": { "$ref": "#/components/schemas/DiplomaticStance" }
                                     },
                                     "required": ["targetEmp", "stance"]
@@ -243,7 +247,11 @@ pub fn build_openapi_spec() -> Value {
                                 "sendDipMessage": {
                                     "type": "object",
                                     "properties": {
-                                        "toEmp": { "type": "integer", "minimum": 0 },
+                                        "toEmp": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "description": "1-based empireId (1..=N) matching knownEmpires[].empId and enemyPlanets[].ownerEmp."
+                                        },
                                         "text": { "type": "string" }
                                     },
                                     "required": ["toEmp", "text"]

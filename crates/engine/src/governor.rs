@@ -52,6 +52,7 @@ pub struct EmpireView<'a> {
     pub policy: &'a EmpirePolicy,
     pub upkeep_ratio: f32,
     pub total_active_fleets: usize,
+    pub active_scout_count: u16,
     pub has_stargate_tech: bool,
     pub max_gates: usize,
     pub min_fac_for_gate: f32,
@@ -600,6 +601,28 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                 && rem_surf[0] >= view.col_i
                 && rem_surf[2] >= view.col_g;
 
+            // Check if any unclaimed neutral/unexplored planet exists within colonization range
+            // so early-game high-colonization empires save up for a colonizer instead of spamming scouts.
+            let mut has_col_candidate_in_range = false;
+            if view.own_planets.len() < 4 && policy.colonize_vs_attack_bias >= 0.7 {
+                for &(j_u32, dist) in &view.neighbor_data[nb_start..nb_end] {
+                    if dist > view.col_range {
+                        break;
+                    }
+                    let j = j_u32 as usize;
+                    if (view.claim_mask[j] & my_bit) != 0 || claimed_targets.contains(&j) {
+                        continue;
+                    }
+                    let intel = &view.intel_planets[j];
+                    if !intel.is_explored() || intel.owner == 0 {
+                        if !intel.is_pen_scanned() || intel.hab_est >= min_hab {
+                            has_col_candidate_in_range = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             let score_col_candidate = |j: usize, d: f32, require_explored: bool| -> f32 {
                 if (view.claim_mask[j] & my_bit) != 0 || claimed_targets.contains(&j) {
                     return -1.0;
@@ -825,7 +848,12 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     let max_by_i = (rem_surf[0] / ci_u.max(0.1)).floor() as u16;
                     let max_by_b = (rem_surf[1] / cb_u.max(0.1)).floor() as u16;
                     let max_by_g = (rem_surf[2] / cg_u.max(0.1)).floor() as u16;
-                    let max_buildable = max_by_res.min(max_by_i).min(max_by_b).min(max_by_g).min(12);
+                    let shipyard_batch_cap: u16 = 12 + (op.starbase_tier as u16) * 8;
+                    let max_buildable = max_by_res
+                        .min(max_by_i)
+                        .min(max_by_b)
+                        .min(max_by_g)
+                        .min(shipyard_batch_cap);
 
                     let can_merge_orbit =
                         op.orbit_warship >= 0 && op.orbit_warship_class == Some(c_class);
@@ -1054,13 +1082,25 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
             };
 
             // 4d. Active Exploration & Wormhole Probing (explicit orders + autonomous scouting)
+            let early_colonize_priority =
+                view.own_planets.len() < 4 && col_bias >= 0.7 && has_col_candidate_in_range;
+            let saving_for_early_col = early_colonize_priority && !can_afford_col;
             let mut dispatched_exploration = false;
             if !choose_attack && best_col_target.is_none() {
                 let can_use_orbit = op.orbit_warship >= 0
                     && (!view.active_exploration_orders.is_empty()
                         || op.orbit_count > policy.min_garrison_count);
                 let (cr_i, cr_b, cr_g) = view.cost_cruiser;
-                let can_build_scout = rem_prod_buf >= view.effective_ship_cost
+                // When prioritizing early colonization with known neutral targets in range,
+                // cap autonomous scout builds at 1-2 active scouts so we save resources for a Colonizer.
+                let scout_cap_reached = early_colonize_priority
+                    && view.active_exploration_orders.is_empty()
+                    && view.active_scout_count >= 2;
+                let can_build_scout = !scout_cap_reached
+                    && !(saving_for_early_col
+                        && view.active_exploration_orders.is_empty()
+                        && view.active_scout_count >= 1)
+                    && rem_prod_buf >= view.effective_ship_cost
                     && rem_surf[0] >= cr_i
                     && rem_surf[1] >= cr_b
                     && rem_surf[2] >= cr_g
@@ -1297,24 +1337,30 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     wh_route: best_col_wh,
                     docked_fleet_idx: None,
                 });
-            } else if !dispatched_exploration {
-                // Build or reinforce standing orbital garrison (especially when preparing to crack a fortified Starbase!)
+            } else if !dispatched_exploration && !saving_for_early_col {
+                // Build or reinforce standing orbital garrison (for Starbase assaults or draining large shipProdBuf)
+                let has_pending_hub_here = view.pending_hub_orders.iter().any(|&(p, _)| p == i);
+                let high_buf_drain = !has_pending_hub_here
+                    && rem_prod_buf >= view.effective_ship_cost * 3.0
+                    && view.upkeep_ratio < max_upkeep * 0.82;
                 let min_gar = if my_sector_mode == SectorMode::Fortify {
                     policy.min_garrison_count.max(2)
                 } else {
                     policy.min_garrison_count
                 };
                 let max_gar = if saw_fortified_enemy_needing_buildup {
-                    12
+                    12u16.max(8 + (op.starbase_tier as u16) * 6)
+                } else if high_buf_drain {
+                    (8 + (op.starbase_tier as u16) * 6).max(min_gar)
                 } else {
                     min_gar
                 };
-                let upkeep_cap = if saw_fortified_enemy_needing_buildup {
-                    max_upkeep * 0.78
+                let upkeep_cap = if saw_fortified_enemy_needing_buildup || high_buf_drain {
+                    max_upkeep * 0.82
                 } else {
                     max_upkeep * 0.52
                 };
-                let prod_req = if saw_fortified_enemy_needing_buildup {
+                let prod_req = if saw_fortified_enemy_needing_buildup || high_buf_drain {
                     view.effective_ship_cost
                 } else {
                     view.effective_ship_cost * 1.4
@@ -1324,6 +1370,7 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     && op.orbit_count < max_gar
                     && view.total_active_fleets < 2400
                     && (saw_fortified_enemy_needing_buildup
+                        || high_buf_drain
                         || my_sector_mode == SectorMode::Fortify
                         || next_rand(rng_seed) < 0.18)
                 {
@@ -1351,8 +1398,12 @@ pub fn run_empire_governor(view: &EmpireView<'_>, rng_seed: &mut u32) -> Vec<Gov
                     let max_g_g = (rem_surf[2] / cg.max(0.1)).floor() as u16;
                     let max_g = max_g_res.min(max_g_i).min(max_g_b).min(max_g_g);
                     if max_g >= 1 {
+                        let room = max_gar.saturating_sub(op.orbit_count).max(1);
+                        let tier_batch = 2 + (op.starbase_tier as u16) * 2;
                         let build_cnt = if saw_fortified_enemy_needing_buildup {
-                            max_g.clamp(1, 6)
+                            max_g.min(room).clamp(1, 6.max(tier_batch))
+                        } else if high_buf_drain {
+                            max_g.min(room).clamp(1, tier_batch)
                         } else {
                             1
                         };

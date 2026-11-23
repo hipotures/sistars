@@ -872,18 +872,26 @@ pub(crate) fn apply_submissions_locked(
                     guard.push_feed_event(Some(emp_idx), ArenaFeedKind::PolicyUpdate, desc, None)
                 }
                 StrategicCommand::SetDiplomacy { target_emp, stance } => {
-                    let target_name = guard
+                    let target_label = guard
                         .sim
-                        .empires
-                        .get(*target_emp)
-                        .or_else(|| target_emp.checked_sub(1).and_then(|i| guard.sim.empires.get(i)))
-                        .map(|e| e.race.name.clone())
-                        .unwrap_or_else(|| format!("Empire #{target_emp}"));
+                        .empire_idx_from_id(*target_emp)
+                        .and_then(|i| guard.sim.empires.get(i))
+                        .map(|e| format!("{} (empireId={target_emp})", e.race.name))
+                        .unwrap_or_else(|| format!("Unknown Empire (empireId={target_emp})"));
+                    let desc = if fb.status == "applied" {
+                        format!("Set diplomatic stance with {target_label} -> {stance:?}")
+                    } else {
+                        format!(
+                            "SetDiplomacy({target_label} -> {stance:?}) [{}]: {}",
+                            fb.status,
+                            fb.reason.as_deref().unwrap_or("rejected")
+                        )
+                    };
                     guard.push_feed_event(
                         Some(emp_idx),
                         ArenaFeedKind::DiplomacyChange,
-                        format!("Set diplomatic stance with {target_name} -> {stance:?}"),
-                        None,
+                        desc,
+                        fb.reason.clone(),
                     )
                 }
                 StrategicCommand::SetSectorDirective { sector_id, mode } => {
@@ -907,18 +915,26 @@ pub(crate) fn apply_submissions_locked(
                     )
                 }
                 StrategicCommand::SendDipMessage { to_emp, text } => {
-                    let target_name = guard
+                    let target_label = guard
                         .sim
-                        .empires
-                        .get(*to_emp)
-                        .or_else(|| to_emp.checked_sub(1).and_then(|i| guard.sim.empires.get(i)))
-                        .map(|e| e.race.name.clone())
-                        .unwrap_or_else(|| format!("Empire #{to_emp}"));
+                        .empire_idx_from_id(*to_emp)
+                        .and_then(|i| guard.sim.empires.get(i))
+                        .map(|e| format!("{} (empireId={to_emp})", e.race.name))
+                        .unwrap_or_else(|| format!("Unknown Empire (empireId={to_emp})"));
+                    let desc = if fb.status == "applied" {
+                        format!("Diplomatic cable to {target_label}: \"{text}\"")
+                    } else {
+                        format!(
+                            "SendDipMessage({target_label}) [{}]: {}",
+                            fb.status,
+                            fb.reason.as_deref().unwrap_or("rejected")
+                        )
+                    };
                     guard.push_feed_event(
                         Some(emp_idx),
                         ArenaFeedKind::DipMessage,
-                        format!("Diplomatic cable to {target_name}: \"{text}\""),
-                        None,
+                        desc,
+                        fb.reason.clone(),
                     )
                 }
                 StrategicCommand::ScoutSector { sector_id } => guard.push_feed_event(

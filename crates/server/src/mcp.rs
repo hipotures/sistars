@@ -335,7 +335,11 @@ fn build_tools_list() -> Value {
                                                 "type": "object",
                                                 "required": ["targetEmp", "stance"],
                                                 "properties": {
-                                                    "targetEmp": { "type": "integer", "minimum": 0 },
+                                                    "targetEmp": {
+                                                        "type": "integer",
+                                                        "minimum": 1,
+                                                        "description": "1-based empireId (1..=N) matching knownEmpires[].empId and enemyPlanets[].ownerEmp (NOT 0-based lobby empireIdx)."
+                                                    },
                                                     "stance": { "type": "string", "enum": ["War", "Neutral", "Ceasefire", "Alliance"] }
                                                 }
                                             }
@@ -349,7 +353,11 @@ fn build_tools_list() -> Value {
                                                 "type": "object",
                                                 "required": ["toEmp", "text"],
                                                 "properties": {
-                                                    "toEmp": { "type": "integer", "minimum": 0 },
+                                                    "toEmp": {
+                                                        "type": "integer",
+                                                        "minimum": 1,
+                                                        "description": "1-based empireId (1..=N) matching knownEmpires[].empId and enemyPlanets[].ownerEmp (NOT 0-based lobby empireIdx)."
+                                                    },
                                                     "text": { "type": "string" }
                                                 }
                                             }
@@ -1024,7 +1032,7 @@ async fn handle_tool_briefing(state: &AppState, match_id: &str, empire_idx: usiz
           * cruiserShare, bshipShare, bomberShare: warship mix (Cruiser counters Bomber & intercepts; Battleship counters Cruiser; Bomber destroys planetary bunkers).\n\
           * techAlloc {{ene, wep, pro, con, ele, bio}} & mineralWeights {{iron, bora, germ}}.\n\
           * maxUpkeepRatio: above this threshold Governor pauses shipbuilding and scraps obsolete ships.\n\
-        - Diplomacy (`setDiplomacy` / `sendDipMessage`): stances War, Neutral, Ceasefire, Alliance.\n\
+        - Diplomacy (`setDiplomacy` / `sendDipMessage`): stances War, Neutral, Ceasefire, Alliance. CRITICAL: `targetEmp` and `toEmp` are strictly 1-based `empireId` (1..=N), matching `knownEmpires[].empId`, `enemyPlanets[].ownerEmp`, and diplomacy tables (unlike 0-based `empireIdx` used in lobby `join_match`).\n\
         - Always inspect `commandFeedback` returned by `submit_orders` to confirm whether each command was `applied`, `queued`, or `rejected` (with exact reason).",
         guard.scenario_name,
         emp.race.name,

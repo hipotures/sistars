@@ -390,8 +390,8 @@ async fn e2e_diplomacy_and_spectator_ws_feed() {
                 "pivotTriggers": ["Shift to war if Empire 2 violates ceasefire"]
             },
             "commands": [
-                { "setDiplomacy": { "targetEmp": 1, "stance": "Ceasefire" } },
-                { "sendDipMessage": { "toEmp": 1, "text": cable_text } }
+                { "setDiplomacy": { "targetEmp": 2, "stance": "Ceasefire" } },
+                { "sendDipMessage": { "toEmp": 2, "text": cable_text } }
             ]
         }))
         .send()
@@ -2085,4 +2085,113 @@ async fn e2e_zero_agent_seats_starts_immediately() {
         .unwrap();
     assert_eq!(status["status"].as_str(), Some("Running"));
     assert!(status["tick"].as_u64().unwrap_or(0) > 0);
+}
+
+#[tokio::test]
+async fn e2e_diplomacy_1_based_empire_id_and_feedback_in_arena() {
+    let srv = spawn_test_server().await;
+    let created: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches", srv.base_url))
+        .json(&json!({
+            "seed": 910099,
+            "galaxySize": "small",
+            "executionMode": "realtimeAsync",
+            "openAgentSeats": [0, 2, 3],
+            "lobbyTimeoutSec": 0,
+            "speedMult": 1.0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let match_id = created["matchId"].as_str().unwrap().to_string();
+    let tok0 = created["empireTokens"]["0"].as_str().unwrap().to_string();
+    let tok2 = created["empireTokens"]["2"].as_str().unwrap().to_string();
+    let tok3 = created["empireTokens"]["3"].as_str().unwrap().to_string();
+
+    // Seat 0 (Humanoids, empireId=1) targets empireId=3 (Insectoids, seat idx 2)
+    // and also tests rejected targetEmp=0 (neutral) and targetEmp=1 (self).
+    let cable = "E2E diplomatic check for Insectoids";
+    let resp: Value = srv
+        .client
+        .post(format!("{}/api/v1/matches/{match_id}/commands", srv.base_url))
+        .bearer_auth(&tok0)
+        .json(&json!({
+            "commands": [
+                { "setDiplomacy": { "targetEmp": 3, "stance": "Ceasefire" } },
+                { "sendDipMessage": { "toEmp": 3, "text": cable } },
+                { "setDiplomacy": { "targetEmp": 0, "stance": "War" } },
+                { "setDiplomacy": { "targetEmp": 1, "stance": "War" } }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let fb = resp["commandFeedback"].as_array().unwrap();
+    assert_eq!(fb.len(), 4);
+    assert_eq!(fb[0]["status"].as_str(), Some("applied"));
+    assert!(
+        fb[0]["reason"].as_str().unwrap_or("").contains("Insectoids")
+            && fb[0]["reason"].as_str().unwrap_or("").contains("empireId=3"),
+        "Expected Insectoids (empireId=3) in feedback, got: {}",
+        fb[0]
+    );
+    assert_eq!(fb[1]["status"].as_str(), Some("applied"));
+    assert!(
+        fb[1]["reason"].as_str().unwrap_or("").contains("Insectoids")
+            && fb[1]["reason"].as_str().unwrap_or("").contains("empireId=3"),
+        "Expected Insectoids (empireId=3) in cable feedback, got: {}",
+        fb[1]
+    );
+    assert_eq!(fb[2]["status"].as_str(), Some("rejected"));
+    assert_eq!(fb[3]["status"].as_str(), Some("rejected"));
+
+    // Insectoids (seat 2, empireId=3) must observe Ceasefire + cable from Humanoids (empId=1)
+    let obs_insectoids: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .bearer_auth(&tok2)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let known_i = obs_insectoids["observation"]["knownEmpires"]
+        .as_array()
+        .unwrap();
+    let humanoids_entry = known_i
+        .iter()
+        .find(|k| k["empId"].as_u64() == Some(1))
+        .expect("Insectoids must see Humanoids (empId=1)");
+    assert_eq!(humanoids_entry["stance"].as_str(), Some("Ceasefire"));
+    assert_eq!(humanoids_entry["inbox"][0]["text"].as_str(), Some(cable));
+
+    // Nucleids (seat 3, empireId=4) must NOT receive the cable or Ceasefire
+    let obs_nucleids: Value = srv
+        .client
+        .get(format!("{}/api/v1/matches/{match_id}/observation", srv.base_url))
+        .bearer_auth(&tok3)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let empty_vec = Vec::new();
+    let known_n = obs_nucleids["observation"]["knownEmpires"]
+        .as_array()
+        .unwrap_or(&empty_vec);
+    assert!(
+        known_n.iter().all(|k| k["inbox"].as_array().map(|a| a.is_empty()).unwrap_or(true)),
+        "Nucleids (empireId=4) must not receive Insectoids' cable: {:?}",
+        known_n
+    );
 }

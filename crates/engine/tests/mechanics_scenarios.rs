@@ -1552,11 +1552,11 @@ fn scenario_governor_sector_directive_and_diplomacy_commands() {
                 mode: SectorMode::Attack,
             },
             StrategicCommand::SetDiplomacy {
-                target_emp: 1,
+                target_emp: 2,
                 stance: DiplomaticStance::Ceasefire,
             },
             StrategicCommand::SendDipMessage {
-                to_emp: 1,
+                to_emp: 2,
                 text: "OfferPeace: Hold fire along Sector 1 border.".to_string(),
             },
         ],
@@ -1591,7 +1591,7 @@ fn scenario_governor_sector_directive_and_diplomacy_commands() {
     sim.submit_commands(
         0,
         vec![StrategicCommand::SetDiplomacy {
-            target_emp: 1,
+            target_emp: 2,
             stance: DiplomaticStance::War,
         }],
     );
@@ -1761,8 +1761,8 @@ fn scenario_wormhole_one_sided_discovery_and_camelcase_partial_policy() {
     let cmds_json = r#"[
         {"setPolicy": {"colonizeVsAttackBias": 0.25, "techAlloc": {"pro": 0.40}}},
         {"setSectorDirective": {"sectorId": 3, "mode": "Fortify"}},
-        {"setDiplomacy": {"targetEmp": 1, "stance": "Ceasefire"}},
-        {"sendDipMessage": {"toEmp": 1, "text": "CamelCase test cable"}},
+        {"setDiplomacy": {"targetEmp": 2, "stance": "Ceasefire"}},
+        {"sendDipMessage": {"toEmp": 2, "text": "CamelCase test cable"}},
         {"buildHub": {"planetIdx": 0, "kind": "Stargate"}}
     ]"#;
     let parsed_cmds: Vec<StrategicCommand> =
@@ -1988,5 +1988,249 @@ fn scenario_build_hub_deterministic_and_validation_feedback() {
     assert_eq!(
         sim.has_gate[1], 1,
         "Explicit BuildHub(Stargate) must build deterministically within a few ticks without RNG gating"
+    );
+}
+
+#[test]
+fn scenario_diplomacy_uses_1_based_empire_id_not_index() {
+    let mut cfg = SimConfig::default();
+    cfg.galaxy_size = GalaxySize::Small;
+    cfg.planets = 80;
+    let mut sim = Simulation::new(cfg, classic_races());
+    sim.init(424201, true);
+    assert_eq!(sim.empires.len(), 6);
+    assert_eq!(sim.empires[0].race.name, "Humanoids");
+    assert_eq!(sim.empires[2].race.name, "Insectoids");
+    assert_eq!(sim.empires[3].race.name, "Nucleids");
+
+    // Start with Ceasefire across all pairs so War transition is unambiguous
+    for a in 0..6 {
+        for b in (a + 1)..6 {
+            sim.set_relation(a, b, DiplomaticStance::Ceasefire);
+        }
+    }
+
+    // Empire 1 (Humanoids, idx 0) declares War on empireId=3 (Insectoids, idx 2)
+    let fb = sim.submit_commands(
+        0,
+        vec![StrategicCommand::SetDiplomacy {
+            target_emp: 3,
+            stance: DiplomaticStance::War,
+        }],
+    );
+    assert_eq!(fb.len(), 1);
+    assert_eq!(fb[0].status, "applied");
+    let reason = fb[0].reason.as_deref().unwrap_or("");
+    assert!(
+        reason.contains("Insectoids") && reason.contains("empireId=3"),
+        "Feedback must identify Insectoids (empireId=3), got: {:?}",
+        fb[0]
+    );
+    assert_eq!(
+        sim.get_relation(0, 2),
+        DiplomaticStance::War,
+        "Insectoids (idx 2, empireId=3) must now be at War with Humanoids"
+    );
+    assert_eq!(
+        sim.get_relation(0, 3),
+        DiplomaticStance::Ceasefire,
+        "Nucleids (idx 3, empireId=4) must remain untouched at Ceasefire"
+    );
+
+    // Eliminate Empire 6 (Antethereals, idx 5) by clearing its planets & fleets
+    for o in &mut sim.owner {
+        if *o == 6 {
+            *o = 0;
+        }
+    }
+    sim.fleets.retain(|fl| fl.emp != 6);
+    assert!(!sim.is_empire_alive(5));
+
+    // Reject targetEmp=0 (neutral), targetEmp=1 (self), targetEmp=99 (out of bounds), targetEmp=6 (eliminated)
+    let fb_invalid = sim.submit_commands(
+        0,
+        vec![
+            StrategicCommand::SetDiplomacy {
+                target_emp: 0,
+                stance: DiplomaticStance::War,
+            },
+            StrategicCommand::SetDiplomacy {
+                target_emp: 1,
+                stance: DiplomaticStance::War,
+            },
+            StrategicCommand::SetDiplomacy {
+                target_emp: 99,
+                stance: DiplomaticStance::War,
+            },
+            StrategicCommand::SetDiplomacy {
+                target_emp: 6,
+                stance: DiplomaticStance::War,
+            },
+        ],
+    );
+    assert_eq!(fb_invalid.len(), 4);
+    for item in &fb_invalid {
+        assert_eq!(
+            item.status, "rejected",
+            "Expected rejection for invalid diplomacy target: {:?}",
+            item
+        );
+    }
+    assert!(fb_invalid[0].reason.as_deref().unwrap_or("").contains("Unknown empireId 0"));
+    assert!(fb_invalid[1].reason.as_deref().unwrap_or("").contains("Cannot target own empire"));
+    assert!(fb_invalid[2].reason.as_deref().unwrap_or("").contains("Unknown empireId 99"));
+    assert!(fb_invalid[3].reason.as_deref().unwrap_or("").contains("eliminated"));
+}
+
+#[test]
+fn scenario_send_dip_message_uses_1_based_empire_id() {
+    let mut cfg = SimConfig::default();
+    cfg.galaxy_size = GalaxySize::Small;
+    cfg.planets = 80;
+    let mut sim = Simulation::new(cfg, classic_races());
+    sim.init(424202, true);
+
+    let msg_text = "Border treaty strictly for Insectoids (empireId=3)";
+    let fb = sim.submit_commands(
+        0,
+        vec![StrategicCommand::SendDipMessage {
+            to_emp: 3,
+            text: msg_text.to_string(),
+        }],
+    );
+    assert_eq!(fb.len(), 1);
+    assert_eq!(fb[0].status, "applied");
+    let reason = fb[0].reason.as_deref().unwrap_or("");
+    assert!(
+        reason.contains("Insectoids") && reason.contains("empireId=3"),
+        "Feedback must identify Insectoids (empireId=3), got: {:?}",
+        fb[0]
+    );
+
+    // Insectoids (idx 2, empireId=3) must receive the message; Nucleids (idx 3, empireId=4) must NOT
+    let obs_insectoids = sim.take_agent_observation(2);
+    let from_humanoids = obs_insectoids
+        .known_empires
+        .iter()
+        .find(|k| k.emp_id == 1)
+        .expect("Insectoids must see Humanoids (empId=1) in knownEmpires");
+    assert_eq!(from_humanoids.inbox.len(), 1);
+    assert_eq!(from_humanoids.inbox[0].from_emp, 1);
+    assert_eq!(from_humanoids.inbox[0].to_emp, 3);
+    assert_eq!(from_humanoids.inbox[0].text, msg_text);
+
+    let obs_nucleids = sim.take_agent_observation(3);
+    let nucleids_msgs: usize = obs_nucleids
+        .known_empires
+        .iter()
+        .map(|k| k.inbox.len())
+        .sum();
+    assert_eq!(
+        nucleids_msgs, 0,
+        "Nucleids (idx 3, empireId=4) must NOT receive a cable addressed to empireId=3"
+    );
+}
+
+#[test]
+fn scenario_early_colonizer_before_cruiser_spam_and_buffer_drain() {
+    // Part A: With colonize_vs_attack_bias = 1.0 and col_cost_mult = 1.5, the empire must colonize
+    // a 2nd planet quickly without building 7 scout cruisers before its first colonizer.
+    let mut cfg = SimConfig::default();
+    cfg.galaxy_size = GalaxySize::Small;
+    cfg.planets = 120;
+    cfg.col_cost_mult = 1.5;
+    let mut sim = Simulation::new(cfg, classic_races());
+    sim.init(777556, true);
+
+    sim.empires[0].race.doctrine.colonize_vs_attack_bias = 1.0;
+    sim.empires[0].race.doctrine.col_pop_req = 0.20;
+    sim.empires[0].race.doctrine.min_shipyard_pop_ratio = 0.20;
+    sim.empires[0].race.doctrine.ship_share = 0.35;
+
+    let mut first_col_tick: Option<u64> = None;
+    let mut cruisers_at_first_col: u32 = 0;
+    let mut second_planet_tick: Option<u64> = None;
+
+    for tick in 1..=350 {
+        sim.step_tick(true);
+        if first_col_tick.is_none()
+            && sim.fleets.iter().any(|fl| fl.emp == 1 && fl.fleet_type == FleetClass::Col)
+        {
+            first_col_tick = Some(tick);
+            cruisers_at_first_col = sim
+                .fleets
+                .iter()
+                .filter(|fl| fl.emp == 1 && fl.fleet_type == FleetClass::Cruiser)
+                .map(|fl| fl.ship_count as u32)
+                .sum();
+        }
+        let own_planets = sim.owner.iter().filter(|&&o| o == 1).count();
+        if second_planet_tick.is_none() && own_planets >= 2 {
+            second_planet_tick = Some(tick);
+            break;
+        }
+    }
+
+    assert!(
+        first_col_tick.is_some(),
+        "Empire with colonizeVsAttackBias=1.0 must build its first colonizer well within 350 ticks"
+    );
+    assert!(
+        cruisers_at_first_col <= 3,
+        "Governor must not spam 7 scout cruisers before building first colonizer (saw {cruisers_at_first_col} cruisers at tick {:?})",
+        first_col_tick
+    );
+    assert!(
+        second_planet_tick.is_some(),
+        "Empire with colonizeVsAttackBias=1.0 must establish a 2nd planet within 350 ticks"
+    );
+
+    // Part B: Large accumulated ship_prod_buf with low upkeep_ratio & ample minerals must drain
+    // smoothly into ships rather than stagnating forever at thousands of unused points.
+    let races = classic_races().into_iter().take(2).collect();
+    let planets = vec![
+        SandboxPlanet {
+            x: 100.0,
+            y: 100.0,
+            owner: 1,
+            pop: 110.0,
+            factories: 80.0,
+            mines: 40.0,
+            ship_prod_buf: 4500.0,
+            iron_surf: 5000.0,
+            bora_surf: 5000.0,
+            germ_surf: 5000.0,
+            starbase_tier: 3,
+            ..Default::default()
+        },
+        SandboxPlanet {
+            x: 900.0,
+            y: 900.0,
+            owner: 2,
+            pop: 80.0,
+            factories: 40.0,
+            ..Default::default()
+        },
+    ];
+    let mut sb_sim =
+        Simulation::new_sandbox(SimConfig::default(), races, planets, Vec::new(), Vec::new(), true);
+    // Peace so no attack launches — pure shipyard buffer drain into orbital task force
+    sb_sim.set_relation(0, 1, DiplomaticStance::Ceasefire);
+    let initial_buf = sb_sim.ship_prod_buf[0];
+
+    for _ in 0..40 {
+        sb_sim.step_tick(true);
+    }
+
+    let final_buf = sb_sim.ship_prod_buf[0];
+    let total_ships: u32 = sb_sim
+        .fleets
+        .iter()
+        .filter(|fl| fl.emp == 1 && fl.power > 0.0)
+        .map(|fl| fl.ship_count as u32)
+        .sum();
+    assert!(
+        final_buf < initial_buf * 0.85 && total_ships >= 6,
+        "Large shipProdBuf ({initial_buf:.1}) must drain into ships when upkeep is low and minerals are available (final_buf={final_buf:.1}, total_ships={total_ships})"
     );
 }
