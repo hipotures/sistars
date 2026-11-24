@@ -26,6 +26,7 @@
       <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
       <button class="hud-btn" id="btn10x" data-speed="10">10x</button>
       <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
+      <button class="hud-btn rec-btn" id="btnRec" title="Live REC: record the screen to a video file (options in 🎬 Replays)">⏺ REC</button>
     </div>
   </div>
 
@@ -110,8 +111,41 @@
     <div id="replayEnded" class="replay-muted" style="display:none;">End of the recording reached.</div>
   </div>
 
-  <h3>Recording</h3>
-  <div class="replay-muted">🎥 Video recording — coming soon.</div>
+  <h3>Live REC</h3>
+  <div class="replay-muted">Records what you see, in real time, to a video file (any match: live, replay or local). Also available as ⏺ REC in the top bar.</div>
+  <div class="rec-options">
+    <label class="rec-field"><span>Source</span>
+      <select id="recSource" class="text-input">
+        <option value="map" selected>Map only</option>
+        <option value="tab">Whole tab (HUD, panels)</option>
+      </select>
+    </label>
+    <label class="rec-field"><span>Resolution</span>
+      <select id="recHeight" class="text-input">
+        <option value="720">720p</option>
+        <option value="1080" selected>1080p</option>
+        <option value="0">Native</option>
+      </select>
+    </label>
+    <label class="rec-field"><span>FPS</span>
+      <select id="recFps" class="text-input">
+        <option value="30" selected>30</option>
+        <option value="60">60</option>
+      </select>
+    </label>
+    <label class="rec-field"><span>Quality</span>
+      <select id="recBitrate" class="text-input">
+        <option value="3000000">Low · 3 Mb/s</option>
+        <option value="8000000" selected>High · 8 Mb/s</option>
+        <option value="16000000">Max · 16 Mb/s</option>
+      </select>
+    </label>
+  </div>
+  <div class="replay-controls">
+    <button class="hud-btn rec-btn" id="btnRecPanel">⏺ Start recording</button>
+    <span id="recStatus" class="replay-progress-text"></span>
+  </div>
+  <div id="recHint" class="replay-hint"></div>
 </div>
 
 <!-- DRAWER: NEW ARENA MATCH CONFIGURATOR -->

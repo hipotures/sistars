@@ -12,6 +12,7 @@ import {
 } from './settingsStorage';
 import { UiController } from './ui';
 import { ReplayPanel } from './replayPanel';
+import { LiveRecorder, recordingSupported, type RecordSource } from './recorder';
 import {
   bindMcpSeat,
   createArenaMatch,
@@ -1010,6 +1011,75 @@ async function bootstrap(): Promise<void> {
     },
   });
   replayPanel.setServerUrl(arenaServerUrl);
+
+  // Live REC: record the map (or the whole tab) to a video file.
+  const recButtons = [document.getElementById('btnRec'), document.getElementById('btnRecPanel')].filter(
+    (b): b is HTMLElement => b !== null,
+  );
+  const recStatusEl = document.getElementById('recStatus');
+  const recHintEl = document.getElementById('recHint');
+  const fmtClock = (ms: number): string => {
+    const t = Math.floor(ms / 1000);
+    const mm = String(Math.floor((t % 3600) / 60)).padStart(2, '0');
+    const ss = String(t % 60).padStart(2, '0');
+    return t >= 3600 ? `${Math.floor(t / 3600)}:${mm}:${ss}` : `${mm}:${ss}`;
+  };
+  const liveRecorder = new LiveRecorder(
+    canvas,
+    overlayCanvas,
+    () => {
+      const match = activeArenaMatchId ? ` · ${activeArenaMatchId}` : '';
+      return `SI-Stars · Year ${lastHud.year.toFixed(1)}${match}`;
+    },
+    (st) => {
+      for (const b of recButtons) {
+        b.classList.toggle('recording', st.recording);
+        b.textContent = st.recording
+          ? `⏹ ${fmtClock(st.elapsedMs)}`
+          : b.id === 'btnRec'
+            ? '⏺ REC'
+            : '⏺ Start recording';
+      }
+      if (recStatusEl) {
+        recStatusEl.textContent = st.recording
+          ? `● ${fmtClock(st.elapsedMs)} · ${(st.bytes / (1024 * 1024)).toFixed(1)} MB · ${st.mimeType.split(';')[0]}`
+          : '';
+      }
+    },
+  );
+  const recSelect = (id: string): string =>
+    (document.getElementById(id) as HTMLSelectElement | null)?.value ?? '';
+  const toggleRecording = (): void => {
+    if (liveRecorder.recording) {
+      liveRecorder.stop();
+      return;
+    }
+    if (recHintEl) recHintEl.textContent = '';
+    const base = activeArenaMatchId ? `sistars_${activeArenaMatchId}` : 'sistars_local';
+    void liveRecorder
+      .start(
+        {
+          source: (recSelect('recSource') || 'map') as RecordSource,
+          height: Number(recSelect('recHeight') || 1080),
+          fps: Number(recSelect('recFps') || 30),
+          bitsPerSecond: Number(recSelect('recBitrate') || 8_000_000),
+        },
+        base,
+      )
+      .then(() => scheduleRender())
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (recHintEl) recHintEl.textContent = `Recording failed: ${msg}`;
+        ui.setStatus(`⚠ Recording failed: ${msg}`);
+      });
+  };
+  for (const b of recButtons) {
+    if (!recordingSupported()) {
+      (b as HTMLButtonElement).disabled = true;
+      b.title = 'Video recording is not supported in this browser';
+    }
+    b.addEventListener('click', toggleRecording);
+  }
   document.getElementById('tabReplays')?.addEventListener('click', () => {
     replayPanel.setServerUrl(arenaServerUrl);
     void refreshReplays(replayPanel.serverUrl());
@@ -1313,6 +1383,8 @@ async function bootstrap(): Promise<void> {
       dataVersion,
       fieldSettings,
     );
+    // Copy the freshly drawn map into a running "map" recording (must be the same task).
+    liveRecorder.captureFrame();
 
     if (measurePerf) {
       perfDrawSum += performance.now() - d0;
