@@ -1037,7 +1037,7 @@ async function bootstrap(): Promise<void> {
         b.textContent = st.recording
           ? `⏹ ${fmtClock(st.elapsedMs)}`
           : b.id === 'btnRec'
-            ? '⏺ REC'
+            ? '⏺'
             : '⏺ Start recording';
       }
       if (recStatusEl) {

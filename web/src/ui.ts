@@ -511,8 +511,13 @@ export class UiController {
 
     document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => {
       if (b.id === 'btnPause') return;
-      b.classList.toggle('active', !paused && Number(b.dataset.speed) === speed);
+      b.classList.toggle('active', Number(b.dataset.speed) === this.lastNonZeroSpeed);
     });
+    const chip = document.getElementById('btnSpeedMenu');
+    if (chip) {
+      chip.textContent = `${this.lastNonZeroSpeed}x ▾`;
+      chip.classList.toggle('active', !paused);
+    }
     this.syncEventLogVisibility();
   }
 
@@ -746,6 +751,15 @@ export class UiController {
         this.callbacks.onSpeedChange(speed);
       });
     });
+
+    // Speed presets live in a dropdown to save top-bar space.
+    const speedMenu = getEl('speedMenu');
+    getEl('btnSpeedMenu').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      speedMenu.classList.toggle('open');
+    });
+    speedMenu.addEventListener('click', () => speedMenu.classList.remove('open'));
+    document.addEventListener('click', () => speedMenu.classList.remove('open'));
 
     getEl('btnStep').addEventListener('click', () => this.callbacks.onStepTick());
 

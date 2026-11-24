@@ -19,14 +19,19 @@
     <div class="speed-controls">
       <button class="hud-btn active" id="btnPause" data-speed="0" title="Pause">⏸</button>
       <button class="hud-btn" id="btnStep" title="Step 1 tick">⏭</button>
-      <button class="hud-btn" id="btn01x" data-speed="0.1">0.1x</button>
-      <button class="hud-btn" id="btn025x" data-speed="0.25">0.25x</button>
-      <button class="hud-btn" id="btn05x" data-speed="0.5">0.5x</button>
-      <button class="hud-btn" id="btn1x" data-speed="1">1x</button>
-      <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
-      <button class="hud-btn" id="btn10x" data-speed="10">10x</button>
-      <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
-      <button class="hud-btn rec-btn" id="btnRec" title="Live REC: record the screen to a video file (options in 🎬 Replays)">⏺ REC</button>
+      <div class="speed-menu-wrap">
+        <button class="hud-btn speed-chip" id="btnSpeedMenu" title="Simulation speed">1x ▾</button>
+        <div class="speed-menu" id="speedMenu">
+          <button class="hud-btn" id="btn01x" data-speed="0.1">0.1x</button>
+          <button class="hud-btn" id="btn025x" data-speed="0.25">0.25x</button>
+          <button class="hud-btn" id="btn05x" data-speed="0.5">0.5x</button>
+          <button class="hud-btn" id="btn1x" data-speed="1">1x</button>
+          <button class="hud-btn" id="btn5x" data-speed="5">5x</button>
+          <button class="hud-btn" id="btn10x" data-speed="10">10x</button>
+          <button class="hud-btn" id="btn20x" data-speed="20">20x</button>
+        </div>
+      </div>
+      <button class="hud-btn rec-btn" id="btnRec" title="Live REC: record the screen to a video file (options in 🎬 Replays)">⏺</button>
     </div>
   </div>
 
@@ -34,16 +39,16 @@
 
   <div class="nav-actions">
     <div class="mode-switch" id="modeSwitch" title="Switch between Local WASM engine and Remote Arena Spectator Mode">
-      <button class="hud-btn active" id="btnModeLocal" data-mode="local">Local WASM</button>
-      <button class="hud-btn" id="btnModeRemote" data-mode="remote">Arena</button>
+      <button class="hud-btn active" id="btnModeLocal" data-mode="local" title="Local WASM engine in this browser">Local</button>
+      <button class="hud-btn" id="btnModeRemote" data-mode="remote" title="Remote Arena (server matches, spectator)">Arena</button>
     </div>
-    <button class="hud-btn" id="tabRaces" data-drawer="drawerRaces">🧬 Races</button>
-    <button class="hud-btn" id="tabTech" data-drawer="drawerTech">🔬 Tech (239)</button>
-    <button class="hud-btn" id="tabStats" data-drawer="drawerStats">📊 Charts &amp; AI</button>
-    <button class="hud-btn" id="tabReports" data-drawer="drawerReports">📋 Reports</button>
-    <button class="hud-btn" id="tabSettings" data-drawer="drawerSettings">⚙️ Settings</button>
-    <button class="hud-btn" id="tabReplays" data-drawer="drawerReplay" title="Recorded arena matches: list, download and play back">🎬 Replays</button>
-    <button class="hud-btn danger" id="btnReset" title="New galaxy">↺ Map</button>
+    <button class="hud-btn nav-icon" id="tabRaces" data-drawer="drawerRaces" title="Races">🧬</button>
+    <button class="hud-btn nav-icon" id="tabTech" data-drawer="drawerTech" title="Tech tree (239)">🔬</button>
+    <button class="hud-btn nav-icon" id="tabStats" data-drawer="drawerStats" title="Charts &amp; AI">📊</button>
+    <button class="hud-btn nav-icon" id="tabReports" data-drawer="drawerReports" title="Reports">📋</button>
+    <button class="hud-btn nav-icon" id="tabReplays" data-drawer="drawerReplay" title="Replays &amp; video recording">🎬</button>
+    <button class="hud-btn nav-icon" id="tabSettings" data-drawer="drawerSettings" title="Settings">⚙️</button>
+    <button class="hud-btn nav-icon danger" id="btnReset" title="New galaxy (local mode)">↺</button>
   </div>
 </header>
 

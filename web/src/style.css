@@ -112,6 +112,50 @@ header.hud-top {
 .speed-controls {
   display: flex;
   gap: 3px;
+  align-items: center;
+}
+
+.speed-menu-wrap {
+  position: relative;
+}
+
+.speed-chip {
+  min-width: 52px;
+}
+
+.speed-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: rgba(8, 12, 20, 0.98);
+  border: 1px solid var(--border);
+  z-index: 40;
+}
+
+.speed-menu.open {
+  display: flex;
+}
+
+.nav-icon {
+  font-size: 0.9rem;
+  padding: 3px 7px;
+}
+
+.hud-scenario-tag {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1500px) {
+  .brand-title {
+    display: none;
+  }
 }
 
 .hud-btn {
