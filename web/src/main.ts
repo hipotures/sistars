@@ -1356,7 +1356,7 @@ async function bootstrap(): Promise<void> {
   // Stops completely (0% CPU & 0% GPU) when paused and idle!
   const renderFrame = (): void => {
     rafId = null;
-    if (!renderDirty && !renderer.hasActiveFx) {
+    if (!renderDirty && !renderer.hasActiveFx && !liveRecorder.recording) {
       return;
     }
     renderDirty = false;
@@ -1384,7 +1384,12 @@ async function bootstrap(): Promise<void> {
       fieldSettings,
     );
     // Copy the freshly drawn map into a running "map" recording (must be the same task).
-    liveRecorder.captureFrame();
+    // Never let a recording problem stop the render loop.
+    try {
+      liveRecorder.captureFrame();
+    } catch (err) {
+      console.warn('[REC] frame capture failed:', err);
+    }
 
     if (measurePerf) {
       perfDrawSum += performance.now() - d0;
@@ -1423,7 +1428,8 @@ async function bootstrap(): Promise<void> {
     }
 
     // Keep animating only while ephemeral FX are fading out or another render was requested
-    if (renderer.hasActiveFx || renderDirty) {
+    // While recording, keep drawing every frame so a paused match still yields video frames.
+    if (renderer.hasActiveFx || renderDirty || liveRecorder.recording) {
       rafId = requestAnimationFrame(renderFrame);
     }
   };
