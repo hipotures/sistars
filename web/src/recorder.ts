@@ -13,12 +13,15 @@
  * The video shows exactly what the screen showed, including the speed the match ran at.
  * The file is built in memory and downloaded on Stop.
  */
-import { ArrayBufferTarget as Mp4Target, Muxer as Mp4Muxer } from 'mp4-muxer';
-import { ArrayBufferTarget as WebmTarget, Muxer as WebmMuxer } from 'webm-muxer';
+import { ArrayBufferTarget as Mp4Target, Muxer as Mp4Muxer } from "mp4-muxer";
+import {
+  ArrayBufferTarget as WebmTarget,
+  Muxer as WebmMuxer,
+} from "webm-muxer";
 
-export type RecordSource = 'map' | 'tab';
+export type RecordSource = "map" | "tab";
 /** 'webm' = VP9, 'mp4' = H.264 (plays everywhere). */
-export type RecordFormat = 'webm' | 'mp4';
+export type RecordFormat = "webm" | "mp4";
 
 export interface RecorderOptions {
   source: RecordSource;
@@ -32,11 +35,11 @@ export interface RecorderOptions {
    * so dark flat space does not turn into blotches the way bitrate modes starve it. Falls back to
    * bitsPerSecond when the encoder has no quantizer mode.
    */
-  constantQuality?: 'high' | 'max';
+  constantQuality?: "high" | "max";
 }
 
 /** Quantizer per codec (lower = better). H.264 0–51, VP9 0–63. */
-const QP: Record<RecordFormat, Record<'high' | 'max', number>> = {
+const QP: Record<RecordFormat, Record<"high" | "max", number>> = {
   mp4: { high: 20, max: 14 },
   webm: { high: 24, max: 14 },
 };
@@ -52,19 +55,30 @@ export interface RecorderStatus {
   dropped: number;
 }
 
-const MP4_TYPES = ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1', 'video/mp4'];
-const WEBM_TYPES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+const MP4_TYPES = [
+  "video/mp4;codecs=avc1.640028",
+  "video/mp4;codecs=avc1",
+  "video/mp4",
+];
+const WEBM_TYPES = [
+  "video/webm;codecs=vp9",
+  "video/webm;codecs=vp8",
+  "video/webm",
+];
 
 /** WebCodecs codec strings to try, best first, with the muxer codec id each one maps to. */
-const AVC_CODECS = ['avc1.640034', 'avc1.64002a', 'avc1.4d0034', 'avc1.42003e'];
-const VP9_CODECS = ['vp09.00.51.08', 'vp09.00.41.08', 'vp09.00.40.08'];
+const AVC_CODECS = ["avc1.640034", "avc1.64002a", "avc1.4d0034", "avc1.42003e"];
+const VP9_CODECS = ["vp09.00.51.08", "vp09.00.41.08", "vp09.00.40.08"];
 
 /** Frames waiting in the encoder before new ones are dropped (keeps the page responsive). */
 const MAX_ENCODE_QUEUE = 6;
 
-export function pickMimeType(format: RecordFormat = 'webm'): string | null {
-  if (typeof MediaRecorder === 'undefined') return null;
-  const order = format === 'mp4' ? [...MP4_TYPES, ...WEBM_TYPES] : [...WEBM_TYPES, ...MP4_TYPES];
+export function pickMimeType(format: RecordFormat = "webm"): string | null {
+  if (typeof MediaRecorder === "undefined") return null;
+  const order =
+    format === "mp4"
+      ? [...MP4_TYPES, ...WEBM_TYPES]
+      : [...WEBM_TYPES, ...MP4_TYPES];
   for (const m of order) {
     if (MediaRecorder.isTypeSupported(m)) return m;
   }
@@ -72,7 +86,7 @@ export function pickMimeType(format: RecordFormat = 'webm'): string | null {
 }
 
 export function recordingSupported(): boolean {
-  return typeof VideoEncoder !== 'undefined' || pickMimeType() !== null;
+  return typeof VideoEncoder !== "undefined" || pickMimeType() !== null;
 }
 
 interface CodecSession {
@@ -91,29 +105,36 @@ async function findEncoderConfig(
   bitrate: number,
   tryQuantizer: boolean,
 ): Promise<VideoEncoderConfig | null> {
-  const codecs = format === 'mp4' ? AVC_CODECS : VP9_CODECS;
-  const modes = (tryQuantizer ? ['quantizer', 'constant', 'variable'] : ['constant', 'variable']) as (
-    | 'quantizer'
-    | 'constant'
-    | 'variable'
-  )[];
-  for (const bitrateMode of modes) {
-    for (const codec of codecs) {
-      const cfg: VideoEncoderConfig = {
-        codec,
-        width,
-        height,
-        bitrate,
-        bitrateMode: bitrateMode as VideoEncoderBitrateMode,
-        framerate: fps,
-        latencyMode: 'quality',
-        ...(format === 'mp4' ? { avc: { format: 'avc' as const } } : {}),
-      };
-      try {
-        const res = await VideoEncoder.isConfigSupported(cfg);
-        if (res.supported) return res.config ?? cfg;
-      } catch {
-        // try the next one
+  const codecs = format === "mp4" ? AVC_CODECS : VP9_CODECS;
+  const modes = (
+    tryQuantizer
+      ? ["quantizer", "constant", "variable"]
+      : ["constant", "variable"]
+  ) as ("quantizer" | "constant" | "variable")[];
+  // Hardware encoders first: software VP9/H.264 cannot keep up with 4K at 60 fps.
+  for (const hardwareAcceleration of [
+    "prefer-hardware",
+    "no-preference",
+  ] as const) {
+    for (const bitrateMode of modes) {
+      for (const codec of codecs) {
+        const cfg: VideoEncoderConfig = {
+          hardwareAcceleration,
+          codec,
+          width,
+          height,
+          bitrate,
+          bitrateMode: bitrateMode as VideoEncoderBitrateMode,
+          framerate: fps,
+          latencyMode: "quality",
+          ...(format === "mp4" ? { avc: { format: "avc" as const } } : {}),
+        };
+        try {
+          const res = await VideoEncoder.isConfigSupported(cfg);
+          if (res.supported) return res.config ?? cfg;
+        } catch {
+          // try the next one
+        }
       }
     }
   }
@@ -134,11 +155,11 @@ export class LiveRecorder {
   private frames = 0;
   private dropped = 0;
   private startedAt = 0;
-  private mimeType = '';
+  private mimeType = "";
   private fps = 30;
   private composite: HTMLCanvasElement | null = null;
   private compositeCtx: CanvasRenderingContext2D | null = null;
-  private fileBase = 'sistars';
+  private fileBase = "sistars";
   private tickTimer: number | null = null;
   private frameIntervalMs = 1000 / 30;
   private lastCaptureMs = 0;
@@ -166,9 +187,12 @@ export class LiveRecorder {
     this.frames = 0;
     this.dropped = 0;
 
-    if (opts.source === 'map') {
+    if (opts.source === "map") {
       this.setupComposite(opts.height);
-      if (typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined') {
+      if (
+        typeof VideoEncoder !== "undefined" &&
+        typeof VideoFrame !== "undefined"
+      ) {
         const session = await this.createCodecSession(opts);
         if (session) {
           this.codec = session;
@@ -180,21 +204,24 @@ export class LiveRecorder {
       }
       // Fallback: MediaRecorder on the composite canvas.
       const c = this.composite;
-      if (!c) throw new Error('Could not create the recording canvas.');
+      if (!c) throw new Error("Could not create the recording canvas.");
       this.captureFrame();
       this.startMediaRecorder(c.captureStream(this.fps), opts);
       return;
     }
 
     const md = navigator.mediaDevices as MediaDevices & {
-      getDisplayMedia?: (c: DisplayMediaStreamOptions & Record<string, unknown>) => Promise<MediaStream>;
+      getDisplayMedia?: (
+        c: DisplayMediaStreamOptions & Record<string, unknown>,
+      ) => Promise<MediaStream>;
     };
-    if (!md?.getDisplayMedia) throw new Error('Screen capture is not available in this browser.');
+    if (!md?.getDisplayMedia)
+      throw new Error("Screen capture is not available in this browser.");
     const stream = await md.getDisplayMedia({
       video: { frameRate: opts.fps },
       audio: false,
       preferCurrentTab: true,
-      selfBrowserSurface: 'include',
+      selfBrowserSurface: "include",
     });
     this.startMediaRecorder(stream, opts);
   }
@@ -207,7 +234,7 @@ export class LiveRecorder {
       return;
     }
     const rec = this.mediaRecorder;
-    if (rec && rec.state !== 'inactive') rec.stop();
+    if (rec && rec.state !== "inactive") rec.stop();
   }
 
   /** True when a 'map' recording wants its next frame (throttled to the chosen FPS). */
@@ -247,7 +274,10 @@ export class LiveRecorder {
       // A keyframe every 2 s keeps seeking in players fast.
       const keyFrame = this.frames % (this.fps * 2) === 0;
       try {
-        codec.encoder.encode(frame, { keyFrame, ...codec.encodeExtra } as VideoEncoderEncodeOptions);
+        codec.encoder.encode(frame, {
+          keyFrame,
+          ...codec.encodeExtra,
+        } as VideoEncoderEncodeOptions);
         this.frames += 1;
       } finally {
         frame.close();
@@ -258,23 +288,32 @@ export class LiveRecorder {
   }
 
   private setupComposite(height: number): void {
-    const c = document.createElement('canvas');
+    const c = document.createElement("canvas");
     const srcW = Math.max(2, this.baseCanvas.width || this.overlayCanvas.width);
-    const srcH = Math.max(2, this.baseCanvas.height || this.overlayCanvas.height);
+    const srcH = Math.max(
+      2,
+      this.baseCanvas.height || this.overlayCanvas.height,
+    );
     const h = height > 0 ? Math.min(height, srcH) : srcH;
     // Encoders want even dimensions.
     c.height = Math.floor(h / 2) * 2;
     c.width = Math.floor((srcW * (c.height / srcH)) / 2) * 2;
-    const ctx = c.getContext('2d', { alpha: false });
-    if (!ctx) throw new Error('Could not create the recording canvas.');
+    const ctx = c.getContext("2d", { alpha: false });
+    if (!ctx) throw new Error("Could not create the recording canvas.");
     this.composite = c;
     this.compositeCtx = ctx;
   }
 
-  private drawComposite(c: HTMLCanvasElement, ctx: CanvasRenderingContext2D): void {
-    ctx.fillStyle = '#05070d';
+  private drawComposite(
+    c: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+  ): void {
+    ctx.fillStyle = "#05070d";
     ctx.fillRect(0, 0, c.width, c.height);
-    if (this.baseCanvas.style.visibility !== 'hidden' && this.baseCanvas.width > 0) {
+    if (
+      this.baseCanvas.style.visibility !== "hidden" &&
+      this.baseCanvas.width > 0
+    ) {
       ctx.drawImage(this.baseCanvas, 0, 0, c.width, c.height);
     }
     if (this.overlayCanvas.width > 0) {
@@ -290,15 +329,17 @@ export class LiveRecorder {
       const w = ctx.measureText(text).width + pad * 2;
       const h = fs + pad * 1.2;
       const y = c.height - h - pad * 2;
-      ctx.fillStyle = 'rgba(5, 7, 13, 0.65)';
+      ctx.fillStyle = "rgba(5, 7, 13, 0.65)";
       ctx.fillRect(pad * 2, y, w, h);
-      ctx.fillStyle = '#e2e8f0';
-      ctx.textBaseline = 'middle';
+      ctx.fillStyle = "#e2e8f0";
+      ctx.textBaseline = "middle";
       ctx.fillText(text, pad * 3, y + h / 2);
     }
   }
 
-  private async createCodecSession(opts: RecorderOptions): Promise<CodecSession | null> {
+  private async createCodecSession(
+    opts: RecorderOptions,
+  ): Promise<CodecSession | null> {
     const c = this.composite;
     if (!c) return null;
     const cfg = await findEncoderConfig(
@@ -311,34 +352,47 @@ export class LiveRecorder {
     );
     if (!cfg) return null;
 
-    let addChunk: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => void;
+    let addChunk: (
+      chunk: EncodedVideoChunk,
+      meta?: EncodedVideoChunkMetadata,
+    ) => void;
     let finalize: () => Blob;
     let mime: string;
-    if (opts.format === 'mp4') {
+    if (opts.format === "mp4") {
       const target = new Mp4Target();
       const muxer = new Mp4Muxer({
         target,
-        video: { codec: 'avc', width: c.width, height: c.height, frameRate: this.fps },
-        fastStart: 'in-memory',
-        firstTimestampBehavior: 'offset',
+        video: {
+          codec: "avc",
+          width: c.width,
+          height: c.height,
+          frameRate: this.fps,
+        },
+        fastStart: "in-memory",
+        firstTimestampBehavior: "offset",
       });
       addChunk = (chunk, meta) => muxer.addVideoChunk(chunk, meta);
       finalize = () => {
         muxer.finalize();
-        return new Blob([target.buffer], { type: 'video/mp4' });
+        return new Blob([target.buffer], { type: "video/mp4" });
       };
       mime = `video/mp4;codecs=${cfg.codec}`;
     } else {
       const target = new WebmTarget();
       const muxer = new WebmMuxer({
         target,
-        video: { codec: 'V_VP9', width: c.width, height: c.height, frameRate: this.fps },
-        firstTimestampBehavior: 'offset',
+        video: {
+          codec: "V_VP9",
+          width: c.width,
+          height: c.height,
+          frameRate: this.fps,
+        },
+        firstTimestampBehavior: "offset",
       });
       addChunk = (chunk, meta) => muxer.addVideoChunk(chunk, meta);
       finalize = () => {
         muxer.finalize();
-        return new Blob([target.buffer], { type: 'video/webm' });
+        return new Blob([target.buffer], { type: "video/webm" });
       };
       mime = `video/webm;codecs=${cfg.codec}`;
     }
@@ -354,15 +408,27 @@ export class LiveRecorder {
       },
     });
     encoder.configure(cfg);
-    const mode = String(cfg.bitrateMode ?? 'variable');
+    const mode = String(cfg.bitrateMode ?? "variable");
     let encodeExtra: Record<string, unknown> = {};
     let modeLabel = mode;
-    if (mode === 'quantizer' && opts.constantQuality) {
+    if (mode === "quantizer" && opts.constantQuality) {
       const q = QP[opts.format][opts.constantQuality];
-      encodeExtra = opts.format === 'mp4' ? { avc: { quantizer: q } } : { vp9: { quantizer: q } };
+      encodeExtra =
+        opts.format === "mp4"
+          ? { avc: { quantizer: q } }
+          : { vp9: { quantizer: q } };
       modeLabel = `constant quality q${q}`;
     }
-    return { encoder, encodeExtra, finalize, mime: `${mime} · ${modeLabel}` };
+    const hw =
+      cfg.hardwareAcceleration === "prefer-hardware"
+        ? "GPU encoder"
+        : "CPU encoder";
+    return {
+      encoder,
+      encodeExtra,
+      finalize,
+      mime: `${mime} · ${modeLabel} · ${hw}`,
+    };
   }
 
   private async finishCodec(): Promise<void> {
@@ -372,11 +438,13 @@ export class LiveRecorder {
     this.finishing = true;
     this.emitStatus();
     try {
-      if (codec.encoder.state === 'configured') await codec.encoder.flush();
-      if (codec.encoder.state !== 'closed') codec.encoder.close();
+      if (codec.encoder.state === "configured") await codec.encoder.flush();
+      if (codec.encoder.state !== "closed") codec.encoder.close();
       if (this.frames > 0) this.download(codec.finalize());
     } catch (err) {
-      this.onError(`Could not finish the video: ${err instanceof Error ? err.message : String(err)}`);
+      this.onError(
+        `Could not finish the video: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       this.codec = null;
       this.cleanup();
@@ -387,13 +455,15 @@ export class LiveRecorder {
     const mime = pickMimeType(opts.format);
     if (!mime) {
       stream.getTracks().forEach((t) => t.stop());
-      throw new Error('This browser cannot record video.');
+      throw new Error("This browser cannot record video.");
     }
     this.mimeType = mime;
-    const recOpts: MediaRecorderOptions & { videoBitrateMode?: 'constant' | 'variable' } = {
+    const recOpts: MediaRecorderOptions & {
+      videoBitrateMode?: "constant" | "variable";
+    } = {
       mimeType: mime,
       videoBitsPerSecond: opts.bitsPerSecond,
-      videoBitrateMode: 'constant',
+      videoBitrateMode: "constant",
     };
     const rec = new MediaRecorder(stream, recOpts);
     this.chunks = [];
@@ -405,7 +475,9 @@ export class LiveRecorder {
     };
     rec.onstop = () => {
       this.active = false;
-      this.download(new Blob(this.chunks, { type: this.mimeType.split(';')[0] }));
+      this.download(
+        new Blob(this.chunks, { type: this.mimeType.split(";")[0] }),
+      );
       this.stream?.getTracks().forEach((t) => t.stop());
       this.stream = null;
       this.mediaRecorder = null;
@@ -413,7 +485,9 @@ export class LiveRecorder {
       this.cleanup();
     };
     // The user can end a tab capture from the browser's own "Stop sharing" bar.
-    stream.getVideoTracks().forEach((t) => t.addEventListener('ended', () => this.stop()));
+    stream
+      .getVideoTracks()
+      .forEach((t) => t.addEventListener("ended", () => this.stop()));
     this.stream = stream;
     this.mediaRecorder = rec;
     rec.start(1000);
@@ -428,10 +502,10 @@ export class LiveRecorder {
   }
 
   private download(blob: Blob): void {
-    const ext = blob.type.startsWith('video/mp4') ? 'mp4' : 'webm';
-    const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    const ext = blob.type.startsWith("video/mp4") ? "mp4" : "webm";
+    const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
     a.download = `${this.fileBase}_${stamp}.${ext}`;
     document.body.appendChild(a);

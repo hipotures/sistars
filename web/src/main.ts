@@ -1093,6 +1093,14 @@ async function bootstrap(): Promise<void> {
         const mbps = secs > 2 ? ((st.bytes * 8) / secs / 1e6).toFixed(1) : '…';
         const fps = secs > 2 ? (st.frames / secs).toFixed(0) : '…';
         const codec = st.mimeType.replace(/^video\//, '').replace(';codecs=', ' ');
+        // Warn when the encoder cannot keep up (frames dropped), with what to change.
+        const dropPct = st.frames + st.dropped > 0 ? (st.dropped * 100) / (st.frames + st.dropped) : 0;
+        if (recHintEl && (st.recording || st.finishing)) {
+          recHintEl.textContent =
+            dropPct > 5 && st.frames + st.dropped > 60
+              ? `⚠ ${dropPct.toFixed(0)}% of frames dropped: the encoder cannot keep up. Try MP4 · H.264, 30 FPS or a lower resolution.`
+              : '';
+        }
         if (st.recording) {
           lastRecSummary = `${fmtClock(st.elapsedMs)} · ${mbps} Mb/s · ${fps} fps${
             st.dropped > 0 ? ` (${st.dropped} dropped)` : ''
