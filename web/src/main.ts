@@ -1078,20 +1078,32 @@ async function bootstrap(): Promise<void> {
     },
     (st) => {
       for (const b of recButtons) {
-        b.classList.toggle('recording', st.recording);
-        b.textContent = st.recording
-          ? `⏹ ${fmtClock(st.elapsedMs)}`
-          : b.id === 'btnRec'
-            ? '⏺'
-            : '⏺ Start recording';
+        b.classList.toggle('recording', st.recording || st.finishing);
+        b.textContent = st.finishing
+          ? '⏳ Saving…'
+          : st.recording
+            ? `⏹ ${fmtClock(st.elapsedMs)}`
+            : b.id === 'btnRec'
+              ? '⏺'
+              : '⏺ Start recording';
       }
       if (recStatusEl) {
-        recStatusEl.textContent = st.recording
-          ? `● ${fmtClock(st.elapsedMs)} · ${(st.bytes / (1024 * 1024)).toFixed(1)} MB · ${
-              st.elapsedMs > 2000 ? ((st.bytes * 8) / (st.elapsedMs / 1000) / 1e6).toFixed(1) : '…'
-            } Mb/s · ${st.mimeType.split(';')[0]}`
-          : '';
+        const secs = st.elapsedMs / 1000;
+        const mbps = secs > 2 ? ((st.bytes * 8) / secs / 1e6).toFixed(1) : '…';
+        const fps = secs > 2 ? (st.frames / secs).toFixed(0) : '…';
+        const codec = st.mimeType.replace(/^video\//, '').replace(';codecs=', ' ');
+        recStatusEl.textContent = st.finishing
+          ? `Encoding the last frames and saving ${(st.bytes / (1024 * 1024)).toFixed(1)} MB…`
+          : st.recording
+            ? `● ${fmtClock(st.elapsedMs)} · ${(st.bytes / (1024 * 1024)).toFixed(1)} MB · ${mbps} Mb/s · ${fps} fps${
+                st.dropped > 0 ? ` (${st.dropped} dropped)` : ''
+              } · ${codec}`
+            : '';
       }
+    },
+    (msg) => {
+      if (recHintEl) recHintEl.textContent = msg;
+      ui.setStatus(`⚠ ${msg}`);
     },
   );
   const recSelect = (id: string): string =>
