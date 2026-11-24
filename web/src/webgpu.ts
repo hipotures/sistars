@@ -466,6 +466,14 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
     }
   }
 
+  // Dither the soft fill: on the dark background an 8-bit target leaves visible bands in the
+  // radial glow. Static interleaved-gradient noise of about one output step hides them.
+  if (fillA > 0.003) {
+    let ign = fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
+    let peak = max(max(top1Col.r, top1Col.g), max(top1Col.b, 0.2));
+    fillA = clamp(fillA + (ign - 0.5) * (1.5 / 255.0) / peak, 0.0, 1.0);
+  }
+
   var outRgb = top1Col;
   var outA = fillA;
 
