@@ -986,7 +986,8 @@ button:disabled {
   right: 0;
   width: 390px;
   max-width: 96vw;
-  background: var(--panel);
+  /* Opaque: the translucent --panel let the arena feed and map labels show through. */
+  background: #0d131f;
   border-left: 1px solid var(--border);
   z-index: 25;
   padding: 14px;
