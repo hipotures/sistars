@@ -13,6 +13,8 @@
  */
 
 export type RecordSource = 'map' | 'tab';
+/** 'webm' = VP9/VP8 (holds the requested bitrate well), 'mp4' = H.264 (plays everywhere). */
+export type RecordFormat = 'webm' | 'mp4';
 
 export interface RecorderOptions {
   source: RecordSource;
@@ -20,6 +22,7 @@ export interface RecorderOptions {
   height: number;
   fps: number;
   bitsPerSecond: number;
+  format: RecordFormat;
 }
 
 export interface RecorderStatus {
@@ -29,18 +32,13 @@ export interface RecorderStatus {
   mimeType: string;
 }
 
-const MIME_CANDIDATES = [
-  'video/mp4;codecs=avc1.640028',
-  'video/mp4;codecs=avc1',
-  'video/mp4',
-  'video/webm;codecs=vp9',
-  'video/webm;codecs=vp8',
-  'video/webm',
-];
+const MP4_TYPES = ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1', 'video/mp4'];
+const WEBM_TYPES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
 
-export function pickMimeType(): string | null {
+export function pickMimeType(format: RecordFormat = 'webm'): string | null {
   if (typeof MediaRecorder === 'undefined') return null;
-  for (const m of MIME_CANDIDATES) {
+  const order = format === 'mp4' ? [...MP4_TYPES, ...WEBM_TYPES] : [...WEBM_TYPES, ...MP4_TYPES];
+  for (const m of order) {
     if (MediaRecorder.isTypeSupported(m)) return m;
   }
   return null;
@@ -78,7 +76,7 @@ export class LiveRecorder {
 
   public async start(opts: RecorderOptions, fileBase: string): Promise<void> {
     if (this.mediaRecorder) return;
-    const mime = pickMimeType();
+    const mime = pickMimeType(opts.format);
     if (!mime) throw new Error('This browser cannot record video (MediaRecorder unsupported).');
     this.mimeType = mime;
     this.fileBase = fileBase;
@@ -113,7 +111,14 @@ export class LiveRecorder {
       stream = c.captureStream(opts.fps);
     }
 
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: opts.bitsPerSecond });
+    // Constant bitrate where supported: in variable mode the encoders spend far less than asked on
+    // the mostly black map and turn motion into large blocks. Unknown options are ignored.
+    const recOpts: MediaRecorderOptions & { videoBitrateMode?: 'constant' | 'variable' } = {
+      mimeType: mime,
+      videoBitsPerSecond: opts.bitsPerSecond,
+      videoBitrateMode: 'constant',
+    };
+    const rec = new MediaRecorder(stream, recOpts);
     this.chunks = [];
     this.bytes = 0;
     rec.ondataavailable = (ev) => {

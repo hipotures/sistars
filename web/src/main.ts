@@ -1087,7 +1087,9 @@ async function bootstrap(): Promise<void> {
       }
       if (recStatusEl) {
         recStatusEl.textContent = st.recording
-          ? `● ${fmtClock(st.elapsedMs)} · ${(st.bytes / (1024 * 1024)).toFixed(1)} MB · ${st.mimeType.split(';')[0]}`
+          ? `● ${fmtClock(st.elapsedMs)} · ${(st.bytes / (1024 * 1024)).toFixed(1)} MB · ${
+              st.elapsedMs > 2000 ? ((st.bytes * 8) / (st.elapsedMs / 1000) / 1e6).toFixed(1) : '…'
+            } Mb/s · ${st.mimeType.split(';')[0]}`
           : '';
       }
     },
@@ -1103,6 +1105,7 @@ async function bootstrap(): Promise<void> {
           height: Number(recSelect('recHeight') || 1080),
           fps: Number(recSelect('recFps') || 30),
           bitsPerSecond: Number(recSelect('recBitrate') || 8_000_000),
+          format: recSelect('recFormat') === 'mp4' ? 'mp4' : 'webm',
         },
         base,
       );
@@ -1125,7 +1128,7 @@ async function bootstrap(): Promise<void> {
   };
   // Remember recording settings and replay speed in this browser.
   const REC_SETTINGS_KEY = 'sistars.recSettings';
-  const REC_SELECT_IDS = ['recSource', 'recHeight', 'recFps', 'recBitrate'];
+  const REC_SELECT_IDS = ['recSource', 'recHeight', 'recFps', 'recFormat', 'recBitrate'];
   try {
     const saved = JSON.parse(localStorage.getItem(REC_SETTINGS_KEY) ?? '{}') as Record<string, string>;
     for (const id of REC_SELECT_IDS) {
