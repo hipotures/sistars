@@ -449,7 +449,24 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
   // Fill strictly from top1 (zero RGB mixing) with concave radial glow around planets
   let top1Col = empireColor(f32(top1Idx + 1u));
   let baseTint = smoothstep(0.0, 0.08, top1Val) * 0.05;
-  let radialGlow = pow(top1Val, 2.2) * 0.48;
+  // The signal is the max of per-planet cones, so its slope breaks where two cones meet and the
+  // glow shows ridges ("waves"). The glow (only) uses a wider 8-tap average of the same empire's
+  // signal; contours and borders keep the sharp value.
+  const GLOW_R: f32 = 10.0;
+  let gx = GLOW_R * invW;
+  let gy = GLOW_R * invH;
+  var glowSum = top1Val * 2.0;
+  var gOff = array<vec2<f32>, 8>(
+    vec2<f32>(gx, 0.0), vec2<f32>(-gx, 0.0), vec2<f32>(0.0, gy), vec2<f32>(0.0, -gy),
+    vec2<f32>(0.7071 * gx, 0.7071 * gy), vec2<f32>(-0.7071 * gx, 0.7071 * gy),
+    vec2<f32>(0.7071 * gx, -0.7071 * gy), vec2<f32>(-0.7071 * gx, -0.7071 * gy),
+  );
+  for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+    var gs = sampleSignals(in.uv + gOff[k]);
+    glowSum = glowSum + gs[top1Idx];
+  }
+  let glowVal = glowSum * 0.1;
+  let radialGlow = pow(glowVal, 2.2) * 0.48;
   var fillA = inside1 * clamp(baseTint + radialGlow, 0.0, 0.65);
 
   // Equilibrium line (A = B): wide central-difference gradient with fixed (top1Idx, top2Idx)
@@ -482,7 +499,7 @@ fn fs_composite(in: FullscreenOut) -> @location(0) vec4<f32> {
     let n2 = f32(h >> 16u) / 65535.0;
     let tri = n1 + n2 - 1.0;
     let peak = max(max(top1Col.r, top1Col.g), max(top1Col.b, 0.2));
-    fillA = clamp(fillA + tri * (1.0 / 255.0) / peak, 0.0, 1.0);
+    fillA = clamp(fillA + tri * (1.5 / 255.0) / peak, 0.0, 1.0);
   }
 
   var outRgb = top1Col;
