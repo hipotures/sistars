@@ -1069,6 +1069,7 @@ async function bootstrap(): Promise<void> {
     const ss = String(t % 60).padStart(2, '0');
     return t >= 3600 ? `${Math.floor(t / 3600)}:${mm}:${ss}` : `${mm}:${ss}`;
   };
+  let lastRecSummary = '';
   const liveRecorder = new LiveRecorder(
     canvas,
     overlayCanvas,
@@ -1092,13 +1093,20 @@ async function bootstrap(): Promise<void> {
         const mbps = secs > 2 ? ((st.bytes * 8) / secs / 1e6).toFixed(1) : '…';
         const fps = secs > 2 ? (st.frames / secs).toFixed(0) : '…';
         const codec = st.mimeType.replace(/^video\//, '').replace(';codecs=', ' ');
+        if (st.recording) {
+          lastRecSummary = `${fmtClock(st.elapsedMs)} · ${mbps} Mb/s · ${fps} fps${
+            st.dropped > 0 ? ` (${st.dropped} dropped)` : ''
+          } · ${codec}`;
+        }
+        const mb = `${(st.bytes / (1024 * 1024)).toFixed(1)} MB`;
+        // After Stop the last numbers stay visible, so the result can be checked.
         recStatusEl.textContent = st.finishing
-          ? `Encoding the last frames and saving ${(st.bytes / (1024 * 1024)).toFixed(1)} MB…`
+          ? `Encoding the last frames and saving ${mb}…`
           : st.recording
-            ? `● ${fmtClock(st.elapsedMs)} · ${(st.bytes / (1024 * 1024)).toFixed(1)} MB · ${mbps} Mb/s · ${fps} fps${
-                st.dropped > 0 ? ` (${st.dropped} dropped)` : ''
-              } · ${codec}`
-            : '';
+            ? `● ${mb} · ${lastRecSummary}`
+            : lastRecSummary
+              ? `✓ Saved ${mb} · ${lastRecSummary}`
+              : '';
       }
     },
     (msg) => {
