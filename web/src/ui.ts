@@ -1442,7 +1442,7 @@ export class UiController {
     if (this.lastHud) this.renderOpenDrawers(this.lastHud);
   }
 
-  private closeAllDrawers(): void {
+  public closeAllDrawers(): void {
     for (const id of DRAWER_IDS) {
       getEl(id).classList.remove('open');
       const tabId = DRAWER_TAB_MAP[id];

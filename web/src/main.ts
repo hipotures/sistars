@@ -1145,6 +1145,8 @@ async function bootstrap(): Promise<void> {
         },
         base,
       );
+      // A tab recording captures everything visible: close the drawer the user started it from.
+      if (recSelect('recSource') === 'tab') ui.closeAllDrawers();
       scheduleRender();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
