@@ -51,6 +51,8 @@ const ASC_DEFAULT_SORT_KEYS = new Set(['id', 'owner', 'emp', 'label', 'tech', 'r
 
 export interface UiCallbacks {
   onSpeedChange: (speed: number) => void;
+  /** A speed was picked while paused: remember it for ▶ without resuming. */
+  onSpeedPreselect: (speed: number) => void;
   onStepTick: () => void;
   onReset: () => void;
   onParamChange: (key: string, value: number) => void;
@@ -498,6 +500,13 @@ export class UiController {
     getEl('statusMsgStats').textContent = text;
   }
 
+  /** Remember a speed for the next ▶ without resuming (keeps the pause state). */
+  public preselectSpeed(speed: number): void {
+    if (speed <= 0) return;
+    this.lastNonZeroSpeed = speed;
+    this.setActiveSpeedButton(this.currentSpeed > 0 ? speed : 0);
+  }
+
   public setActiveSpeedButton(speed: number): void {
     this.currentSpeed = speed;
     if (speed > 0) {
@@ -747,6 +756,13 @@ export class UiController {
                 ? this.lastNonZeroSpeed
                 : 1
             : rawSpeed;
+        if (btn.id !== 'btnPause' && this.currentSpeed === 0) {
+          // Paused: choosing a speed only preselects it (e.g. set 10x, start REC, then ▶).
+          this.lastNonZeroSpeed = rawSpeed;
+          this.setActiveSpeedButton(0);
+          this.callbacks.onSpeedPreselect(rawSpeed);
+          return;
+        }
         this.setActiveSpeedButton(speed);
         this.callbacks.onSpeedChange(speed);
       });

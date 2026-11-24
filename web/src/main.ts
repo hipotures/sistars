@@ -543,6 +543,10 @@ async function bootstrap(): Promise<void> {
   };
 
   const ui = new UiController(meta, catalog, config, {
+    onSpeedPreselect: (s) => {
+      lastNonZeroSpeed = s;
+      replayPanel.preselectSpeed(s);
+    },
     onSpeedChange: (newSpeed) => {
       speed = newSpeed;
       persisted.speed = newSpeed;
@@ -989,6 +993,10 @@ async function bootstrap(): Promise<void> {
     onSpeed: (s) => {
       transport.setSpeed(s);
       ui.setActiveSpeedButton(s);
+    },
+    onPreselect: (s) => {
+      lastNonZeroSpeed = s;
+      ui.preselectSpeed(s);
     },
     onSeek: (tick) => {
       if (transport instanceof RemoteArenaTransport) {

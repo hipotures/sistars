@@ -9,6 +9,7 @@ export interface ReplayPanelCallbacks {
   onResume: (speed: number) => void;
   onStep: () => void;
   onSpeed: (speed: number) => void;
+  onPreselect: (speed: number) => void;
   onSeek: (tick: number) => void;
   onStop: () => void;
 }
@@ -151,6 +152,13 @@ export class ReplayPanel {
     this.renderProgress();
   }
 
+  /** Speed chosen elsewhere (top bar) while paused: use it for ▶ Play here too. */
+  public preselectSpeed(speed: number): void {
+    if (speed < MIN_SPEED || speed > MAX_SPEED) return;
+    this.speed = speed;
+    this.renderPlayback();
+  }
+
   public setHint(msg: string): void {
     el('replayHint').textContent = msg;
   }
@@ -164,6 +172,7 @@ export class ReplayPanel {
     this.speed = Math.round(value * 100) / 100;
     // While paused only remember the speed; it is applied on ▶ Play.
     if (!this.paused) this.cb.onSpeed(this.speed);
+    else this.cb.onPreselect(this.speed);
     this.renderPlayback();
   }
 
