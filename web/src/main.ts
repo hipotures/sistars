@@ -1123,6 +1123,35 @@ async function bootstrap(): Promise<void> {
     const base = activeArenaMatchId ? `sistars_${activeArenaMatchId}` : 'sistars_local';
     void startRecording(base).catch(() => {});
   };
+  // Remember recording settings and replay speed in this browser.
+  const REC_SETTINGS_KEY = 'sistars.recSettings';
+  const REC_SELECT_IDS = ['recSource', 'recHeight', 'recFps', 'recBitrate'];
+  try {
+    const saved = JSON.parse(localStorage.getItem(REC_SETTINGS_KEY) ?? '{}') as Record<string, string>;
+    for (const id of REC_SELECT_IDS) {
+      const sel = document.getElementById(id) as HTMLSelectElement | null;
+      if (sel && saved[id] && [...sel.options].some((o) => o.value === saved[id])) sel.value = saved[id];
+    }
+    const sp = Number(saved.replaySpeed);
+    if (sp > 0) replayPanel.preselectSpeed(sp);
+  } catch {
+    // storage unavailable: defaults
+  }
+  const saveRecSettings = (): void => {
+    try {
+      const out: Record<string, string> = { replaySpeed: String(replayPanel.currentSpeed()) };
+      for (const id of REC_SELECT_IDS) out[id] = recSelect(id);
+      localStorage.setItem(REC_SETTINGS_KEY, JSON.stringify(out));
+    } catch {
+      // ignore
+    }
+  };
+  for (const id of REC_SELECT_IDS) document.getElementById(id)?.addEventListener('change', saveRecSettings);
+  document.getElementById('drawerReplay')?.addEventListener('click', (ev) => {
+    if ((ev.target as HTMLElement).closest('[data-replay-speed]')) saveRecSettings();
+  });
+  document.getElementById('replaySpeedCustom')?.addEventListener('change', () => setTimeout(saveRecSettings, 0));
+
   for (const b of recButtons) {
     if (!recordingSupported()) {
       (b as HTMLButtonElement).disabled = true;
