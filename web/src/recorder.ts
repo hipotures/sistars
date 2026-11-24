@@ -142,7 +142,8 @@ export class LiveRecorder {
 
   /** True when a 'map' recording wants its next frame (throttled to the chosen FPS). */
   public frameDue(): boolean {
-    return this.compositeCtx !== null && performance.now() - this.lastCaptureMs >= this.frameIntervalMs - 1;
+    return this.compositeCtx !== null && // Half a 60 Hz display frame of slack, so 30 fps lands on every 2nd animation frame.
+      performance.now() - this.lastCaptureMs >= this.frameIntervalMs - 8;
   }
 
   /**
