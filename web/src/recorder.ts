@@ -166,7 +166,8 @@ export class LiveRecorder {
     const text = this.caption();
     if (text) {
       const fs = Math.max(11, Math.round(c.height / 60));
-      ctx.font = `600 ${fs}px system-ui, sans-serif`;
+      // Monospace so changing digits (the year) do not make the caption jitter.
+      ctx.font = `600 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
       const pad = Math.round(fs * 0.5);
       const w = ctx.measureText(text).width + pad * 2;
       const h = fs + pad * 1.2;
