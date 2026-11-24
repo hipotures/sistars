@@ -1116,7 +1116,15 @@ async function bootstrap(): Promise<void> {
           source: (recSelect('recSource') || 'map') as RecordSource,
           height: Number(recSelect('recHeight') || 1080),
           fps: Number(recSelect('recFps') || 30),
-          bitsPerSecond: Number(recSelect('recBitrate') || 8_000_000),
+          // "q:high"/"q:max" = constant quality; the bitrate is only a fallback then.
+          bitsPerSecond: recSelect('recBitrate').startsWith('q:')
+            ? 40_000_000
+            : Number(recSelect('recBitrate') || 8_000_000),
+          constantQuality: recSelect('recBitrate') === 'q:max'
+            ? 'max'
+            : recSelect('recBitrate') === 'q:high'
+              ? 'high'
+              : undefined,
           format: recSelect('recFormat') === 'mp4' ? 'mp4' : 'webm',
         },
         base,

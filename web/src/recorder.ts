@@ -27,7 +27,19 @@ export interface RecorderOptions {
   fps: number;
   bitsPerSecond: number;
   format: RecordFormat;
+  /**
+   * Constant-quality mode ('high' / 'max'): every region of every frame gets the same precision,
+   * so dark flat space does not turn into blotches the way bitrate modes starve it. Falls back to
+   * bitsPerSecond when the encoder has no quantizer mode.
+   */
+  constantQuality?: 'high' | 'max';
 }
+
+/** Quantizer per codec (lower = better). H.264 0–51, VP9 0–63. */
+const QP: Record<RecordFormat, Record<'high' | 'max', number>> = {
+  mp4: { high: 20, max: 14 },
+  webm: { high: 24, max: 14 },
+};
 
 export interface RecorderStatus {
   recording: boolean;
@@ -65,6 +77,8 @@ export function recordingSupported(): boolean {
 
 interface CodecSession {
   encoder: VideoEncoder;
+  /** Extra per-frame encode options (the quantizer in constant-quality mode). */
+  encodeExtra: Record<string, unknown>;
   finalize: () => Blob;
   mime: string;
 }
@@ -75,16 +89,22 @@ async function findEncoderConfig(
   height: number,
   fps: number,
   bitrate: number,
+  tryQuantizer: boolean,
 ): Promise<VideoEncoderConfig | null> {
   const codecs = format === 'mp4' ? AVC_CODECS : VP9_CODECS;
-  for (const bitrateMode of ['constant', 'variable'] as const) {
+  const modes = (tryQuantizer ? ['quantizer', 'constant', 'variable'] : ['constant', 'variable']) as (
+    | 'quantizer'
+    | 'constant'
+    | 'variable'
+  )[];
+  for (const bitrateMode of modes) {
     for (const codec of codecs) {
       const cfg: VideoEncoderConfig = {
         codec,
         width,
         height,
         bitrate,
-        bitrateMode,
+        bitrateMode: bitrateMode as VideoEncoderBitrateMode,
         framerate: fps,
         latencyMode: 'quality',
         ...(format === 'mp4' ? { avc: { format: 'avc' as const } } : {}),
@@ -227,7 +247,7 @@ export class LiveRecorder {
       // A keyframe every 2 s keeps seeking in players fast.
       const keyFrame = this.frames % (this.fps * 2) === 0;
       try {
-        codec.encoder.encode(frame, { keyFrame });
+        codec.encoder.encode(frame, { keyFrame, ...codec.encodeExtra } as VideoEncoderEncodeOptions);
         this.frames += 1;
       } finally {
         frame.close();
@@ -281,7 +301,14 @@ export class LiveRecorder {
   private async createCodecSession(opts: RecorderOptions): Promise<CodecSession | null> {
     const c = this.composite;
     if (!c) return null;
-    const cfg = await findEncoderConfig(opts.format, c.width, c.height, this.fps, opts.bitsPerSecond);
+    const cfg = await findEncoderConfig(
+      opts.format,
+      c.width,
+      c.height,
+      this.fps,
+      opts.bitsPerSecond,
+      opts.constantQuality !== undefined,
+    );
     if (!cfg) return null;
 
     let addChunk: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => void;
@@ -327,7 +354,15 @@ export class LiveRecorder {
       },
     });
     encoder.configure(cfg);
-    return { encoder, finalize, mime: `${mime} · ${cfg.bitrateMode ?? 'variable'}` };
+    const mode = String(cfg.bitrateMode ?? 'variable');
+    let encodeExtra: Record<string, unknown> = {};
+    let modeLabel = mode;
+    if (mode === 'quantizer' && opts.constantQuality) {
+      const q = QP[opts.format][opts.constantQuality];
+      encodeExtra = opts.format === 'mp4' ? { avc: { quantizer: q } } : { vp9: { quantizer: q } };
+      modeLabel = `constant quality q${q}`;
+    }
+    return { encoder, encodeExtra, finalize, mime: `${mime} · ${modeLabel}` };
   }
 
   private async finishCodec(): Promise<void> {
