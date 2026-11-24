@@ -61,6 +61,8 @@ export class LiveRecorder {
   private compositeCtx: CanvasRenderingContext2D | null = null;
   private fileBase = 'sistars';
   private tickTimer: number | null = null;
+  private frameIntervalMs = 1000 / 30;
+  private lastCaptureMs = 0;
 
   constructor(
     private readonly baseCanvas: HTMLCanvasElement,
@@ -80,6 +82,8 @@ export class LiveRecorder {
     if (!mime) throw new Error('This browser cannot record video (MediaRecorder unsupported).');
     this.mimeType = mime;
     this.fileBase = fileBase;
+    this.frameIntervalMs = 1000 / Math.max(1, opts.fps);
+    this.lastCaptureMs = 0;
 
     let stream: MediaStream;
     if (opts.source === 'tab') {
@@ -136,11 +140,20 @@ export class LiveRecorder {
     rec.stop();
   }
 
-  /** Call right after the map has been drawn (same task), to copy it into the recording. */
+  /** True when a 'map' recording wants its next frame (throttled to the chosen FPS). */
+  public frameDue(): boolean {
+    return this.compositeCtx !== null && performance.now() - this.lastCaptureMs >= this.frameIntervalMs - 1;
+  }
+
+  /**
+   * Call right after the map has been drawn (same task), to copy it into the recording.
+   * Copying a WebGPU canvas is a synchronous GPU readback, so it is throttled to the FPS.
+   */
   public captureFrame(): void {
     const c = this.composite;
     const ctx = this.compositeCtx;
-    if (!c || !ctx) return;
+    if (!c || !ctx || !this.frameDue()) return;
+    this.lastCaptureMs = performance.now();
     ctx.fillStyle = '#05070d';
     ctx.fillRect(0, 0, c.width, c.height);
     if (this.baseCanvas.style.visibility !== 'hidden' && this.baseCanvas.width > 0) {

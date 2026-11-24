@@ -571,6 +571,8 @@ export class RemoteArenaTransport implements SimTransport {
   private feedHandler: ((event: ArenaFeedEvent) => void) | null = null;
   private statusHandler: ((status: ArenaMatchSummary) => void) | null = null;
   private connHandler: ((state: ArenaConnectionState, message?: string) => void) | null = null;
+  /** Called when the server rejects a control request (pause/speed/step/seek). */
+  public controlErrorHandler: ((message: string) => void) | null = null;
   private selectedFleetId: number | null = null;
   private lastSummary: ArenaMatchSummary | null = null;
   private pendingFeedHistory: ArenaFeedEvent[] = [];
@@ -816,9 +818,18 @@ export class RemoteArenaTransport implements SimTransport {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).catch(() => {
-      // ignore transient network errors
-    });
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          const msg = `Server rejected control (${res.status}): ${body.slice(0, 160)}`;
+          console.warn('[arena]', msg, payload);
+          this.controlErrorHandler?.(msg);
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn('[arena] control request failed', err, payload);
+      });
   }
 
   public setSpeed(speed: number): void {

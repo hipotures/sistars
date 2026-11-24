@@ -4,6 +4,8 @@ import type { ArenaMatchSummary, ReplayFileInfo } from './types';
 export interface ReplayPanelCallbacks {
   onRefresh: (serverUrl: string) => void;
   onPlay: (serverUrl: string, sourceMatchId: string) => void;
+  /** Load + start recording + play at the panel speed, in one click. */
+  onRecord: (serverUrl: string, sourceMatchId: string, speed: number) => void;
   onDownload: (serverUrl: string, sourceMatchId: string) => void;
   onPause: () => void;
   onResume: (speed: number) => void;
@@ -57,6 +59,7 @@ export class ReplayPanel {
       if (!btn) return;
       const id = btn.dataset.matchId ?? '';
       if (btn.dataset.replayAction === 'play') this.cb.onPlay(this.serverUrl(), id);
+      else if (btn.dataset.replayAction === 'record') this.cb.onRecord(this.serverUrl(), id, this.speed);
       else if (btn.dataset.replayAction === 'download') this.cb.onDownload(this.serverUrl(), id);
     });
     el('btnReplayPlayPause').addEventListener('click', () => {
@@ -68,10 +71,7 @@ export class ReplayPanel {
       b.addEventListener('click', () => this.applySpeed(Number(b.dataset.replaySpeed)));
     });
     const customInput = el<HTMLInputElement>('replaySpeedCustom');
-    el('btnReplaySpeedApply').addEventListener('click', () => this.applySpeed(Number(customInput.value)));
-    customInput.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') this.applySpeed(Number(customInput.value));
-    });
+    customInput.addEventListener('change', () => this.applySpeed(Number(customInput.value)));
     const seekInput = el<HTMLInputElement>('replaySeekTick');
     const doSeek = () => {
       const target = Math.floor(Number(seekInput.value));
@@ -112,19 +112,22 @@ export class ReplayPanel {
     el('replayListBody').innerHTML = list
       .map((r) => {
         const id = escapeHtml(r.matchId);
-        const head = `<div class="replay-item-head">
-            <span class="replay-item-title" title="seed ${r.seed ?? '?'} · engine ${escapeHtml(r.engineCommit ?? '?')}">${formatDate(r.modifiedMs)} · ${id}</span>
-            ${r.error ? '' : `<button class="hud-btn" data-replay-action="play" data-match-id="${id}" title="Play this match on the server">▶</button>`}
+        const title = `<div class="replay-item-title" title="seed ${r.seed ?? '?'} · engine ${escapeHtml(r.engineCommit ?? '?')}">${formatDate(r.modifiedMs)} · ${id}</div>`;
+        const actions = `<div class="replay-item-actions">
+            ${r.error ? '' : `<button class="hud-btn" data-replay-action="play" data-match-id="${id}" title="Load this match paused">📂 Open</button>
+            <button class="hud-btn rec-btn" data-replay-action="record" data-match-id="${id}" title="Load, record and play at the selected speed">⏺ Record</button>`}
+            <span class="replay-spacer"></span>
             <button class="hud-btn" data-replay-action="download" data-match-id="${id}" title="Download .replay.jsonl.gz">⬇</button>
           </div>`;
         if (r.error) {
-          return `<div class="replay-item">${head}<div class="replay-error">⚠ ${escapeHtml(r.error)}</div></div>`;
+          return `<div class="replay-item">${title}<div class="replay-error">⚠ ${escapeHtml(r.error)}</div>${actions}</div>`;
         }
         const winner = r.winnerName ? escapeHtml(r.winnerName) : r.winner != null ? `#${r.winner + 1}` : 'no winner';
         const ticks = r.finalTick != null ? `tick ${r.finalTick} · yr ${(r.finalYear ?? 0).toFixed(1)}` : '';
-        return `<div class="replay-item">${head}
+        return `<div class="replay-item">${title}
           <div class="replay-item-meta">${escapeHtml(r.scenarioName ?? '?')} · ${escapeHtml(r.galaxySize ?? '?')} · ${r.numEmpires ?? '?'} races</div>
           <div class="replay-item-meta">${escapeHtml(r.endReason ?? '?')} · ${winner} · ${ticks} · ${formatSize(r.fileSize)}</div>
+          ${actions}
         </div>`;
       })
       .join('');
@@ -176,8 +179,17 @@ export class ReplayPanel {
     this.renderPlayback();
   }
 
+  public currentSpeed(): number {
+    return this.speed;
+  }
+
   private renderPlayback(): void {
     const pb = this.playback;
+    document.querySelectorAll<HTMLButtonElement>('[data-replay-speed]').forEach((b) => {
+      b.classList.toggle('active', Number(b.dataset.replaySpeed) === this.speed);
+    });
+    const customEl = el<HTMLInputElement>('replaySpeedCustom');
+    if (document.activeElement !== customEl) customEl.value = String(this.speed);
     el('replayPlaybackSection').style.display = pb ? '' : 'none';
     el('replayIdleHint').style.display = pb ? 'none' : '';
     if (!pb) return;
@@ -188,11 +200,6 @@ export class ReplayPanel {
     playBtn.disabled = ended;
     el<HTMLButtonElement>('btnReplayStep').disabled = ended;
     el<HTMLButtonElement>('btnReplaySeek').disabled = ended;
-    document.querySelectorAll<HTMLButtonElement>('[data-replay-speed]').forEach((b) => {
-      b.classList.toggle('active', Number(b.dataset.replaySpeed) === this.speed);
-    });
-    const custom = el<HTMLInputElement>('replaySpeedCustom');
-    if (document.activeElement !== custom) custom.value = String(this.speed);
     const div = el('replayDivergence');
     div.style.display = pb.replayDivergence ? '' : 'none';
     div.textContent = pb.replayDivergence

@@ -2458,3 +2458,34 @@ tr.rep-row-selected:hover {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+
+.replay-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.replay-label {
+  width: 58px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.replay-spacer {
+  flex: 1;
+}
+
+.replay-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.replay-item-actions .hud-btn {
+  padding: 3px 10px;
+}

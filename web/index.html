@@ -89,27 +89,32 @@
   </div>
   <div class="replay-list-wrap" id="replayListBody"></div>
 
+  <div class="replay-row">
+    <span class="replay-label">Speed</span>
+    <button class="hud-btn" data-replay-speed="0.1">0.1x</button>
+    <button class="hud-btn" data-replay-speed="1">1x</button>
+    <button class="hud-btn" data-replay-speed="10">10x</button>
+    <input type="number" id="replaySpeedCustom" class="text-input replay-num" min="0.1" max="100" step="0.1" value="1" title="Custom speed 0.1–100x (Enter)" />
+    <span class="replay-muted">x</span>
+  </div>
+  <div class="replay-muted">📂 Open loads a match paused. ⏺ Record loads it, starts recording and plays at this speed; recording stops and downloads at the end.</div>
+
   <h3>Playback</h3>
   <div id="replayIdleHint" class="replay-muted">Press ▶ Play on a recorded match. The server re-simulates it with the current game code and you watch it here like an arena match.</div>
   <div id="replayPlaybackSection" style="display:none;">
     <div id="replaySource" class="replay-muted"></div>
     <div class="replay-progress"><div id="replayProgressFill" class="replay-progress-fill"></div></div>
     <div id="replayProgressText" class="replay-progress-text"></div>
-    <div class="replay-controls">
+    <div class="replay-row">
       <button class="hud-btn" id="btnReplayPlayPause">▶ Play</button>
       <button class="hud-btn" id="btnReplayStep" title="Advance one tick">⏭ Step</button>
-      <span class="replay-sep">Speed</span>
-      <button class="hud-btn" data-replay-speed="0.1">0.1x</button>
-      <button class="hud-btn" data-replay-speed="1">1x</button>
-      <button class="hud-btn" data-replay-speed="10">10x</button>
-      <input type="number" id="replaySpeedCustom" class="text-input replay-num" min="0.1" max="100" step="0.1" value="1" title="Custom speed 0.1–100x" />
-      <button class="hud-btn" id="btnReplaySpeedApply">Set</button>
+      <span class="replay-spacer"></span>
+      <button class="hud-btn danger" id="btnReplayStop" title="Stop and remove this playback from the server">⏹ Close</button>
     </div>
-    <div class="replay-controls">
-      <span class="replay-sep">Jump to tick</span>
-      <input type="number" id="replaySeekTick" class="text-input replay-num" min="1" step="1" title="Forward only" />
+    <div class="replay-row">
+      <span class="replay-label">Jump to</span>
+      <input type="number" id="replaySeekTick" class="text-input replay-num" min="1" step="1" placeholder="tick" title="Forward only" />
       <button class="hud-btn" id="btnReplaySeek">Go ⏩</button>
-      <button class="hud-btn danger" id="btnReplayStop" title="Stop and remove this playback from the server">⏹ Stop</button>
     </div>
     <div id="replayHint" class="replay-hint"></div>
     <div id="replayDivergence" class="replay-divergence" style="display:none;"></div>
@@ -117,7 +122,7 @@
   </div>
 
   <h3>Live REC</h3>
-  <div class="replay-muted">Records what you see, in real time, to a video file (any match: live, replay or local). Also available as ⏺ REC in the top bar.</div>
+  <div class="replay-muted">Records what you see, in real time, to a video file. Works for any match (live, replay, local) via ⏺ in the top bar or the button below.</div>
   <div class="rec-options">
     <label class="rec-field"><span>Source</span>
       <select id="recSource" class="text-input">

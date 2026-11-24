@@ -444,7 +444,13 @@ async function bootstrap(): Promise<void> {
 
   // Single status handler for remote matches (the transport keeps only one handler, so the
   // pre-init and post-init registrations must do the same work).
+  let stopRecordingAtReplayEnd = false;
   const handleArenaStatus = (summary: ArenaMatchSummary): void => {
+    if (stopRecordingAtReplayEnd && summary.replayOf && summary.status === 'Finished') {
+      stopRecordingAtReplayEnd = false;
+      // Give the last frames a moment to reach the recording, then save the file.
+      setTimeout(() => liveRecorder.stop(), 1500);
+    }
     if (summary.executionMode) {
       activeArenaExecMode = summary.executionMode;
     }
@@ -491,6 +497,10 @@ async function bootstrap(): Promise<void> {
     nextTransport.onArenaFeed((ev) => ui.appendArenaFeedEvent(ev));
     nextTransport.onArenaStatus((summary) => handleArenaStatus(summary));
     nextTransport.onConnectionState((state, msg) => ui.setArenaConnectionState(state, msg));
+    nextTransport.controlErrorHandler = (msg) => {
+      replayPanel.setHint(msg);
+      ui.setStatus(`⚠ ${msg}`);
+    };
 
     try {
       const res = await nextTransport.init();
@@ -971,6 +981,29 @@ async function bootstrap(): Promise<void> {
           );
         });
     },
+    onRecord: (serverUrl, sourceMatchId, recSpeed) => {
+      const server = normalizeServerUrl(serverUrl);
+      const tabCapture = recSelect('recSource') === 'tab';
+      replayPanel.setHint(`Loading ${sourceMatchId} for recording…`);
+      void (async () => {
+        try {
+          if (liveRecorder.recording) liveRecorder.stop();
+          // Screen-share permission needs the fresh click, so a tab capture starts first.
+          if (tabCapture) await startRecording(`sistars_replay_${sourceMatchId}`);
+          const res = await startReplayPlayback(server, sourceMatchId);
+          await connectToRemoteArena(server, res.matchId);
+          if (!tabCapture) await startRecording(`sistars_replay_${sourceMatchId}`);
+          stopRecordingAtReplayEnd = true;
+          speed = recSpeed;
+          lastNonZeroSpeed = recSpeed;
+          ui.setActiveSpeedButton(recSpeed);
+          transport.setSpeed(recSpeed);
+          replayPanel.setHint('');
+        } catch (err) {
+          replayPanel.setHint(`Could not record: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    },
     onDownload: (serverUrl, sourceMatchId) => {
       const a = document.createElement('a');
       a.href = replayDownloadUrl(serverUrl, sourceMatchId);
@@ -1006,6 +1039,10 @@ async function bootstrap(): Promise<void> {
     onStop: () => {
       const id = activeArenaMatchId;
       if (!id) return;
+      if (stopRecordingAtReplayEnd && liveRecorder.recording) {
+        stopRecordingAtReplayEnd = false;
+        liveRecorder.stop();
+      }
       void deleteArenaMatch(arenaServerUrl, id).then(async (ok) => {
         if (!ok) {
           replayPanel.setHint('Could not stop the playback on the server.');
@@ -1057,15 +1094,10 @@ async function bootstrap(): Promise<void> {
   );
   const recSelect = (id: string): string =>
     (document.getElementById(id) as HTMLSelectElement | null)?.value ?? '';
-  const toggleRecording = (): void => {
-    if (liveRecorder.recording) {
-      liveRecorder.stop();
-      return;
-    }
+  const startRecording = async (base: string): Promise<void> => {
     if (recHintEl) recHintEl.textContent = '';
-    const base = activeArenaMatchId ? `sistars_${activeArenaMatchId}` : 'sistars_local';
-    void liveRecorder
-      .start(
+    try {
+      await liveRecorder.start(
         {
           source: (recSelect('recSource') || 'map') as RecordSource,
           height: Number(recSelect('recHeight') || 1080),
@@ -1073,13 +1105,23 @@ async function bootstrap(): Promise<void> {
           bitsPerSecond: Number(recSelect('recBitrate') || 8_000_000),
         },
         base,
-      )
-      .then(() => scheduleRender())
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (recHintEl) recHintEl.textContent = `Recording failed: ${msg}`;
-        ui.setStatus(`⚠ Recording failed: ${msg}`);
-      });
+      );
+      scheduleRender();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (recHintEl) recHintEl.textContent = `Recording failed: ${msg}`;
+      ui.setStatus(`⚠ Recording failed: ${msg}`);
+      throw err;
+    }
+  };
+  const toggleRecording = (): void => {
+    if (liveRecorder.recording) {
+      stopRecordingAtReplayEnd = false;
+      liveRecorder.stop();
+      return;
+    }
+    const base = activeArenaMatchId ? `sistars_${activeArenaMatchId}` : 'sistars_local';
+    void startRecording(base).catch(() => {});
   };
   for (const b of recButtons) {
     if (!recordingSupported()) {
@@ -1364,8 +1406,16 @@ async function bootstrap(): Promise<void> {
   // Stops completely (0% CPU & 0% GPU) when paused and idle!
   const renderFrame = (): void => {
     rafId = null;
-    if (!renderDirty && !renderer.hasActiveFx && !liveRecorder.recording) {
-      return;
+    if (!renderDirty && !renderer.hasActiveFx) {
+      // Nothing changed: only a running map recording may need a (throttled) frame.
+      if (liveRecorder.recording) {
+        if (!liveRecorder.frameDue()) {
+          rafId = requestAnimationFrame(renderFrame);
+          return;
+        }
+      } else {
+        return;
+      }
     }
     renderDirty = false;
 
