@@ -162,17 +162,20 @@ export class LiveRecorder {
     if (this.overlayCanvas.width > 0) {
       ctx.drawImage(this.overlayCanvas, 0, 0, c.width, c.height);
     }
+    // Small caption in the bottom-left corner (the map's scale bar sits top-left).
     const text = this.caption();
     if (text) {
-      const fs = Math.max(12, Math.round(c.height / 45));
+      const fs = Math.max(11, Math.round(c.height / 60));
       ctx.font = `600 ${fs}px system-ui, sans-serif`;
-      const pad = Math.round(fs * 0.6);
+      const pad = Math.round(fs * 0.5);
       const w = ctx.measureText(text).width + pad * 2;
-      ctx.fillStyle = 'rgba(5, 7, 13, 0.7)';
-      ctx.fillRect(pad, pad, w, fs + pad * 1.4);
+      const h = fs + pad * 1.2;
+      const y = c.height - h - pad * 2;
+      ctx.fillStyle = 'rgba(5, 7, 13, 0.65)';
+      ctx.fillRect(pad * 2, y, w, h);
       ctx.fillStyle = '#e2e8f0';
-      ctx.textBaseline = 'top';
-      ctx.fillText(text, pad * 2, pad * 1.7);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, pad * 3, y + h / 2);
     }
   }
 

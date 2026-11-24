@@ -1073,8 +1073,8 @@ async function bootstrap(): Promise<void> {
     canvas,
     overlayCanvas,
     () => {
-      const match = activeArenaMatchId ? ` · ${activeArenaMatchId}` : '';
-      return `SI-Stars · Year ${lastHud.year.toFixed(1)}${match}`;
+      const names = lastHud.empires.map((e) => e.name).join(' vs ');
+      return `Year ${lastHud.year.toFixed(1)}${names ? ` · ${names}` : ''}`;
     },
     (st) => {
       for (const b of recButtons) {
